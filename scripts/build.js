@@ -116,3 +116,18 @@ const html = fs
 fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
 fs.writeFileSync(path.join(root, 'dist/index.html'), html);
 console.log(`dist/index.html — ${(Buffer.byteLength(html) / 1024).toFixed(0)} KB, ${order.length} moduli`);
+
+// Variante per la pubblicazione come pagina ospitata: solo il contenuto, senza
+// doctype ne' tag html/head/body, che vengono aggiunti da chi la ospita.
+const artifact = `<title>AstaHelper</title>
+<style>
+${css}
+</style>
+<main id="app"></main>
+<nav class="tabbar" id="tabbar"></nav>
+<script type="module">
+${js}
+<\/script>
+`;
+fs.writeFileSync(path.join(root, 'dist/artifact.html'), artifact);
+console.log(`dist/artifact.html — ${(Buffer.byteLength(artifact) / 1024).toFixed(0)} KB`);
