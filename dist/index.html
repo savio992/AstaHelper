@@ -1,0 +1,3864 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="AstaHelper">
+<meta name="theme-color" content="#0a7d3f">
+<meta name="color-scheme" content="light dark">
+<title>AstaHelper</title>
+<style>
+/* Interfaccia pensata per il pollice: bersagli grandi, niente hover, tutto raggiungibile in basso. */
+
+:root {
+  /* Neutri con una leggerissima deriva verde: scelti, non ereditati da un grigio puro. */
+  --bg: #f3f6f3;
+  --surface: #ffffff;
+  --surface-2: #e9eeea;
+  --text: #0e1512;
+  --muted: #5b6b63;
+  --line: #d8e0da;
+  /* Verde campo: l'unico colore forte della pagina. */
+  --accent: #0f7a43;
+  --accent-soft: #dff0e5;
+  /* Colori di stato, distinti dall'accento: dicono cosa fare, non cosa e' bello. */
+  --danger: #b32d2d;
+  --danger-soft: #fae7e7;
+  --warn: #96620a;
+  --warn-soft: #fbf0dc;
+  /* Un colore per ruolo, cosi' il reparto si riconosce senza leggere. */
+  --p: #a8710b;
+  --d: #1c6a97;
+  --c: #2c7a33;
+  --a: #a52f2f;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(14, 21, 18, 0.06), 0 4px 14px rgba(14, 21, 18, 0.05);
+}
+
+/* Il tema scuro va definito tre volte: per chi lo sceglie, per chi lascia decidere al
+   sistema (che non lascia alcun marcatore) e per chi sceglie esplicitamente il chiaro. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0b100e;
+    --surface: #151b18;
+    --surface-2: #1f2723;
+    --text: #e9f0ec;
+    --muted: #94a49b;
+    --line: #2a332e;
+    --accent: #3fcd7c;
+    --accent-soft: #122c1d;
+    --danger: #ff8080;
+    --danger-soft: #331a1a;
+    --warn: #e8b055;
+    --warn-soft: #2f250f;
+    --p: #dbaf59;
+    --d: #6cb3dd;
+    --c: #6fc677;
+    --a: #ee8a8a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0b100e;
+  --surface: #151b18;
+  --surface-2: #1f2723;
+  --text: #e9f0ec;
+  --muted: #94a49b;
+  --line: #2a332e;
+  --accent: #3fcd7c;
+  --accent-soft: #122c1d;
+  --danger: #ff8080;
+  --danger-soft: #331a1a;
+  --warn: #e8b055;
+  --warn-soft: #2f250f;
+  --p: #dbaf59;
+  --d: #6cb3dd;
+  --c: #6fc677;
+  --a: #ee8a8a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 17px/1.4 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior-y: none;
+}
+
+body {
+  padding-bottom: calc(64px + env(safe-area-inset-bottom));
+}
+
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+
+/* --- struttura ------------------------------------------------------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  padding: calc(8px + env(safe-area-inset-top)) 14px 8px;
+}
+
+.view { padding: 14px; max-width: 900px; margin: 0 auto; }
+
+.tabbar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.tabbar button {
+  background: none;
+  border: 0;
+  padding: 9px 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.tabbar button .ico { font-size: 21px; line-height: 1; }
+.tabbar button[aria-current='true'] { color: var(--accent); }
+
+/* --- componenti ------------------------------------------------------ */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow);
+}
+.card h2 { margin: 0 0 10px; font-size: 15px; letter-spacing: 0.3px; text-transform: uppercase; color: var(--muted); }
+.card h3 { margin: 0 0 8px; font-size: 17px; }
+
+.row { display: flex; align-items: center; gap: 10px; }
+.row.between { justify-content: space-between; }
+.row.wrap { flex-wrap: wrap; }
+.grow { flex: 1; min-width: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.tiny { font-size: 12px; }
+.mono { font-variant-numeric: tabular-nums; }
+.center { text-align: center; }
+.hidden { display: none !important; }
+
+.btn {
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: 11px;
+  padding: 11px 14px;
+  font-weight: 600;
+  min-height: 44px;
+}
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+.btn.ghost { background: transparent; }
+.btn.block { width: 100%; }
+.btn:active { transform: scale(0.985); }
+.btn[disabled] { opacity: 0.45; }
+
+input[type='text'], input[type='number'], input[type='search'], select {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 11px 12px;
+  min-height: 44px;
+  appearance: none;
+}
+input[type='search'] { font-size: 17px; }
+label.field { display: block; margin-bottom: 12px; }
+label.field > span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; font-weight: 600; }
+
+.switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.switch:last-child { border-bottom: 0; }
+.switch .lbl { font-weight: 600; }
+.switch input { width: 52px; height: 31px; appearance: none; background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; position: relative; transition: background 0.15s; flex: none; min-height: 0; padding: 0; }
+.switch input:checked { background: var(--accent); border-color: var(--accent); }
+.switch input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 25px; height: 25px; border-radius: 50%; background: #fff; transition: transform 0.15s; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+.switch input:checked::after { transform: translateX(21px); }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.chip.P { color: var(--p); }
+.chip.D { color: var(--d); }
+.chip.C { color: var(--c); }
+.chip.A { color: var(--a); }
+.chip.plan { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.chip.mine { color: #fff; background: var(--accent); border-color: transparent; }
+.chip.gone { color: var(--danger); background: var(--danger-soft); border-color: transparent; }
+
+.segment { display: flex; background: var(--surface-2); border-radius: 11px; padding: 3px; gap: 3px; }
+.segment button { flex: 1; border: 0; background: transparent; border-radius: 9px; padding: 9px 4px; font-size: 14px; font-weight: 700; color: var(--muted); min-height: 40px; }
+.segment button[aria-pressed='true'] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+/* --- barra crediti --------------------------------------------------- */
+
+.hud { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: center; }
+.hud .credits { font-size: 30px; font-weight: 800; line-height: 1; letter-spacing: -0.5px; }
+.hud .credits small { display: block; font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: 0.6px; text-transform: uppercase; margin-top: 3px; }
+.slotbar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.slotbar div { background: var(--surface-2); border-radius: 9px; padding: 5px 3px; text-align: center; }
+.slotbar div b { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
+.slotbar div span { font-size: 10px; font-weight: 700; letter-spacing: 0.4px; color: var(--muted); }
+
+.bar { height: 7px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); }
+.bar > i.over { background: var(--danger); }
+
+/* --- liste giocatori ------------------------------------------------- */
+
+.plist { list-style: none; margin: 0; padding: 0; }
+.plist li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.plist li:first-child { border-top-left-radius: var(--radius); border-top-right-radius: var(--radius); }
+.plist li:last-child { border-bottom: 0; border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius); }
+.plist li.sel { background: var(--accent-soft); }
+.plist li.gone { opacity: 0.45; }
+.plist .nm { font-weight: 650; }
+.plist .sub { font-size: 12px; color: var(--muted); }
+.plist .pr { font-weight: 800; font-variant-numeric: tabular-nums; text-align: right; }
+.plist .pr small { display: block; font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; }
+
+.listwrap { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
+
+/* --- pannello giocatore selezionato ---------------------------------- */
+
+.maxbid { text-align: center; padding: 6px 0 10px; }
+.maxbid .n { font-size: 52px; font-weight: 850; line-height: 1; letter-spacing: -2px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.maxbid .n.zero { color: var(--danger); }
+.maxbid .lbl { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin-top: 6px; }
+
+.stepper { display: grid; grid-template-columns: 52px 1fr 52px; gap: 8px; align-items: center; }
+.stepper button { min-height: 48px; font-size: 22px; font-weight: 700; }
+.stepper input { text-align: center; font-size: 22px; font-weight: 800; min-height: 48px; }
+
+.verdict { border-radius: 11px; padding: 10px 12px; font-weight: 700; text-align: center; }
+.verdict.go { background: var(--accent-soft); color: var(--accent); }
+.verdict.stop { background: var(--danger-soft); color: var(--danger); }
+.verdict.edge { background: var(--warn-soft); color: var(--warn); }
+
+.alt { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.alt:last-child { border-bottom: 0; }
+.alt .delta { font-weight: 800; font-variant-numeric: tabular-nums; }
+.alt .delta.pos { color: var(--accent); }
+.alt .delta.neg { color: var(--danger); }
+
+table.tiers { width: 100%; border-collapse: collapse; font-size: 14px; }
+table.tiers th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); padding: 5px 6px; }
+table.tiers td { padding: 7px 6px; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+table.tiers td.r { text-align: right; }
+
+.tiersort li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.tiersort li:last-child { border-bottom: 0; }
+.tiersort .idx { width: 22px; font-weight: 800; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tiersort button { min-height: 36px; padding: 6px 10px; }
+
+.empty { text-align: center; padding: 34px 18px; color: var(--muted); }
+.empty .big { font-size: 42px; margin-bottom: 10px; }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(78px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  background: var(--text);
+  color: var(--bg);
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 650;
+  z-index: 60;
+  box-shadow: var(--shadow);
+  max-width: 90vw;
+}
+
+/* Il fuoco da tastiera deve restare visibile: si usa anche con la tastiera esterna dell'iPad. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  .btn:active { transform: none; }
+}
+
+.spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -2px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+</style>
+</head>
+<body>
+<main id="app"></main>
+<nav class="tabbar" id="tabbar"></nav>
+<script type="module">
+'use strict';
+// ===== src/domain/model.js =====
+const __m_src_domain_model_js = (() => {
+// Impostazioni della lega e valori di default.
+
+const ROLES = ['P', 'D', 'C', 'A'];
+
+const ROLE_LABEL = { P: 'Portieri', D: 'Difensori', C: 'Centrocampisti', A: 'Attaccanti' };
+const ROLE_LABEL_SHORT = { P: 'Por', D: 'Dif', C: 'Cen', A: 'Att' };
+
+// Scala unica di qualita' delle fasce: piu' basso = fascia migliore.
+// Serve solo a proporre un ordinamento automatico all'import; resta tutto modificabile a mano.
+const NAMED_TIERS = [
+  [/^(top|top player|fuoriclasse|campione)/, 0],
+  [/^(semi ?top|quasi top)/, 0.5],
+  [/^(jolly)/, 90],
+  [/^(sorpresa|rivelazione)/, 91],
+  [/^(scommessa|scommesse)/, 92],
+  [/^(low ?cost|occasione)/, 93],
+  [/^(riserva|riserve|panchina)/, 94],
+  [/^(terzo portiere|terzi portieri)/, 95],
+  [/^(da evitare|evitare|sconsigliat)/, 99],
+];
+
+const ORDINAL_WORDS = { prima: 1, seconda: 2, terza: 3, quarta: 4, quinta: 5, sesta: 6, settima: 7, ottava: 8 };
+
+function tierSortKey(label) {
+  const n = String(label)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  for (const [re, value] of NAMED_TIERS) {
+    if (re.test(n)) return [value, n];
+  }
+  for (const [word, value] of Object.entries(ORDINAL_WORDS)) {
+    if (n.includes(word)) return [value, n];
+  }
+  const num = n.match(/(\d+)/);
+  if (num) return [Number(num[1]), n];
+  // Etichetta sconosciuta: la mettiamo a meta' classifica, l'utente potra' spostarla.
+  return [50, n];
+}
+
+/**
+ * Ordine delle fasce dedotto dai dati, non dai nomi.
+ * I creators usano vocabolari incompatibili ("Terza", "SOPRA AI LOW COST", "JOLLY 2a FASCIA"):
+ * il prezzo mediano dei giocatori di una fascia dice molto piu' chiaramente quanto vale.
+ * Si ripiega sull'euristica sui nomi solo quando i prezzi mancano.
+ */
+function inferTierOrder(players, role) {
+  const groups = new Map();
+  for (const p of players) {
+    if (p.role !== role || !p.tier) continue;
+    if (!groups.has(p.tier)) groups.set(p.tier, []);
+    const v = p.price ?? p.pma ?? p.quo ?? null;
+    if (Number.isFinite(v)) groups.get(p.tier).push(v);
+  }
+  if (!groups.size) return [];
+
+  const withPrice = [];
+  const withoutPrice = [];
+  for (const [tier, values] of groups) {
+    if (!values.length) {
+      withoutPrice.push(tier);
+      continue;
+    }
+    const sorted = [...values].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    withPrice.push({ tier, median });
+  }
+  withPrice.sort((a, b) => b.median - a.median);
+  return [...withPrice.map((t) => t.tier), ...sortTierLabels(withoutPrice)];
+}
+
+/**
+ * Assegna a ogni giocatore la sua posizione relativa nella scala delle fasce del proprio ruolo
+ * (0 = fascia migliore, 1 = peggiore). E' l'unico modo di confrontare due creators che usano
+ * vocabolari diversi: "Terza" di uno e "FASCIA ALTA" dell'altro diventano numeri comparabili.
+ */
+function annotateTierPct(players) {
+  const orders = {};
+  for (const role of ROLES) orders[role] = inferTierOrder(players, role);
+  return players.map((p) => {
+    const order = orders[p.role] || [];
+    const idx = order.indexOf(p.tier);
+    const pct = order.length > 1 && idx >= 0 ? idx / (order.length - 1) : idx === 0 ? 0 : null;
+    return { ...p, tierPct: pct };
+  });
+}
+
+/** Ordina un elenco di etichette di fascia dalla migliore alla peggiore, con euristica sui nomi. */
+function sortTierLabels(labels) {
+  return [...labels].sort((a, b) => {
+    const ka = tierSortKey(a);
+    const kb = tierSortKey(b);
+    if (ka[0] !== kb[0]) return ka[0] - kb[0];
+    return ka[1] < kb[1] ? -1 : ka[1] > kb[1] ? 1 : 0;
+  });
+}
+
+function defaultSettings() {
+  return {
+    budget: 500,
+    participants: 10,
+    slots: { P: 3, D: 8, C: 8, A: 6 },
+    // Quanti giocatori per ruolo schieri di solito (modulo di riferimento, default 3-4-3).
+    // Serve a non far spendere crediti su panchinari: in porta ne gioca uno solo.
+    starters: { P: 1, D: 3, C: 4, A: 3 },
+    // Modificatore di difesa attivo: alza il peso di difensori e portiere e premia il blocco di club.
+    defenseModifier: true,
+    // Modificatore imbattibilita' del portiere: alza molto il peso del portiere titolare.
+    cleanSheetModifier: true,
+    // Quanto il mercato "impenna" sui top: 1 = lineare, 2 = aste molto aggressive sui big.
+    aggressiveness: 1.55,
+    // Da dove arrivano i prezzi attesi: modello di mercato, quotazioni del listone, o media.
+    // I prezzi consigliati dai creators sono gia' calibrati sul montepremi di una lega da
+    // dieci: quando ci sono, sono la stima migliore. 'model' serve ai listoni senza prezzi.
+    priceSource: 'listone',
+    // Tetti opzionali di spesa per ruolo (crediti). null = nessun vincolo.
+    roleBudget: { P: null, D: null, C: null, A: null },
+    // Ordine delle fasce per ruolo (dalla migliore alla peggiore), popolato all'import.
+    tierOrder: { P: [], D: [], C: [], A: [] },
+    // Massimo numero di giocatori dallo stesso club (0 = nessun limite).
+    // Serve a non ritrovarsi mezza rosa legata alla stagione di una sola squadra.
+    maxPerClub: 4,
+  };
+}
+
+function totalSlots(settings) {
+  return ROLES.reduce((sum, r) => sum + (settings.slots[r] || 0), 0);
+}
+
+/** Chiave stabile per una coppia ruolo+fascia. */
+function tierKey(role, tier) {
+  return `${role}::${tier || '—'}`;
+}
+
+function tierRank(settings, role, tier) {
+  const order = settings.tierOrder?.[role] || [];
+  const idx = order.indexOf(tier);
+  return idx >= 0 ? idx : order.length;
+}
+
+return { inferTierOrder, annotateTierPct, sortTierLabels, defaultSettings, totalSlots, tierKey, tierRank, ROLES, ROLE_LABEL, ROLE_LABEL_SHORT };
+})();
+
+// ===== src/domain/csv.js =====
+const __m_src_domain_csv_js = (() => {
+// Parsing CSV robusto e mappatura colonne per gli export dei listoni (Fantalab, Fantacalcio.it, ecc.)
+// Nessuna dipendenza esterna: l'app deve girare offline da un singolo file.
+
+const DELIMITERS = [';', ',', '\t', '|'];
+
+/** Sceglie il separatore piu' plausibile: quello con conteggio piu' regolare fra le righe. */
+function sniffDelimiter(text) {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim()).slice(0, 20);
+  if (!lines.length) return ',';
+  let best = ',';
+  let bestScore = -1;
+  for (const d of DELIMITERS) {
+    const counts = lines.map((l) => splitLine(l, d).length);
+    // Il conteggio di riferimento e' quello piu' frequente: la prima riga puo' essere
+    // un titolo o una legenda e non rispetta la struttura della tabella.
+    const freq = new Map();
+    for (const c of counts) freq.set(c, (freq.get(c) || 0) + 1);
+    let mode = 1;
+    let modeCount = 0;
+    for (const [c, n] of freq) {
+      if (c >= 2 && (n > modeCount || (n === modeCount && c > mode))) {
+        mode = c;
+        modeCount = n;
+      }
+    }
+    if (mode < 2) continue;
+    const score = (modeCount / counts.length) * 10 + Math.min(mode, 30) / 30;
+    if (score > bestScore) {
+      bestScore = score;
+      best = d;
+    }
+  }
+  return best;
+}
+
+function splitLine(line, delimiter) {
+  const out = [];
+  let cur = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else quoted = false;
+      } else cur += ch;
+    } else if (ch === '"') {
+      quoted = true;
+    } else if (ch === delimiter) {
+      out.push(cur);
+      cur = '';
+    } else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+/**
+ * Parsing completo con supporto a virgolette e newline dentro i campi.
+ * Ritorna { headers, rows } dove rows e' un array di oggetti { header: valore }.
+ */
+function parseCsv(text, delimiter) {
+  const clean = text.replace(/^﻿/, '');
+  const d = delimiter || sniffDelimiter(clean);
+  const records = [];
+  let field = '';
+  let record = [];
+  let quoted = false;
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (clean[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else quoted = false;
+      } else field += ch;
+      continue;
+    }
+    if (ch === '"') {
+      quoted = true;
+    } else if (ch === d) {
+      record.push(field);
+      field = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && clean[i + 1] === '\n') i++;
+      record.push(field);
+      records.push(record);
+      record = [];
+      field = '';
+    } else field += ch;
+  }
+  if (field !== '' || record.length) {
+    record.push(field);
+    records.push(record);
+  }
+
+  const grid = records.filter((r) => r.some((c) => c.trim() !== ''));
+  if (!grid.length) return { headers: [], rows: [], delimiter: d };
+
+  return { ...gridToTable(grid), delimiter: d };
+}
+
+/**
+ * Da griglia di celle a tabella con intestazioni.
+ * Alcuni export mettono titolo o legenda prima della tabella vera: si sceglie come
+ * intestazione la prima riga con almeno 3 celle non vuote e pochi numeri puri.
+ */
+function gridToTable(grid) {
+  const rowsRaw = grid.filter((r) => r.some((c) => String(c ?? '').trim() !== ''));
+  if (!rowsRaw.length) return { headers: [], rows: [] };
+
+  let headerIdx = 0;
+  for (let i = 0; i < Math.min(rowsRaw.length, 10); i++) {
+    const cells = rowsRaw[i].map((c) => String(c ?? '').trim()).filter(Boolean);
+    const looksNumeric = cells.filter((c) => /^-?\d+([.,]\d+)?$/.test(c)).length;
+    if (cells.length >= 3 && looksNumeric <= cells.length / 3) {
+      headerIdx = i;
+      break;
+    }
+  }
+
+  const headers = dedupeHeaders(rowsRaw[headerIdx].map((h, i) => String(h ?? '').trim() || `col_${i + 1}`));
+  const rows = [];
+  for (let i = headerIdx + 1; i < rowsRaw.length; i++) {
+    const raw = rowsRaw[i];
+    const obj = {};
+    headers.forEach((h, j) => {
+      obj[h] = String(raw[j] ?? '').trim();
+    });
+    rows.push(obj);
+  }
+  return { headers, rows };
+}
+
+/**
+ * Unisce i fogli di un xlsx in un'unica tabella.
+ * I listoni dei creators hanno un foglio per ruolo: il nome del foglio serve da
+ * ruolo di riserva se la colonna Ruolo manca.
+ */
+function sheetsToTable(sheets) {
+  const headers = [];
+  const rows = [];
+  for (const sheet of sheets) {
+    const table = gridToTable(sheet.grid);
+    if (!table.rows.length) continue;
+    for (const h of table.headers) if (!headers.includes(h)) headers.push(h);
+    for (const row of table.rows) rows.push({ ...row, __foglio: sheet.name });
+  }
+  return { headers, rows, sheetNames: sheets.map((s) => s.name) };
+}
+
+function dedupeHeaders(headers) {
+  const seen = new Map();
+  return headers.map((h) => {
+    const n = (seen.get(h) || 0) + 1;
+    seen.set(h, n);
+    return n === 1 ? h : `${h} (${n})`;
+  });
+}
+
+function normalizeHeader(h) {
+  return String(h)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+// Sinonimi noti, in ordine di priorita': il primo che combacia vince.
+const FIELD_SYNONYMS = {
+  name: ['nome', 'giocatore', 'calciatore', 'player', 'nome giocatore', 'cognome'],
+  team: ['squadra', 'team', 'club', 'squadra serie a', 'sq'],
+  role: ['ruolo', 'r', 'ruolo classic', 'role', 'pos', 'posizione'],
+  roleMantra: ['ruolo mantra', 'rm', 'mantra', 'ruoli mantra'],
+  tier: ['fascia', 'fasce', 'tier', 'fascia creator', 'fascia creators', 'categoria', 'livello'],
+  // Prezzo consigliato dal creator: e' la stima d'asta migliore quando c'e'.
+  price: ['prezzo', 'prezzo consigliato', 'quotazione', 'qt a', 'qt', 'qta', 'quot', 'crediti', 'quotazione iniziale', 'qi'],
+  // Percentuale massima del budget da investire sul giocatore.
+  pma: ['pma', 'percentuale max asta', 'perc max asta', 'max asta'],
+  // Quotazione ufficiale del listone.
+  quo: ['quo', 'quotazione ufficiale', 'qt i'],
+  // Fantamedia attesa per la stagione che inizia: il predittore piu' forte.
+  fmvExp: ['fmv exp', 'fmv exp.', 'fmv atteso', 'fm exp', 'fantamedia attesa', 'fantamedia prevista'],
+  fvm: ['fvm m', 'fantavalore', 'valore di mercato'],
+  fantamedia: ['fmv', 'fantamedia', 'fm', 'fanta media'],
+  mediavoto: ['mv', 'media voto', 'mediavoto', 'voto medio'],
+  // Giudizi 0-5 del creator.
+  titolarita: ['titolarita', 'titolarieta', 'tit'],
+  affidabilita: ['affidabilita', 'affidabilita rendimento'],
+  integrita: ['integrita', 'integrita fisica'],
+  matches: ['presenze', 'pg', 'partite', 'presenze campionato'],
+  starts: ['pt tit', 'partite da titolare', 'titolarita partite'],
+  minutes: ['minuti', 'min giocati'],
+  injuries: ['pt inf', 'partite saltate', 'infortuni'],
+  goals: ['gol', 'goal', 'reti', 'gf'],
+  assists: ['assist', 'ass', 'assists'],
+  goalsAgainst: ['gol subiti', 'reti subite'],
+  penaltiesSaved: ['rig parati', 'rigori parati'],
+  penalties: ['rig segnati', 'rigorista', 'rigori', 'calcia rigori'],
+  notes: ['commento', 'note', 'nota', 'descrizione', 'consiglio'],
+};
+
+// Colonne di etichette: "Nota 1", "Nota 2", ... Vengono raccolte tutte insieme.
+const TAG_HEADER = /^nota ?\d*$|^tag ?\d*$|^etichett[ae] ?\d*$/;
+
+const NUMERIC_FIELDS = [
+  'price', 'pma', 'quo', 'fmvExp', 'fvm', 'fantamedia', 'mediavoto',
+  'titolarita', 'affidabilita', 'integrita', 'matches', 'starts', 'minutes',
+  'injuries', 'goals', 'assists', 'goalsAgainst', 'penaltiesSaved',
+];
+
+/** Deduce automaticamente quale colonna del CSV corrisponde a quale campo. */
+function autoMap(headers) {
+  const norm = headers.map((h) => ({ header: h, n: normalizeHeader(h) }));
+  const mapping = {};
+  const used = new Set();
+  for (const [field, synonyms] of Object.entries(FIELD_SYNONYMS)) {
+    let found = null;
+    for (const syn of synonyms) {
+      found = norm.find((h) => !used.has(h.header) && h.n === syn);
+      if (found) break;
+    }
+    if (!found) {
+      for (const syn of synonyms) {
+        found = norm.find((h) => !used.has(h.header) && (h.n.startsWith(syn + ' ') || h.n.endsWith(' ' + syn)));
+        if (found) break;
+      }
+    }
+    if (found) {
+      mapping[field] = found.header;
+      used.add(found.header);
+    }
+  }
+  mapping.tags = norm.filter((h) => TAG_HEADER.test(h.n)).map((h) => h.header);
+  for (const h of mapping.tags) used.add(h);
+  return mapping;
+}
+
+/**
+ * Corregge la mappatura guardando i valori, non solo le intestazioni.
+ * "FVM" vuol dire fantamedia nei listoni dei creators e fantavalore di mercato in quelli
+ * ufficiali: sono la stessa parola per due cose diverse, e solo la scala dei numeri lo dice.
+ */
+function refineMapping(rows, mapping) {
+  const out = { ...mapping };
+  const median = (header) => {
+    const vals = rows
+      .map((r) => parseNumber(r[header]))
+      .filter((v) => Number.isFinite(v) && v > 0)
+      .sort((a, b) => a - b);
+    return vals.length ? vals[Math.floor(vals.length / 2)] : null;
+  };
+  for (const [from, to] of [['fantamedia', 'fvm'], ['fvm', 'fantamedia']]) {
+    const header = out[from];
+    if (!header || out[to]) continue;
+    const m = median(header);
+    if (m === null) continue;
+    // Una fantamedia sta sotto 12; un valore di mercato e' molto piu' grande.
+    const isAverage = m < 12;
+    if ((from === 'fantamedia') !== isAverage) {
+      delete out[from];
+      out[to] = header;
+    }
+  }
+  return out;
+}
+
+const ROLES = ['P', 'D', 'C', 'A'];
+
+const MANTRA_TO_CLASSIC = {
+  por: 'P',
+  dc: 'D',
+  dd: 'D',
+  ds: 'D',
+  e: 'D',
+  m: 'C',
+  c: 'C',
+  w: 'C',
+  t: 'C',
+  a: 'A',
+  pc: 'A',
+};
+
+/** Normalizza un ruolo scritto in qualunque modo (classic o mantra) al ruolo classic P/D/C/A. */
+function normalizeRole(raw) {
+  if (!raw) return null;
+  const tokens = String(raw)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  const s = tokens.join('');
+  if (!s) return null;
+  if (/^(p|por|portiere|gk|goalkeeper)$/.test(s)) return 'P';
+  if (/^(d|dif|difensore|def)$/.test(s)) return 'D';
+  if (/^(c|cen|centrocampista|mid|m)$/.test(s)) return 'C';
+  if (/^(a|att|attaccante|fw|pc)$/.test(s)) return 'A';
+  // Mantra multi-ruolo tipo "Dd;Dc" oppure "W/T": vale il primo riconosciuto.
+  for (const t of tokens) {
+    if (MANTRA_TO_CLASSIC[t]) return MANTRA_TO_CLASSIC[t];
+  }
+  return null;
+}
+
+function parseNumber(raw) {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim().replace(/[^\d,.\-]/g, '');
+  if (!s) return null;
+  // "1.234,5" -> 1234.5 ; "12,5" -> 12.5 ; "12.5" -> 12.5
+  let t = s;
+  if (t.includes(',') && t.includes('.')) t = t.replace(/\./g, '').replace(',', '.');
+  else if (t.includes(',')) t = t.replace(',', '.');
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+let uid = 0;
+function makePlayerId(name, team, role) {
+  const base = `${normalizeHeader(name)}|${normalizeHeader(team)}|${role || ''}`;
+  return base.replace(/\s+/g, '_') || `p${++uid}`;
+}
+
+/**
+ * Converte le righe grezze in giocatori tipizzati.
+ * Ritorna { players, warnings, tierLabels }: le righe senza nome o ruolo vengono
+ * scartate con un avviso, cosi' l'utente vede sempre cosa e' rimasto fuori.
+ */
+function buildPlayers(rows, mapping, opts = {}) {
+  const source = opts.source || '';
+  const players = [];
+  const warnings = [];
+  const tierLabels = new Set();
+  const seen = new Map();
+
+  const num = (row, field) => (mapping[field] ? parseNumber(row[mapping[field]]) : null);
+
+  rows.forEach((row, idx) => {
+    const name = mapping.name ? (row[mapping.name] || '').trim() : '';
+    if (!name) return; // riga vuota di coda: non vale un avviso
+    const rawRole = mapping.role ? row[mapping.role] : '';
+    const rawMantra = mapping.roleMantra ? row[mapping.roleMantra] : '';
+    // Nei listoni a fogli separati il nome del foglio e' gia' il ruolo.
+    const role = normalizeRole(rawRole) || normalizeRole(rawMantra) || normalizeRole(row.__foglio);
+    if (!role) {
+      warnings.push(`Riga ${idx + 2}: ruolo non riconosciuto per "${name}", scartata.`);
+      return;
+    }
+    const team = mapping.team ? (row[mapping.team] || '').trim() : '';
+    const tier = mapping.tier ? (row[mapping.tier] || '').trim() : '';
+    if (tier) tierLabels.add(tier);
+
+    const tags = [];
+    for (const header of mapping.tags || []) {
+      const v = (row[header] || '').trim();
+      if (v) tags.push(v.toLowerCase());
+    }
+
+    const id = makePlayerId(name, team, role);
+    if (seen.has(id)) {
+      warnings.push(`Riga ${idx + 2}: "${name}" (${team}) duplicato, tenuta la prima occorrenza.`);
+      return;
+    }
+
+    const player = {
+      id,
+      name,
+      team,
+      role,
+      roleMantra: (rawMantra || '').trim(),
+      tier,
+      tags,
+      notes: mapping.notes ? (row[mapping.notes] || '').trim() : '',
+      sources: source ? [source] : [],
+    };
+    for (const field of NUMERIC_FIELDS) player[field] = num(row, field);
+
+    seen.set(id, player);
+    players.push(player);
+  });
+
+  return { players, warnings, tierLabels: [...tierLabels] };
+}
+
+/**
+ * Unisce i listoni di piu' creators in uno solo.
+ * Stesso giocatore = stesso nome e squadra. I valori numerici diventano la media
+ * delle fonti, le etichette si sommano: il consenso vale piu' di una firma sola.
+ */
+function mergeSources(lists) {
+  const valid = lists.filter((l) => l && l.length);
+  if (valid.length <= 1) return valid[0] || [];
+
+  const merged = new Map();
+  for (const list of valid) {
+    for (const p of list) {
+      const key = p.id;
+      if (!merged.has(key)) {
+        merged.set(key, { ...p, tiersBySource: {}, bySource: {}, _acc: {}, _n: {} });
+      }
+      const target = merged.get(key);
+      for (const src of p.sources) if (!target.sources.includes(src)) target.sources.push(src);
+      const src = p.sources[0] || `fonte ${valid.indexOf(list) + 1}`;
+      if (p.tier) target.tiersBySource[src] = p.tier;
+      target.bySource = target.bySource || {};
+      target.bySource[src] = { tier: p.tier, price: p.price, pma: p.pma, fmvExp: p.fmvExp, tierPct: p.tierPct };
+      if (Number.isFinite(p.tierPct)) {
+        target._acc.tierPct = (target._acc.tierPct || 0) + p.tierPct;
+        target._n.tierPct = (target._n.tierPct || 0) + 1;
+      }
+      for (const tag of p.tags) if (!target.tags.includes(tag)) target.tags.push(tag);
+      if (p.notes && !target.notes.includes(p.notes)) target.notes = target.notes ? `${target.notes}\n\n${p.notes}` : p.notes;
+      for (const field of NUMERIC_FIELDS) {
+        const v = p[field];
+        if (v === null || v === undefined || !Number.isFinite(v)) continue;
+        target._acc[field] = (target._acc[field] || 0) + v;
+        target._n[field] = (target._n[field] || 0) + 1;
+      }
+    }
+  }
+
+  return [...merged.values()].map((p) => {
+    const out = { ...p };
+    for (const field of NUMERIC_FIELDS) {
+      out[field] = p._n[field] ? p._acc[field] / p._n[field] : null;
+    }
+    out.tierPct = p._n.tierPct ? p._acc.tierPct / p._n.tierPct : null;
+    delete out._acc;
+    delete out._n;
+    // La fascia mostrata e' quella della prima fonte che ne ha una.
+    out.tier = Object.values(p.tiersBySource)[0] || p.tier || '';
+
+    // Quanto le fonti sono d'accordo sul prezzo. Un disaccordo forte e' un'occasione:
+    // il mercato seguira' una via di mezzo, e chi lo valuta di piu' ha visto qualcosa.
+    const prices = Object.values(out.bySource || {})
+      .map((v) => v.price)
+      .filter((v) => Number.isFinite(v));
+    if (prices.length > 1) {
+      out.priceMin = Math.min(...prices);
+      out.priceMax = Math.max(...prices);
+      const mean = prices.reduce((a, b) => a + b, 0) / prices.length;
+      out.priceSpread = mean > 0 ? (out.priceMax - out.priceMin) / mean : 0;
+    } else {
+      out.priceMin = out.price;
+      out.priceMax = out.price;
+      out.priceSpread = 0;
+    }
+    return out;
+  });
+}
+
+return { sniffDelimiter, parseCsv, gridToTable, sheetsToTable, normalizeHeader, autoMap, refineMapping, normalizeRole, parseNumber, makePlayerId, buildPlayers, mergeSources, DELIMITERS, ROLES };
+})();
+
+// ===== src/domain/valuation.js =====
+const __m_src_domain_valuation_js = (() => {
+// Dal listone al punteggio atteso di ogni giocatore.
+//
+// Il modello preferisce i segnali cardinali quando ci sono (fantamedia attesa, titolarita',
+// integrita' fisica) e ripiega sulla sola fascia quando il listone e' povero. In entrambi i
+// casi il punteggio e' "punti sopra il sostituto": quanto vale prenderlo invece di prendere
+// il primo giocatore che resterebbe comunque disponibile a fine asta.
+
+const { ROLES } = __m_src_domain_model_js;
+
+// Peso relativo dei ruoli. Serve a calibrare fra loro reparti con fantamedie su scale diverse
+// (un portiere non fara' mai 8 di fantamedia, un attaccante si').
+// Con il valore misurato sopra il sostituto la scala si calibra da sola: i portieri
+// hanno fantamedie tutte vicine e finiscono giustamente a costare poco.
+const ROLE_WEIGHT = { P: 1, D: 1, C: 1, A: 1 };
+
+// Quante partite ci si aspetta da lui, in funzione del giudizio del creator (0-5).
+const TIT_FACTOR = [0.05, 0.15, 0.34, 0.56, 0.76, 0.92];
+const INT_FACTOR = [0.6, 0.66, 0.78, 0.88, 0.95, 1.0];
+
+// Decadimento del valore fra una fascia e la successiva, usato solo senza fantamedia attesa.
+const TIER_DECAY = { P: 0.7, D: 0.8, C: 0.78, A: 0.74 };
+
+// Quanto pesa il secondo, terzo, quarto giocatore di un ruolo rispetto ai titolari.
+// In porta gioca uno solo: la riserva vale quasi zero (e' un'assicurazione, non un titolare).
+const BENCH_DECAY = { P: [0.07, 0.03], D: [0.5, 0.3, 0.18, 0.11, 0.07], C: [0.5, 0.3, 0.18, 0.11, 0.07], A: [0.5, 0.28, 0.16, 0.1] };
+
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * Ordina dal piu' forte al piu' debole con un criterio deterministico.
+ * A parita' di punteggio decide l'identificativo: senza questo, due giocatori equivalenti
+ * di club diversi darebbero punteggi di rosa differenti a seconda dell'ordine dell'elenco.
+ */
+function sortByStrength(list) {
+  return [...list].sort((a, b) => (b.score || 0) - (a.score || 0) || String(a.id).localeCompare(String(b.id)));
+}
+
+/** Frazione di stagione che ci si aspetta di avere da lui, fra 0 e 1. */
+function expectedShare(p) {
+  const tit = Number.isFinite(p.titolarita) ? TIT_FACTOR[clamp(Math.round(p.titolarita), 0, 5)] : null;
+  const int = Number.isFinite(p.integrita) ? INT_FACTOR[clamp(Math.round(p.integrita), 0, 5)] : 0.9;
+  if (tit !== null) return tit * int;
+  // Senza giudizio del creator ripieghiamo sulle presenze dell'anno scorso.
+  if (Number.isFinite(p.matches) && p.matches > 0) return clamp(p.matches / 38, 0.05, 0.95) * int;
+  return 0.6 * int;
+}
+
+/** La fantamedia attesa dichiarata, con ripiego su quella dell'anno scorso. */
+function projectedAverage(p) {
+  for (const v of [p.fmvExp, p.fantamedia]) {
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  return null;
+}
+
+/** Punti attesi in tutta la stagione: fantamedia attesa per le partite che ci si aspetta da lui. */
+function seasonPoints(p) {
+  const fm = projectedAverage(p);
+  return fm === null ? null : fm * expectedShare(p) * 38;
+}
+
+/**
+ * Livello di sostituzione per ruolo, misurato in punti di stagione.
+ *
+ * E' il rendimento del miglior giocatore che resterebbe libero a fine asta: in una lega da
+ * dieci con otto difensori a squadra, gli ottanta migliori difensori finiscono tutti in una
+ * rosa, quindi il metro di paragone e' l'ottantunesimo.
+ *
+ * Va misurato sui punti di stagione e non sulla media a partita, perche' le fantamedie attese
+ * sono quasi identiche per tutti tranne i primissimi: quello che separa davvero un titolare da
+ * un rincalzo e' quante partite gioca, non quanto rende quando gioca.
+ */
+function replacementLevel(players, settings, role) {
+  const pool = players
+    .filter((p) => p.role === role)
+    .map(seasonPoints)
+    .filter((v) => v !== null)
+    .sort((a, b) => b - a);
+  if (!pool.length) return null;
+  const rank = Math.max(1, (settings.slots?.[role] ?? 1) * (settings.participants || 10));
+  return pool[Math.min(pool.length - 1, rank)];
+}
+
+function percentileMap(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return (v) => {
+    if (!sorted.length) return 0.5;
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid] < v) lo = mid + 1;
+      else hi = mid;
+    }
+    return sorted.length === 1 ? 0.5 : lo / (sorted.length - 1);
+  };
+}
+
+/** Punteggio base dato dalla sola fascia, quando manca qualunque proiezione. */
+function tierOnlyScore(p, settings) {
+  const order = settings.tierOrder?.[p.role] || [];
+  const rank = Number.isFinite(p.tierPct) && order.length > 1 ? p.tierPct * (order.length - 1) : order.indexOf(p.tier) >= 0 ? order.indexOf(p.tier) : order.length;
+  return 100 * Math.pow(TIER_DECAY[p.role] ?? 0.78, rank);
+}
+
+function hasTag(p, tag) {
+  return (p.tags || []).some((t) => t.includes(tag));
+}
+
+/**
+ * Solidita' difensiva stimata di ogni club, dedotta dal listone stesso.
+ * E' il segnale che fa funzionare modificatore di difesa e imbattibilita' del portiere.
+ */
+function clubSolidity(players, baseScore) {
+  const byClub = new Map();
+  for (const p of players) {
+    if (p.role !== 'D' && p.role !== 'P') continue;
+    if (!p.team) continue;
+    if (!byClub.has(p.team)) byClub.set(p.team, { D: [], P: [] });
+    byClub.get(p.team)[p.role].push(baseScore.get(p.id) || 0);
+  }
+  const raw = new Map();
+  for (const [club, groups] of byClub) {
+    const topD = groups.D.sort((a, b) => b - a).slice(0, 3);
+    const topP = groups.P.sort((a, b) => b - a).slice(0, 1);
+    const avgD = topD.length ? topD.reduce((a, b) => a + b, 0) / topD.length : 0;
+    const avgP = topP.length ? topP[0] : 0;
+    raw.set(club, 0.62 * avgD + 0.38 * avgP);
+  }
+  const pct = percentileMap([...raw.values()]);
+  const out = new Map();
+  for (const [club, v] of raw) out.set(club, pct(v));
+  return out;
+}
+
+/**
+ * Calcola il punteggio atteso di ogni giocatore.
+ * Restituisce nuovi oggetti con `score`, `expShare`, `solidity` e `valueGap`.
+ */
+function valuePlayers(players, settings) {
+  if (!players.length) return [];
+
+  // Passo 1: punteggio grezzo, senza modificatori. Serve anche a stimare la solidita' dei club.
+  const anchors = {};
+  for (const role of ROLES) anchors[role] = replacementLevel(players, settings, role);
+
+  const base = new Map();
+  for (const p of players) {
+    const pts = seasonPoints(p);
+    const anchor = anchors[p.role];
+    let raw;
+    if (pts !== null && anchor !== null) {
+      // Punti di stagione guadagnati rispetto a chi prenderei comunque per un credito.
+      const vor = Math.max(0, pts - anchor);
+      // Valore residuo dei riempitivi: minuscolo, ma sufficiente a ordinarli fra loro.
+      raw = vor + expectedShare(p) * 2;
+    } else {
+      raw = tierOnlyScore(p, settings) * expectedShare(p);
+    }
+    base.set(p.id, raw);
+  }
+
+  const solidity = clubSolidity(players, base);
+
+  // Passo 2: fascia come correttivo e modificatori di lega.
+  const out = players.map((p) => {
+    let score = base.get(p.id) * (ROLE_WEIGHT[p.role] ?? 1);
+
+    // La fascia del creator corregge del +/-18%: cattura quello che i numeri non dicono.
+    if (Number.isFinite(p.tierPct)) score *= 1 + 0.18 * (1 - 2 * p.tierPct);
+
+    const sol = solidity.get(p.team) ?? 0.5;
+
+    if (settings.defenseModifier) {
+      if (p.role === 'D') {
+        score *= 1.18 + 0.1 * sol;
+        // Il creator segna esplicitamente chi aiuta il modificatore: sono voti alti, non bonus.
+        if (hasTag(p, 'modificatore')) score *= 1.12;
+      }
+      if (p.role === 'P') score *= 1.03;
+    }
+
+    if (settings.cleanSheetModifier && p.role === 'P') {
+      // L'imbattibilita' premia i clean sheet, che la fantamedia del portiere non cattura:
+      // conta la solidita' della squadra davanti a lui.
+      score *= 1.12 + 0.25 * sol;
+      if (hasTag(p, 'imbattibil')) score *= 1.12;
+      if (hasTag(p, 'pararigori')) score *= 1.04;
+    }
+
+    if ((p.role === 'C' || p.role === 'A') && hasTag(p, 'rigorista')) score *= 1.07;
+    if (hasTag(p, 'cartellini')) score *= 0.97;
+
+    return {
+      ...p,
+      score: Math.round(score * 100) / 100,
+      expShare: Math.round(expectedShare(p) * 100) / 100,
+      solidity: sol,
+    };
+  });
+
+  return out;
+}
+
+/**
+ * Peso del j-esimo giocatore piu' forte di un ruolo (j da 0).
+ * I titolari valgono 1, poi si scende: e' cosi' che l'ottimizzatore capisce
+ * che non ha senso spendere sul terzo portiere o sull'ottavo difensore.
+ */
+function depthWeights(settings, role) {
+  const starters = Math.max(1, settings.starters?.[role] ?? { P: 1, D: 3, C: 4, A: 3 }[role]);
+  const slots = Math.max(starters, settings.slots?.[role] ?? starters);
+  const decay = BENCH_DECAY[role] || [0.5, 0.3, 0.18, 0.11, 0.07];
+  const out = [];
+  for (let i = 0; i < slots; i++) {
+    if (i < starters) out.push(1);
+    else {
+      const k = i - starters;
+      out.push(k < decay.length ? decay[k] : decay[decay.length - 1] * Math.pow(0.6, k - decay.length + 1));
+    }
+  }
+  return out;
+}
+
+/**
+ * Bonus di sinergia per un insieme di giocatori gia' scelti.
+ * - blocco difensivo: 3+ difensori dello stesso club valgono piu' della somma delle parti
+ *   quando c'e' il modificatore di difesa (stessa partita, stesso clean sheet).
+ * - portiere di riserva dello stesso club del titolare: assicurazione sull'imbattibilita'.
+ */
+function synergyBonus(selected, settings) {
+  if (!selected.length) return 0;
+  let bonus = 0;
+
+  if (settings.defenseModifier) {
+    const byClub = new Map();
+    for (const p of selected) {
+      if (p.role !== 'D' || !p.team) continue;
+      if (!byClub.has(p.team)) byClub.set(p.team, []);
+      byClub.get(p.team).push(p);
+    }
+    for (const [, group] of byClub) {
+      if (group.length < 2) continue;
+      const avg = group.reduce((a, b) => a + (b.score || 0), 0) / group.length;
+      const sol = group[0].solidity ?? 0.5;
+      const factor = group.length === 2 ? 0.04 : group.length === 3 ? 0.11 : 0.14;
+      bonus += avg * factor * (0.6 + 0.8 * sol);
+    }
+  }
+
+  if (settings.cleanSheetModifier) {
+    const gks = selected.filter((p) => p.role === 'P');
+    if (gks.length >= 2) {
+      const starter = gks.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+      const sameClub = gks.filter((p) => p.id !== starter.id && p.team && p.team === starter.team).length;
+      if (sameClub >= 1) bonus += (starter.score || 0) * 0.08;
+      const defsSameClub = selected.filter((p) => p.role === 'D' && p.team && p.team === starter.team).length;
+      if (defsSameClub >= 2) bonus += (starter.score || 0) * 0.05 * Math.min(defsSameClub, 4);
+    }
+  }
+
+  return Math.round(bonus * 100) / 100;
+}
+
+/**
+ * Quanti giocatori di ogni club schiererei davvero, contando i titolari per uno e i
+ * panchinari per la loro frazione di impiego. Sei giocatori della Roma di cui quattro
+ * riempitivi da un credito non sono una rosa concentrata: in campo ne vanno due.
+ * Ritorna una mappa club -> { inRosa, effettivi }.
+ */
+function clubExposure(selected, settings) {
+  const out = new Map();
+  for (const role of ROLES) {
+    const group = sortByStrength(selected.filter((p) => p.role === role));
+    const w = depthWeights(settings, role);
+    group.forEach((p, i) => {
+      if (!p.team) return;
+      if (!out.has(p.team)) out.set(p.team, { inRosa: 0, effettivi: 0 });
+      const entry = out.get(p.team);
+      entry.inRosa += 1;
+      entry.effettivi += w[i] ?? w[w.length - 1] ?? 0.05;
+    });
+  }
+  return out;
+}
+
+/**
+ * Penalita' di concentrazione su un singolo club.
+ *
+ * I blocchi difensivi sono voluti: il modificatore scatta a soglie e premia i voti che
+ * arrivano tutti insieme dalla stessa partita. Ma se meta' degli undici titolari dipende
+ * dalla stagione di una sola squadra, una sua annata storta affonda la rosa intera e non
+ * lascia scelta su chi schierare.
+ */
+function concentrationPenalty(selected, settings) {
+  const cap = Number(settings.maxPerClub) || 0;
+  if (cap <= 0) return 0;
+  const exposure = clubExposure(selected, settings);
+  let penalty = 0;
+  for (const [team, { effettivi }] of exposure) {
+    if (effettivi <= cap) continue;
+    const group = selected.filter((p) => p.team === team);
+    const avg = group.reduce((a, p) => a + (p.score || 0), 0) / (group.length || 1);
+    penalty += (effettivi - cap) * avg * 0.9;
+  }
+  return penalty;
+}
+
+/**
+ * Punteggio totale di una rosa: somma dei punteggi pesati per profondita' piu' le sinergie,
+ * meno la penalita' per eccesso di giocatori dello stesso club.
+ * Dentro ogni ruolo i giocatori vengono ordinati dal migliore al peggiore.
+ */
+function rosterScore(selected, settings) {
+  let base = 0;
+  for (const role of ROLES) {
+    const group = sortByStrength(selected.filter((p) => p.role === role));
+    const w = depthWeights(settings, role);
+    group.forEach((p, i) => {
+      base += (p.score || 0) * (w[i] ?? w[w.length - 1] ?? 0.05);
+    });
+  }
+  return Math.round((base + synergyBonus(selected, settings) - concentrationPenalty(selected, settings)) * 100) / 100;
+}
+
+/** Compatibilita': punteggio della sola fascia, usato dai test del vecchio modello. */
+function tierScore(settings, role, tier) {
+  const order = settings.tierOrder?.[role] || [];
+  const idx = order.indexOf(tier);
+  const rank = idx >= 0 ? idx : order.length;
+  return 100 * Math.pow(TIER_DECAY[role] ?? 0.78, rank);
+}
+
+return { expectedShare, clubSolidity, valuePlayers, depthWeights, synergyBonus, clubExposure, concentrationPenalty, rosterScore, tierScore };
+})();
+
+// ===== src/domain/market.js =====
+const __m_src_domain_market_js = (() => {
+// Stima del prezzo a cui ogni giocatore verra' realmente pagato all'asta.
+//
+// Quando il listone porta i prezzi consigliati dai creators quelli sono il punto di
+// partenza migliore: sono gia' calibrati sull'intero montepremi di una lega da dieci
+// (la somma dei prezzi consigliati fa esattamente dieci volte il budget di squadra).
+// Il compito del modello e' adattarli alla lega vera: piu' partecipanti significa piu'
+// concorrenza sui top, e quindi prezzi piu' alti dove il giocatore e' unico.
+
+const { ROLES, totalSlots } = __m_src_domain_model_js;
+
+/** Insieme dei giocatori che verranno davvero acquistati: gli altri restano sul mercato. */
+function boughtSet(players, settings) {
+  const n = Math.max(1, settings.participants || 10);
+  const bought = new Set();
+  for (const role of ROLES) {
+    const need = (settings.slots[role] || 0) * n;
+    players
+      .filter((p) => p.role === role)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, need)
+      .forEach((p) => bought.add(p.id));
+  }
+  return bought;
+}
+
+function normalizeShares(raw, bought) {
+  let sum = 0;
+  for (const [id, v] of raw) if (bought.has(id)) sum += v;
+  const out = new Map();
+  if (sum <= 0) return out;
+  for (const [id, v] of raw) out.set(id, v / sum);
+  return out;
+}
+
+/**
+ * Prezzo atteso per ogni giocatore.
+ * Due forme possibili della distribuzione: quella dei creators (prezzi o PMA del listone)
+ * e quella dedotta dai punteggi. L'impostazione `priceSource` sceglie quale usare.
+ */
+function expectedPrices(players, settings) {
+  const n = Math.max(1, settings.participants || 10);
+  const budget = Math.max(1, settings.budget || 500);
+  const slotsTotal = totalSlots(settings);
+  const bought = boughtSet(players, settings);
+
+  // Ogni squadra deve comunque riempire tutti gli slot: un credito a testa e' incomprimibile.
+  const discretionary = Math.max(0, (budget - slotsTotal) * n);
+  const maxPrice = Math.max(1, budget - (slotsTotal - 1));
+
+  // Forma "creators": il prezzo consigliato, o in mancanza la percentuale massima d'asta.
+  const listoneRaw = new Map();
+  for (const p of players) {
+    const v = p.price ?? p.pma ?? p.fvm ?? p.quo ?? null;
+    if (Number.isFinite(v) && v > 0) listoneRaw.set(p.id, v);
+  }
+  const hasListone = listoneRaw.size > players.length / 3;
+
+  // Forma "modello": i crediti si distribuiscono in proporzione al punteggio, con un
+  // esponente che rappresenta quanto il mercato impenna sui migliori.
+  const gamma = Math.max(0.5, Math.min(3, settings.aggressiveness ?? 1.55));
+  const modelRaw = new Map();
+  for (const p of players) modelRaw.set(p.id, Math.pow(Math.max(p.score || 0, 0.01), gamma));
+
+  const listoneShare = normalizeShares(listoneRaw, bought);
+  const modelShare = normalizeShares(modelRaw, bought);
+
+  const source = settings.priceSource || 'blend';
+  const useListone = hasListone && source !== 'model';
+  const useModel = !hasListone || source !== 'listone';
+
+  // Correzione per la dimensione della lega: i prezzi dei creators sono tarati su dieci
+  // squadre, con piu' partecipanti la concorrenza si concentra sui giocatori unici.
+  const tilt = 1 + 0.04 * (n - 10);
+
+  const combined = new Map();
+  for (const p of players) {
+    const parts = [];
+    if (useListone && listoneShare.has(p.id)) parts.push(Math.pow(listoneShare.get(p.id), tilt));
+    if (useModel && modelShare.has(p.id)) parts.push(modelShare.get(p.id));
+    if (!parts.length) {
+      combined.set(p.id, 0);
+      continue;
+    }
+    combined.set(p.id, parts.reduce((a, b) => a + b, 0) / parts.length);
+  }
+
+  let total = 0;
+  for (const [id, v] of combined) if (bought.has(id)) total += v;
+
+  const out = new Map();
+  for (const p of players) {
+    const share = total > 0 ? combined.get(p.id) / total : 0;
+    const price = 1 + discretionary * share;
+    out.set(p.id, Math.min(maxPrice, Math.max(1, Math.round(price))));
+  }
+  return out;
+}
+
+/** Applica i prezzi attesi ai giocatori, restituendo nuovi oggetti con `expectedPrice`. */
+function withExpectedPrices(players, settings) {
+  const prices = expectedPrices(players, settings);
+  return players.map((p) => ({ ...p, expectedPrice: prices.get(p.id) ?? 1 }));
+}
+
+return { expectedPrices, withExpectedPrices };
+})();
+
+// ===== src/domain/optimizer.js =====
+const __m_src_domain_optimizer_js = (() => {
+// Ottimizzatore della rosa: knapsack multi-vincolo (budget totale + slot esatti per ruolo)
+// risolto in programmazione dinamica, piu' una ricerca locale che recupera le sinergie
+// (blocco difensivo, portiere + difesa dello stesso club) che il DP lineare non vede.
+
+const { ROLES } = __m_src_domain_model_js;
+const { rosterScore, synergyBonus, depthWeights, clubExposure } = __m_src_domain_valuation_js;
+
+const NEG = -1e9;
+
+/** Struttura persistente per ricostruire le scelte del DP senza copiare array. */
+class Trail {
+  constructor(capacity = 1024) {
+    this.item = new Int32Array(capacity);
+    this.parent = new Int32Array(capacity);
+    this.size = 1; // 0 = lista vuota
+    this.item[0] = -1;
+    this.parent[0] = -1;
+  }
+  push(itemIdx, parentRef) {
+    if (this.size >= this.item.length) this.grow();
+    const ref = this.size++;
+    this.item[ref] = itemIdx;
+    this.parent[ref] = parentRef;
+    return ref;
+  }
+  grow() {
+    const cap = this.item.length * 2;
+    const item = new Int32Array(cap);
+    const parent = new Int32Array(cap);
+    item.set(this.item);
+    parent.set(this.parent);
+    this.item = item;
+    this.parent = parent;
+  }
+  collect(ref) {
+    const out = [];
+    let r = ref;
+    while (r > 0) {
+      out.push(this.item[r]);
+      r = this.parent[r];
+    }
+    return out;
+  }
+}
+
+/**
+ * Riduce i candidati di un ruolo a quelli che possono realisticamente entrare in rosa:
+ * i migliori per punteggio, i migliori per rapporto punti/credito e i piu' economici
+ * (servono per chiudere gli slot con 1 credito).
+ */
+function pruneCandidates(cands, keepTop = 70, keepRatio = 50, keepCheap = 25) {
+  if (cands.length <= keepTop + keepRatio + keepCheap) return cands;
+  const chosen = new Set();
+  const byScore = [...cands].sort((a, b) => b.score - a.score);
+  const byRatio = [...cands].sort((a, b) => b.score / b.cost - a.score / a.cost);
+  const byCheap = [...cands].sort((a, b) => a.cost - b.cost || b.score - a.score);
+  for (let i = 0; i < keepTop && i < byScore.length; i++) chosen.add(byScore[i]);
+  for (let i = 0; i < keepRatio && i < byRatio.length; i++) chosen.add(byRatio[i]);
+  for (let i = 0; i < keepCheap && i < byCheap.length; i++) chosen.add(byCheap[i]);
+  return [...chosen];
+}
+
+/**
+ * DP a costo esatto per un singolo ruolo.
+ * I candidati arrivano ordinati dal piu' forte al piu' debole: cosi' il k-esimo giocatore
+ * inserito e' esattamente il k-esimo migliore del gruppo, e possiamo applicargli il peso
+ * di profondita' corretto (titolare, primo cambio, panchinaro...) senza rompere il DP.
+ * Ritorna dp[k * (B+1) + b] = punteggio massimo con esattamente k giocatori e costo esatto b.
+ */
+function roleKnapsack(cands, slots, B) {
+  const W = B + 1;
+  const dp = new Float64Array((slots + 1) * W).fill(NEG);
+  const refs = new Int32Array((slots + 1) * W);
+  const trail = new Trail(Math.min(1 << 20, Math.max(1024, cands.length * (slots + 1) * 8)));
+  dp[0] = 0;
+
+  for (let i = 0; i < cands.length; i++) {
+    const c = cands[i].cost;
+    const weighted = cands[i].weighted;
+    if (c > B) continue;
+    for (let k = slots; k >= 1; k--) {
+      const rowPrev = (k - 1) * W;
+      const row = k * W;
+      const s = weighted[k - 1];
+      for (let b = B; b >= c; b--) {
+        const prev = dp[rowPrev + b - c];
+        if (prev <= NEG / 2) continue;
+        const val = prev + s;
+        if (val > dp[row + b]) {
+          dp[row + b] = val;
+          refs[row + b] = trail.push(i, refs[rowPrev + b - c]);
+        }
+      }
+    }
+  }
+  return { dp, refs, trail, W };
+}
+
+/**
+ * Risolve il problema completo.
+ *
+ * input:
+ *  - players: giocatori con `score` e `expectedPrice`
+ *  - settings
+ *  - owned: Map id -> prezzo pagato (gia' in rosa, slot e crediti bloccati)
+ *  - unavailable: Set di id non piu' acquistabili (presi da altri, o esclusi a mano)
+ *  - priceOverride: Map id -> prezzo da usare al posto di expectedPrice
+ *
+ * Ritorna { ok, picks, owned, cost, score, spentByRole, leftover, budgetCurve }
+ */
+function optimizeRoster({
+  players,
+  settings,
+  owned = new Map(),
+  unavailable = new Set(),
+  priceOverride = new Map(),
+  prune = true,
+  localSearch = true,
+} = {}) {
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const ownedPlayers = [];
+  let ownedCost = 0;
+  const ownedByRole = { P: 0, D: 0, C: 0, A: 0 };
+  for (const [id, price] of owned) {
+    const p = byId.get(id);
+    if (!p) continue;
+    ownedPlayers.push({ ...p, paid: price });
+    ownedCost += price;
+    ownedByRole[p.role] = (ownedByRole[p.role] || 0) + 1;
+  }
+
+  const budgetLeft = (settings.budget || 500) - ownedCost;
+  const need = {};
+  let needTotal = 0;
+  for (const role of ROLES) {
+    need[role] = Math.max(0, (settings.slots[role] || 0) - (ownedByRole[role] || 0));
+    needTotal += need[role];
+  }
+
+  if (budgetLeft < needTotal) {
+    return {
+      ok: false,
+      reason: `Crediti insufficienti: restano ${budgetLeft} per ${needTotal} slot (serve almeno 1 credito a slot).`,
+      picks: [],
+      owned: ownedPlayers,
+      cost: ownedCost,
+      score: rosterScore(ownedPlayers, settings),
+      spentByRole: spendByRole(ownedPlayers, []),
+      leftover: budgetLeft,
+    };
+  }
+
+  const B = Math.max(0, Math.floor(budgetLeft));
+
+  // Candidati per ruolo
+  const roleData = {};
+  for (const role of ROLES) {
+    const ownedScores = ownedPlayers
+      .filter((p) => p.role === role)
+      .map((p) => p.score || 0)
+      .sort((a, b) => b - a);
+    const weights = depthWeights(settings, role);
+    const wAt = (i) => weights[Math.min(Math.max(0, i), weights.length - 1)] ?? 0.05;
+    let cands = players
+      .filter((p) => p.role === role && !owned.has(p.id) && !unavailable.has(p.id))
+      .map((p) => ({
+        id: p.id,
+        score: p.score || 0,
+        cost: Math.max(1, Math.round(priceOverride.get(p.id) ?? p.expectedPrice ?? 1)),
+      }))
+      .filter((c) => c.cost <= B);
+    if (prune) cands = pruneCandidates(cands);
+    cands.sort((a, b) => b.score - a.score);
+    // Rango reale nel ruolo = giocatori gia' in rosa piu' forti + candidati migliori gia' scelti.
+    // Comprare un giocatore piu' forte retrocede di un posto tutti quelli gia' in rosa piu' deboli:
+    // senza questo termine l'ottimizzatore ti fa comprare cinque attaccanti sopra quello che hai gia'.
+    const needRole = need[role] || 1;
+    for (const cand of cands) {
+      const above = ownedScores.filter((s) => s >= cand.score).length;
+      cand.weighted = new Float64Array(needRole);
+      for (let k = 1; k <= needRole; k++) {
+        let v = cand.score * wAt(k - 1 + above);
+        for (let a = above; a < ownedScores.length; a++) v += ownedScores[a] * (wAt(a + k) - wAt(a + k - 1));
+        cand.weighted[k - 1] = v;
+      }
+    }
+    roleData[role] = cands;
+  }
+
+  for (const role of ROLES) {
+    if (need[role] > roleData[role].length) {
+      return {
+        ok: false,
+        reason: `Non ci sono abbastanza ${role} disponibili nel listone (servono ${need[role]}, ne restano ${roleData[role].length}).`,
+        picks: [],
+        owned: ownedPlayers,
+        cost: ownedCost,
+        score: rosterScore(ownedPlayers, settings),
+        spentByRole: spendByRole(ownedPlayers, []),
+        leftover: budgetLeft,
+      };
+    }
+  }
+
+  // DP per ruolo
+  const solved = {};
+  for (const role of ROLES) {
+    solved[role] = need[role] > 0 ? roleKnapsack(roleData[role], need[role], B) : null;
+  }
+
+  // Convoluzione fra i ruoli, rispettando eventuali tetti di spesa per ruolo.
+  const W = B + 1;
+  let cur = new Float64Array(W).fill(NEG);
+  cur[0] = 0;
+  const splits = [];
+  for (const role of ROLES) {
+    const next = new Float64Array(W).fill(NEG);
+    const split = new Int32Array(W).fill(-1);
+    if (need[role] === 0) {
+      next.set(cur);
+      split.fill(0);
+      splits.push(split);
+      cur = next;
+      continue;
+    }
+    const { dp } = solved[role];
+    const row = need[role] * W;
+    const cap = settings.roleBudget?.[role];
+    const maxRole = cap === null || cap === undefined || cap === '' ? B : Math.min(B, Math.max(0, Math.floor(cap)));
+    for (let c = 0; c <= maxRole; c++) {
+      const v = dp[row + c];
+      if (v <= NEG / 2) continue;
+      for (let b = c; b <= B; b++) {
+        const prev = cur[b - c];
+        if (prev <= NEG / 2) continue;
+        const val = prev + v;
+        if (val > next[b]) {
+          next[b] = val;
+          split[b] = c;
+        }
+      }
+    }
+    splits.push(split);
+    cur = next;
+  }
+
+  // Curva del punteggio in funzione del budget speso (serve per il prezzo ombra dei crediti).
+  const budgetCurve = new Float64Array(W);
+  let running = NEG;
+  for (let b = 0; b <= B; b++) {
+    if (cur[b] > running) running = cur[b];
+    budgetCurve[b] = running;
+  }
+
+  let bestB = -1;
+  let bestVal = NEG;
+  for (let b = 0; b <= B; b++) {
+    if (cur[b] > bestVal) {
+      bestVal = cur[b];
+      bestB = b;
+    }
+  }
+
+  if (bestB < 0) {
+    return {
+      ok: false,
+      reason: 'Nessuna rosa valida con questi vincoli: prova ad allentare i tetti di spesa per ruolo.',
+      picks: [],
+      owned: ownedPlayers,
+      cost: ownedCost,
+      score: rosterScore(ownedPlayers, settings),
+      spentByRole: spendByRole(ownedPlayers, []),
+      leftover: budgetLeft,
+    };
+  }
+
+  // Backtracking
+  let picks = [];
+  let b = bestB;
+  for (let r = ROLES.length - 1; r >= 0; r--) {
+    const role = ROLES[r];
+    const c = splits[r][b];
+    if (c > 0 || need[role] > 0) {
+      if (need[role] > 0) {
+        const { refs, trail, W: rw } = solved[role];
+        const ref = refs[need[role] * rw + c];
+        for (const idx of trail.collect(ref)) {
+          const cand = roleData[role][idx];
+          picks.push({ ...byId.get(cand.id), plannedPrice: cand.cost });
+        }
+      }
+    }
+    b -= Math.max(0, c);
+  }
+
+  if (localSearch) {
+    const ctx = { ownedPlayers, players, settings, owned, unavailable, priceOverride, budgetLeft };
+    picks = improveWithSynergy({ picks, ...ctx });
+    // Il DP non sa nulla di club: se e' andato oltre il tetto di concentrazione si ripara qui.
+    picks = enforceClubCap({ picks, ...ctx });
+    picks = improveWithSynergy({ picks, ...ctx });
+    picks = enforceClubCap({ picks, ...ctx });
+  }
+
+  const cost = ownedCost + picks.reduce((s, p) => s + p.plannedPrice, 0);
+  const full = [...ownedPlayers.map((p) => ({ ...p, plannedPrice: p.paid })), ...picks];
+  return {
+    ok: true,
+    picks,
+    owned: ownedPlayers,
+    all: full,
+    cost,
+    score: rosterScore(full, settings),
+    spentByRole: spendByRole(ownedPlayers, picks),
+    leftover: (settings.budget || 500) - cost,
+    budgetCurve,
+    budgetLeft,
+  };
+}
+
+function spendByRole(ownedPlayers, picks) {
+  const out = { P: 0, D: 0, C: 0, A: 0 };
+  for (const p of ownedPlayers) out[p.role] += p.paid || 0;
+  for (const p of picks) out[p.role] += p.plannedPrice || 0;
+  return out;
+}
+
+/**
+ * Ricerca locale: il DP massimizza la somma dei punteggi individuali, ma non sa che
+ * tre difensori dello stesso club valgono piu' di tre difensori sparsi quando c'e' il
+ * modificatore. Qui proviamo scambi 1-a-1 e riutilizziamo i crediti avanzati.
+ */
+function improveWithSynergy({ picks, ownedPlayers, players, settings, owned, unavailable, priceOverride, budgetLeft }) {
+  const hasSynergy = settings.defenseModifier || settings.cleanSheetModifier || Number(settings.maxPerClub) > 0;
+  let current = [...picks];
+  const inRoster = new Set([...current.map((p) => p.id), ...ownedPlayers.map((p) => p.id)]);
+
+  const priceOf = (p) => Math.max(1, Math.round(priceOverride.get(p.id) ?? p.expectedPrice ?? 1));
+  const poolByRole = {};
+  for (const role of ROLES) {
+    poolByRole[role] = players
+      .filter((p) => p.role === role && !owned.has(p.id) && !unavailable.has(p.id))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 120);
+  }
+
+  const roleSpend = (list, role, owned) =>
+    list.filter((p) => p.role === role).reduce((a, p) => a + p.plannedPrice, 0) +
+    owned.filter((p) => p.role === role).reduce((a, p) => a + (p.paid || 0), 0);
+
+  const evaluate = (list) => rosterScore([...ownedPlayers.map((p) => ({ ...p, score: p.score })), ...list], settings);
+  const spend = (list) => list.reduce((s, p) => s + p.plannedPrice, 0);
+
+  let improved = true;
+  let sweeps = 0;
+  const maxSweeps = hasSynergy ? 5 : 2;
+  while (improved && sweeps++ < maxSweeps) {
+    improved = false;
+    for (let i = 0; i < current.length; i++) {
+      const out = current[i];
+      const budgetForSlot = budgetLeft - (spend(current) - out.plannedPrice);
+      // Il tetto di spesa del ruolo vale anche qui: il DP lo rispettava, uno scambio
+      // conveniente ma fuori budget di reparto lo violerebbe in silenzio.
+      const cap = settings.roleBudget?.[out.role];
+      const roleCapLeft =
+        cap === null || cap === undefined || cap === ''
+          ? Infinity
+          : Math.max(0, Number(cap) - roleSpend(current, out.role, ownedPlayers) + out.plannedPrice);
+      let bestList = null;
+      let bestScore = evaluate(current);
+      const clubCap = Number(settings.maxPerClub) || 0;
+      const exposure = clubCap > 0 ? clubExposure([...ownedPlayers, ...current], settings) : null;
+      for (const cand of poolByRole[out.role]) {
+        if (inRoster.has(cand.id)) continue;
+        const cost = priceOf(cand);
+        if (cost > budgetForSlot || cost > roleCapLeft) continue;
+        // Non riportare dentro un club gia' al limite: il tetto e' appena stato rispettato.
+        if (exposure && cand.team !== out.team && (exposure.get(cand.team)?.effettivi ?? 0) >= clubCap) continue;
+        const trial = current.slice();
+        trial[i] = { ...cand, plannedPrice: cost };
+        const sc = evaluate(trial);
+        if (sc > bestScore + 1e-9) {
+          bestScore = sc;
+          bestList = trial;
+        }
+      }
+      if (bestList) {
+        inRoster.delete(out.id);
+        inRoster.add(bestList[i].id);
+        current = bestList;
+        improved = true;
+      }
+    }
+  }
+
+  return current;
+}
+
+/**
+ * Riporta la rosa sotto il tetto di giocatori per club.
+ * Sostituisce i giocatori meno utili dei club sovraesposti, partendo dal piu' sacrificabile,
+ * finche' la soglia rientra o non ci sono piu' rimpiazzi sostenibili.
+ */
+function enforceClubCap({ picks, ownedPlayers, players, settings, owned, unavailable, priceOverride, budgetLeft }) {
+  const cap = Number(settings.maxPerClub) || 0;
+  if (cap <= 0) return picks;
+
+  const priceOf = (p) => Math.max(1, Math.round(priceOverride.get(p.id) ?? p.expectedPrice ?? 1));
+  let current = [...picks];
+
+  for (let guard = 0; guard < 60; guard++) {
+    const full = [...ownedPlayers, ...current];
+    const exposure = clubExposure(full, settings);
+    const over = [...exposure.entries()]
+      .filter(([, v]) => v.effettivi > cap + 0.25)
+      .sort((a, b) => b[1].effettivi - a[1].effettivi);
+    if (!over.length) return current;
+
+    const [team] = over[0];
+    // Si sacrifica per primo chi rende meno rispetto a quello che costa.
+    const sacrificable = current
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => p.team === team)
+      .sort((a, b) => a.p.score / a.p.plannedPrice - b.p.score / b.p.plannedPrice);
+
+    let replaced = false;
+    for (const { p: outPlayer, i } of sacrificable) {
+      const inRoster = new Set([...current.map((x) => x.id), ...ownedPlayers.map((x) => x.id)]);
+      const spendOthers = current.reduce((a, x) => a + x.plannedPrice, 0) - outPlayer.plannedPrice;
+      const budgetForSlot = budgetLeft - spendOthers;
+      const candidate = players
+        .filter(
+          (c) =>
+            c.role === outPlayer.role &&
+            c.team !== team &&
+            !inRoster.has(c.id) &&
+            !owned.has(c.id) &&
+            !unavailable.has(c.id) &&
+            priceOf(c) <= budgetForSlot &&
+            (exposure.get(c.team)?.effettivi ?? 0) < cap
+        )
+        .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+      if (!candidate) continue;
+      current = current.slice();
+      current[i] = { ...candidate, plannedPrice: priceOf(candidate) };
+      replaced = true;
+      break;
+    }
+    if (!replaced) return current;
+  }
+  return current;
+}
+
+/**
+ * Prezzo ombra del credito: quanti punti vale il credito marginale al livello di spesa attuale.
+ * Serve a ordinare le alternative in modo sensato (punti guadagnati per credito speso).
+ */
+function creditShadowPrice(budgetCurve, at) {
+  if (!budgetCurve || budgetCurve.length < 2) return 0;
+  const B = budgetCurve.length - 1;
+  const hi = Math.min(B, Math.max(1, Math.round(at)));
+  const lo = Math.max(0, hi - 25);
+  const span = hi - lo;
+  if (span <= 0) return 0;
+  const d = budgetCurve[hi] - budgetCurve[lo];
+  return d > 0 ? d / span : 0;
+}
+
+
+
+return { pruneCandidates, optimizeRoster, creditShadowPrice, synergyBonus };
+})();
+
+// ===== src/store.js =====
+const __m_src_store_js = (() => {
+// Stato dell'applicazione e persistenza locale.
+// Tutto vive nel browser: nessun server, nessun dato che esce dal telefono.
+
+const { defaultSettings, inferTierOrder, annotateTierPct, ROLES } = __m_src_domain_model_js;
+const { mergeSources } = __m_src_domain_csv_js;
+const { valuePlayers } = __m_src_domain_valuation_js;
+const { withExpectedPrices } = __m_src_domain_market_js;
+const { optimizeRoster } = __m_src_domain_optimizer_js;
+
+const KEY = 'astahelper:v1';
+
+const state = {
+  settings: defaultSettings(),
+  // Un elemento per creator importato: { name, players }. Il listone di lavoro e' la loro unione.
+  sources: [],
+  roster: [], // listone unito, dati grezzi
+  players: [], // listone con punteggi e prezzi attesi (derivato)
+  importMeta: null, // { headers, mapping, rows, warnings, fileName }
+  auction: {
+    owned: {}, // id -> prezzo pagato da me
+    taken: {}, // id -> prezzo pagato da altri
+    log: [], // { id, kind, price, at }
+  },
+  plan: null,
+  ui: {
+    tab: 'asta',
+    query: '',
+    roleFilter: 'ALL',
+    selectedId: null,
+    listQuery: '',
+    listRole: 'ALL',
+    onlyPlan: false,
+    onlyAvailable: true,
+  },
+};
+
+const listeners = new Set();
+function subscribe(fn) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+function notify() {
+  for (const fn of listeners) fn();
+}
+
+function save() {
+  try {
+    const payload = {
+      settings: state.settings,
+      sources: state.sources,
+      auction: state.auction,
+      importMeta: state.importMeta ? { headers: state.importMeta.headers, mapping: state.importMeta.mapping, fileName: state.importMeta.fileName, count: state.roster.length } : null,
+      ui: { tab: state.ui.tab },
+    };
+    localStorage.setItem(KEY, JSON.stringify(payload));
+  } catch (err) {
+    console.warn('Salvataggio non riuscito', err);
+  }
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    state.settings = { ...defaultSettings(), ...(data.settings || {}) };
+    state.settings.slots = { ...defaultSettings().slots, ...(data.settings?.slots || {}) };
+    state.settings.starters = { ...defaultSettings().starters, ...(data.settings?.starters || {}) };
+    state.settings.tierOrder = { ...defaultSettings().tierOrder, ...(data.settings?.tierOrder || {}) };
+    state.settings.roleBudget = { ...defaultSettings().roleBudget, ...(data.settings?.roleBudget || {}) };
+    state.sources = data.sources || (data.roster ? [{ name: 'listone', players: data.roster }] : []);
+    state.roster = rebuildRoster();
+    state.auction = { owned: {}, taken: {}, log: [], ...(data.auction || {}) };
+    state.importMeta = data.importMeta || null;
+    if (data.ui?.tab) state.ui.tab = data.ui.tab;
+    recompute();
+    return true;
+  } catch (err) {
+    console.warn('Caricamento non riuscito', err);
+    return false;
+  }
+}
+
+function resetAll() {
+  localStorage.removeItem(KEY);
+  state.settings = defaultSettings();
+  state.sources = [];
+  state.roster = [];
+  state.players = [];
+  state.importMeta = null;
+  state.auction = { owned: {}, taken: {}, log: [] };
+  state.plan = null;
+  notify();
+}
+
+/** Ricalcola punteggi e prezzi attesi: da fare a ogni cambio di listone o impostazioni. */
+function recompute() {
+  if (!state.roster.length) {
+    state.players = [];
+    state.plan = null;
+    return;
+  }
+  const valued = valuePlayers(state.roster, state.settings);
+  state.players = withExpectedPrices(valued, state.settings);
+}
+
+function ownedMap() {
+  return new Map(Object.entries(state.auction.owned).map(([id, price]) => [id, Number(price)]));
+}
+
+function unavailableSet() {
+  return new Set(Object.keys(state.auction.taken));
+}
+
+function playerById(id) {
+  return state.players.find((p) => p.id === id) || null;
+}
+
+/** Rigenera il piano con lo stato d'asta corrente. */
+function rebuildPlan(opts = {}) {
+  if (!state.players.length) {
+    state.plan = null;
+    return null;
+  }
+  state.plan = optimizeRoster({
+    players: state.players,
+    settings: state.settings,
+    owned: ownedMap(),
+    unavailable: unavailableSet(),
+    ...opts,
+  });
+  return state.plan;
+}
+
+/** Unisce le fonti importate in un unico listone e riordina le fasce. */
+function rebuildRoster() {
+  const lists = state.sources.map((s) => annotateTierPct(s.players));
+  const roster = mergeSources(lists);
+  for (const role of ROLES) state.settings.tierOrder[role] = inferTierOrder(roster, role);
+  return roster;
+}
+
+/** Aggiunge un creator al listone, o ne sostituisce uno con lo stesso nome. */
+function addSource({ name, players, headers, mapping, warnings, fileName }) {
+  const idx = state.sources.findIndex((s) => s.name === name);
+  const entry = { name, players };
+  if (idx >= 0) state.sources[idx] = entry;
+  else state.sources.push(entry);
+  state.roster = rebuildRoster();
+  state.importMeta = { headers, mapping, warnings, fileName, count: state.roster.length };
+  recompute();
+  rebuildPlan();
+  save();
+  notify();
+}
+
+function removeSource(name) {
+  state.sources = state.sources.filter((s) => s.name !== name);
+  state.roster = state.sources.length ? rebuildRoster() : [];
+  recompute();
+  rebuildPlan();
+  save();
+  notify();
+}
+
+// --- Azioni d'asta -------------------------------------------------------
+
+function assign(id, kind, price) {
+  const p = Math.max(0, Math.round(Number(price) || 0));
+  delete state.auction.owned[id];
+  delete state.auction.taken[id];
+  if (kind === 'mine') state.auction.owned[id] = p;
+  else if (kind === 'other') state.auction.taken[id] = p;
+  state.auction.log.push({ id, kind, price: p, at: Date.now() });
+  rebuildPlan();
+  save();
+  notify();
+}
+
+function release(id) {
+  delete state.auction.owned[id];
+  delete state.auction.taken[id];
+  state.auction.log.push({ id, kind: 'release', price: 0, at: Date.now() });
+  rebuildPlan();
+  save();
+  notify();
+}
+
+function undo() {
+  const log = state.auction.log;
+  if (!log.length) return;
+  log.pop();
+  // Ricostruisce lo stato rigiocando il registro dall'inizio: sempre coerente.
+  state.auction.owned = {};
+  state.auction.taken = {};
+  for (const entry of log) {
+    delete state.auction.owned[entry.id];
+    delete state.auction.taken[entry.id];
+    if (entry.kind === 'mine') state.auction.owned[entry.id] = entry.price;
+    else if (entry.kind === 'other') state.auction.taken[entry.id] = entry.price;
+  }
+  rebuildPlan();
+  save();
+  notify();
+}
+
+function updateSettings(patch) {
+  Object.assign(state.settings, patch);
+  recompute();
+  rebuildPlan();
+  save();
+  notify();
+}
+
+function spentTotal() {
+  return Object.values(state.auction.owned).reduce((a, b) => a + Number(b), 0);
+}
+
+function creditsLeft() {
+  return (state.settings.budget || 500) - spentTotal();
+}
+
+return { subscribe, notify, save, load, resetAll, recompute, ownedMap, unavailableSet, playerById, rebuildPlan, addSource, removeSource, assign, release, undo, updateSettings, spentTotal, creditsLeft, state };
+})();
+
+// ===== src/domain/advisor.js =====
+const __m_src_domain_advisor_js = (() => {
+// L'assistente d'asta: quanto posso offrire davvero, e chi prendo se questo giocatore me lo soffiano.
+
+const { ROLES, tierKey, totalSlots } = __m_src_domain_model_js;
+const { optimizeRoster, creditShadowPrice } = __m_src_domain_optimizer_js;
+
+/** Impostazioni ridotte per i ricalcoli in tempo reale durante l'asta. */
+const FAST = { prune: true, localSearch: false };
+
+/** Tetto tecnico: devo lasciare almeno 1 credito per ogni slot ancora da riempire. */
+function maxSpendableNow(settings, owned) {
+  const spent = [...owned.values()].reduce((a, b) => a + b, 0);
+  const slotsLeft = totalSlots(settings) - owned.size;
+  return Math.max(0, (settings.budget || 500) - spent - Math.max(0, slotsLeft - 1));
+}
+
+function slotsLeftByRole(settings, players, owned) {
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const used = { P: 0, D: 0, C: 0, A: 0 };
+  for (const id of owned.keys()) {
+    const p = byId.get(id);
+    if (p) used[p.role]++;
+  }
+  const out = {};
+  for (const role of ROLES) out[role] = Math.max(0, (settings.slots[role] || 0) - used[role]);
+  return out;
+}
+
+/**
+ * Offerta massima di convenienza per un giocatore.
+ * E' il prezzo oltre il quale la rosa che ottengo prendendolo vale meno della rosa
+ * che ottengo lasciandolo andare e ridistribuendo i crediti. Il vero limite dell'asta.
+ */
+function maxBid({ players, settings, owned = new Map(), unavailable = new Set(), playerId }) {
+  const hard = maxSpendableNow(settings, owned);
+  if (hard < 1) return { maxBid: 0, planB: null, reason: 'Crediti esauriti per i vincoli di rosa.' };
+
+  const withoutSet = new Set(unavailable);
+  withoutSet.add(playerId);
+  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST });
+  if (!planB.ok) {
+    // Se senza di lui non esiste una rosa valida, e' incedibile: si arriva al tetto tecnico.
+    return { maxBid: hard, planB, hard, breakEven: hard, reason: 'Senza di lui non chiudi la rosa.' };
+  }
+
+  const scoreAt = (price) => {
+    const o = new Map(owned);
+    o.set(playerId, price);
+    const plan = optimizeRoster({ players, settings, owned: o, unavailable, ...FAST });
+    return plan.ok ? plan.score : -Infinity;
+  };
+
+  if (scoreAt(1) < planB.score) {
+    return { maxBid: 0, planB, hard, breakEven: 0, reason: 'Non migliora la rosa nemmeno a 1 credito.' };
+  }
+
+  // Ricerca binaria del punto di pareggio: il prezzo piu' alto che conviene ancora.
+  let lo = 1;
+  let hi = hard;
+  if (scoreAt(hi) >= planB.score) {
+    return { maxBid: hi, planB, hard, breakEven: hi, reason: 'Conviene fino al tetto tecnico.' };
+  }
+  while (lo < hi - 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (scoreAt(mid) >= planB.score) lo = mid;
+    else hi = mid;
+  }
+  return { maxBid: lo, planB, hard, breakEven: lo, reason: null };
+}
+
+/**
+ * Le migliori alternative a un giocatore che sto perdendo.
+ * Non cerca "il piu' simile": ricalcola la rosa intera assumendo di averlo perso e
+ * misura quanto vale ogni possibile sostituto nel piano che ne risulta.
+ */
+function alternatives({
+  players,
+  settings,
+  owned = new Map(),
+  unavailable = new Set(),
+  playerId,
+  limit = 5,
+  shortlist = 14,
+}) {
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const target = byId.get(playerId);
+  if (!target) return { alternatives: [], planB: null };
+
+  const withoutSet = new Set(unavailable);
+  withoutSet.add(playerId);
+  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST });
+  const planWith = (() => {
+    const o = new Map(owned);
+    o.set(playerId, Math.max(1, Math.round(target.expectedPrice ?? 1)));
+    return optimizeRoster({ players, settings, owned: o, unavailable, ...FAST });
+  })();
+
+  const budgetNow = maxSpendableNow(settings, owned);
+  const lambda = creditShadowPrice(planB.budgetCurve, planB.budgetLeft ?? budgetNow);
+
+  // Pre-selezione economica: valore netto dei crediti spesi. Poi valutazione esatta dei migliori.
+  const pool = players
+    .filter(
+      (p) =>
+        p.role === target.role &&
+        p.id !== playerId &&
+        !owned.has(p.id) &&
+        !unavailable.has(p.id) &&
+        Math.round(p.expectedPrice ?? 1) <= budgetNow
+    )
+    .map((p) => ({ p, net: (p.score || 0) - lambda * Math.max(1, Math.round(p.expectedPrice ?? 1)) }))
+    .sort((a, b) => b.net - a.net)
+    .slice(0, shortlist);
+
+  const results = [];
+  for (const { p } of pool) {
+    const price = Math.max(1, Math.round(p.expectedPrice ?? 1));
+    if (price > budgetNow) continue;
+    const o = new Map(owned);
+    o.set(p.id, price);
+    const plan = optimizeRoster({ players, settings, owned: o, unavailable: withoutSet, ...FAST });
+    if (!plan.ok) continue;
+    results.push({
+      player: p,
+      price,
+      score: plan.score,
+      // Quanto perdo (o guadagno) rispetto ad avere il giocatore che sto perdendo al suo prezzo atteso.
+      deltaVsTarget: planWith.ok ? Math.round((plan.score - planWith.score) * 10) / 10 : null,
+      // Quanto guadagno rispetto a non fare nulla e ridistribuire i crediti.
+      deltaVsPlanB: planB.ok ? Math.round((plan.score - planB.score) * 10) / 10 : null,
+      inPlanB: planB.ok ? planB.picks.some((x) => x.id === p.id) : false,
+    });
+  }
+
+  results.sort((a, b) => b.score - a.score);
+  return {
+    alternatives: results.slice(0, limit),
+    planB,
+    planWith,
+    lambda: Math.round(lambda * 1000) / 1000,
+  };
+}
+
+/** Differenza fra due piani: chi entra e chi esce. */
+function planDiff(before, after) {
+  const a = new Map((before?.picks || []).map((p) => [p.id, p]));
+  const b = new Map((after?.picks || []).map((p) => [p.id, p]));
+  const removed = [...a.values()].filter((p) => !b.has(p.id));
+  const added = [...b.values()].filter((p) => !a.has(p.id));
+  return { added, removed };
+}
+
+/**
+ * Budget pianificato per ruolo e per fascia, piu' quanto ho gia' speso davvero.
+ * E' la bussola che mi tiene dentro il piano durante l'asta.
+ */
+function tierBudgetReport({ plan, settings, players, owned = new Map() }) {
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const rows = new Map();
+
+  const touch = (role, tier) => {
+    const key = tierKey(role, tier);
+    if (!rows.has(key)) rows.set(key, { key, role, tier: tier || '—', planned: 0, plannedCount: 0, spent: 0, spentCount: 0 });
+    return rows.get(key);
+  };
+
+  for (const p of plan?.picks || []) {
+    const row = touch(p.role, p.tier);
+    row.planned += p.plannedPrice || 0;
+    row.plannedCount += 1;
+  }
+  for (const [id, price] of owned) {
+    const p = byId.get(id);
+    if (!p) continue;
+    const row = touch(p.role, p.tier);
+    row.spent += price;
+    row.spentCount += 1;
+    // Un giocatore gia' preso fa parte del piano a tutti gli effetti.
+    row.planned += price;
+    row.plannedCount += 1;
+  }
+
+  const list = [...rows.values()];
+  const roleOrder = { P: 0, D: 1, C: 2, A: 3 };
+  list.sort((a, b) => {
+    if (roleOrder[a.role] !== roleOrder[b.role]) return roleOrder[a.role] - roleOrder[b.role];
+    const oa = settings.tierOrder?.[a.role]?.indexOf(a.tier) ?? 99;
+    const ob = settings.tierOrder?.[b.role]?.indexOf(b.tier) ?? 99;
+    return (oa < 0 ? 99 : oa) - (ob < 0 ? 99 : ob);
+  });
+  return list;
+}
+
+return { maxSpendableNow, slotsLeftByRole, maxBid, alternatives, planDiff, tierBudgetReport };
+})();
+
+// ===== src/ui/common.js =====
+const __m_src_ui_common_js = (() => {
+// Utilita' condivise di rendering. Niente framework: template string + delega degli eventi.
+
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+function n(v, d = 0) {
+  const x = Number(v);
+  if (!Number.isFinite(x)) return '—';
+  return x.toFixed(d);
+}
+
+const ROLE_NAME = { P: 'Por', D: 'Dif', C: 'Cen', A: 'Att' };
+
+function roleChip(role) {
+  return `<span class="chip ${role}">${ROLE_NAME[role] || role}</span>`;
+}
+
+let toastTimer = null;
+function toast(msg) {
+  let node = document.querySelector('.toast');
+  if (!node) {
+    node = document.createElement('div');
+    node.className = 'toast';
+    document.body.appendChild(node);
+  }
+  node.textContent = msg;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => node.remove(), 2200);
+}
+
+/** Ricerca tollerante: ignora accenti e maiuscole, accetta parole in qualunque ordine. */
+function matches(player, query) {
+  if (!query) return true;
+  const norm = (s) =>
+    String(s || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+  const hay = `${norm(player.name)} ${norm(player.team)}`;
+  return norm(query)
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((w) => hay.includes(w));
+}
+
+/** Riga di elenco giocatore, usata sia nel listone sia nella ricerca d'asta. */
+function playerRow(p, { status, price, priceLabel = 'atteso', selected, inPlan } = {}) {
+  const badges = [];
+  if (status === 'mine') badges.push('<span class="chip mine">Mio</span>');
+  else if (status === 'other') badges.push('<span class="chip gone">Preso</span>');
+  else if (inPlan) badges.push('<span class="chip plan">In piano</span>');
+  return `
+    <li class="${selected ? 'sel' : ''} ${status === 'other' ? 'gone' : ''}" data-action="select" data-id="${esc(p.id)}">
+      ${roleChip(p.role)}
+      <div class="grow">
+        <div class="nm">${esc(p.name)} ${badges.join(' ')}</div>
+        <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+      </div>
+      <div class="pr mono">${price ?? Math.round(p.expectedPrice ?? 0)}<small>${esc(priceLabel)}</small></div>
+    </li>`;
+}
+
+function emptyState(icon, title, text) {
+  return `<div class="empty"><div class="big">${icon}</div><div><b>${esc(title)}</b></div><div class="small" style="margin-top:6px">${text}</div></div>`;
+}
+
+return { esc, n, roleChip, toast, matches, playerRow, emptyState, ROLE_NAME };
+})();
+
+// ===== src/ui/asta.js =====
+const __m_src_ui_asta_js = (() => {
+// La schermata che uso durante l'asta: crediti, offerta massima, alternative.
+
+const { state, assign, release, undo, ownedMap, unavailableSet, playerById, creditsLeft, rebuildPlan } = __m_src_store_js;
+const { ROLES, totalSlots } = __m_src_domain_model_js;
+const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole } = __m_src_domain_advisor_js;
+const { esc, roleChip, matches, playerRow, emptyState, toast } = __m_src_ui_common_js;
+
+// I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
+let cache = { key: null, bid: null, alts: null };
+let pending = false;
+
+function cacheKey() {
+  return `${state.ui.selectedId}|${state.auction.log.length}|${JSON.stringify(state.settings)}`;
+}
+
+function invalidate() {
+  cache = { key: null, bid: null, alts: null };
+}
+
+function ensureAdvice(rerender) {
+  const key = cacheKey();
+  if (cache.key === key || !state.ui.selectedId || pending) return;
+  pending = true;
+  // Un frame di respiro cosi' lo spinner viene disegnato prima del calcolo.
+  setTimeout(() => {
+    try {
+      const args = {
+        players: state.players,
+        settings: state.settings,
+        owned: ownedMap(),
+        unavailable: unavailableSet(),
+        playerId: state.ui.selectedId,
+      };
+      cache = { key, bid: maxBid(args), alts: alternatives({ ...args, limit: 5 }) };
+    } catch (err) {
+      console.error(err);
+      cache = { key, bid: null, alts: null };
+    } finally {
+      pending = false;
+      rerender();
+    }
+  }, 16);
+}
+
+function hud() {
+  const left = creditsLeft();
+  const budget = state.settings.budget || 500;
+  const owned = ownedMap();
+  const slots = slotsLeftByRole(state.settings, state.players, owned);
+  const filled = owned.size;
+  const pct = Math.max(0, Math.min(100, (left / budget) * 100));
+  const spendable = maxSpendableNow(state.settings, owned);
+  return `
+  <div class="card">
+    <div class="hud">
+      <div class="credits mono">${left}<small>crediti liberi</small></div>
+      <div>
+        <div class="bar"><i style="width:${pct}%" class="${left < 0 ? 'over' : ''}"></i></div>
+        <div class="row between small muted" style="margin-top:6px">
+          <span>${filled}/${totalSlots(state.settings)} slot</span>
+          <span>max su un giocatore: <b class="mono">${spendable}</b></span>
+        </div>
+      </div>
+    </div>
+    <div class="slotbar" style="margin-top:12px">
+      ${ROLES.map((r) => `<div><b class="mono">${slots[r]}</b><span>${r === 'P' ? 'POR' : r === 'D' ? 'DIF' : r === 'C' ? 'CEN' : 'ATT'}</span></div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function verdictFor(price, bid) {
+  if (!bid) return '';
+  if (bid.maxBid <= 0) return `<div class="verdict stop">Lascialo andare: non migliora la rosa.</div>`;
+  if (price > bid.maxBid) return `<div class="verdict stop">Fermati. Oltre ${bid.maxBid} conviene il piano B.</div>`;
+  if (price >= bid.maxBid - Math.max(1, Math.round(bid.maxBid * 0.08)))
+    return `<div class="verdict edge">Sei al limite: puoi arrivare a ${bid.maxBid}, non oltre.</div>`;
+  return `<div class="verdict go">Rilancia pure: hai margine fino a ${bid.maxBid}.</div>`;
+}
+
+function detail(p) {
+  const owned = ownedMap();
+  const status = state.auction.owned[p.id] !== undefined ? 'mine' : state.auction.taken[p.id] !== undefined ? 'other' : null;
+  const bid = cache.key === cacheKey() ? cache.bid : null;
+  const alts = cache.key === cacheKey() ? cache.alts : null;
+  const inPlan = state.plan?.picks?.some((x) => x.id === p.id);
+  const planned = state.plan?.picks?.find((x) => x.id === p.id)?.plannedPrice;
+  const current = state.ui.bidPrice ?? Math.round(p.expectedPrice ?? 1);
+  const spendable = maxSpendableNow(state.settings, owned);
+
+  const paid = status === 'mine' ? state.auction.owned[p.id] : status === 'other' ? state.auction.taken[p.id] : null;
+
+  return `
+  <div class="card">
+    <div class="row between" style="align-items:flex-start">
+      <div class="grow">
+        <h3 style="margin-bottom:4px">${esc(p.name)}</h3>
+        <div class="row wrap" style="gap:6px">
+          ${roleChip(p.role)}
+          <span class="chip">${esc(p.team || '—')}</span>
+          ${p.tier ? `<span class="chip">${esc(p.tier)}</span>` : ''}
+          ${inPlan ? '<span class="chip plan">In piano</span>' : ''}
+          ${status === 'mine' ? `<span class="chip mine">Mio a ${paid}</span>` : ''}
+          ${status === 'other' ? `<span class="chip gone">Preso da altri a ${paid}</span>` : ''}
+        </div>
+      </div>
+      <button class="btn ghost" data-action="close-detail" aria-label="Chiudi">✕</button>
+    </div>
+
+    ${creatorInfo(p)}
+
+    ${
+      status
+        ? `<div style="margin-top:14px"><button class="btn block" data-action="release" data-id="${esc(p.id)}">Annulla assegnazione</button></div>`
+        : `
+    <div class="maxbid">
+      ${
+        bid
+          ? `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid}</div>
+             <div class="lbl">offerta massima conveniente</div>
+             ${bid.reason ? `<div class="small muted" style="margin-top:6px">${esc(bid.reason)}</div>` : ''}`
+          : `<div class="n mono"><span class="spinner"></span></div><div class="lbl">calcolo in corso</div>`
+      }
+    </div>
+
+    <div class="row between small muted" style="margin-bottom:10px">
+      <span>prezzo atteso <b class="mono">${Math.round(p.expectedPrice ?? 0)}</b></span>
+      ${planned ? `<span>a piano <b class="mono">${planned}</b></span>` : ''}
+      <span>tetto tecnico <b class="mono">${spendable}</b></span>
+    </div>
+
+    <div class="stepper">
+      <button class="btn" data-action="bid-minus">−</button>
+      <input type="number" inputmode="numeric" class="mono" id="bidprice" value="${current}" min="0" max="${spendable}" data-action="bid-input">
+      <button class="btn" data-action="bid-plus">+</button>
+    </div>
+    <div style="margin-top:10px">${verdictFor(current, bid)}</div>
+
+    <div class="grid2" style="margin-top:12px">
+      <button class="btn primary" data-action="take-mine" data-id="${esc(p.id)}">L'ho preso io</button>
+      <button class="btn danger" data-action="take-other" data-id="${esc(p.id)}">Preso da altri</button>
+    </div>`
+    }
+  </div>
+
+  ${status === 'other' || !status ? altsCard(p, alts) : ''}
+  `;
+}
+
+/** Quello che i creators dicono di lui: giudizi, etichette, disaccordo sul prezzo. */
+function creatorInfo(p) {
+  const bits = [];
+  if (Number.isFinite(p.titolarita)) bits.push(`titolarita' ${'●'.repeat(Math.round(p.titolarita))}${'○'.repeat(5 - Math.round(p.titolarita))}`);
+  if (Number.isFinite(p.integrita)) bits.push(`integrita' ${'●'.repeat(Math.round(p.integrita))}${'○'.repeat(5 - Math.round(p.integrita))}`);
+  if (Number.isFinite(p.expShare)) bits.push(`~${Math.round(p.expShare * 38)} presenze attese`);
+
+  const disagreement =
+    Number.isFinite(p.priceMin) && Number.isFinite(p.priceMax) && p.priceMax > p.priceMin
+      ? `<div class="verdict edge" style="margin-top:10px;text-align:left">
+           I creators non sono d'accordo: da <b>${Math.round(p.priceMin)}</b> a <b>${Math.round(p.priceMax)}</b> crediti.
+           ${p.priceSpread > 0.35 ? 'Divario ampio: se va via al prezzo basso puo' + "'" + ' essere un affare.' : ''}
+         </div>`
+      : '';
+
+  const tiers = p.tiersBySource
+    ? Object.entries(p.tiersBySource).map(([src, tier]) => `<span class="chip">${esc(src)}: ${esc(tier)}</span>`).join(' ')
+    : '';
+
+  if (!bits.length && !p.tags?.length && !disagreement && !p.notes) return '';
+
+  return `
+  <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+    ${bits.length ? `<div class="small muted mono">${bits.join(' · ')}</div>` : ''}
+    ${p.tags?.length ? `<div class="row wrap" style="gap:5px;margin-top:8px">${p.tags.map((t) => `<span class="chip">${esc(t)}</span>`).join('')}</div>` : ''}
+    ${tiers ? `<div class="row wrap" style="gap:5px;margin-top:8px">${tiers}</div>` : ''}
+    ${disagreement}
+    ${p.notes ? `<details style="margin-top:10px"><summary class="small muted">Commento del creator</summary><div class="small" style="margin-top:6px;white-space:pre-wrap">${esc(p.notes.slice(0, 1200))}</div></details>` : ''}
+  </div>`;
+}
+
+function altsCard(p, alts) {
+  if (!alts) {
+    return `<div class="card"><h2>Se lo perdo</h2><div class="small muted"><span class="spinner"></span> Ricalcolo la rosa senza di lui…</div></div>`;
+  }
+  if (!alts.alternatives.length) {
+    return `<div class="card"><h2>Se lo perdo</h2><div class="small muted">Nessuna alternativa sostenibile con i crediti rimasti.</div></div>`;
+  }
+  return `
+  <div class="card">
+    <h2>Se lo perdo</h2>
+    <div class="small muted" style="margin-bottom:10px">
+      Rosa ricalcolata senza di lui. <b>Δ</b> = punti guadagnati o persi rispetto a prenderlo al suo prezzo atteso.
+    </div>
+    ${alts.alternatives
+      .map((a) => {
+        const d = a.deltaVsTarget;
+        const cls = d === null ? '' : d >= 0 ? 'pos' : 'neg';
+        const sign = d === null ? '' : d > 0 ? '+' : '';
+        return `
+      <div class="alt" data-action="select" data-id="${esc(a.player.id)}">
+        ${roleChip(a.player.role)}
+        <div class="grow">
+          <div class="nm">${esc(a.player.name)}</div>
+          <div class="sub small muted">${esc(a.player.team || '—')}${a.player.tier ? ' · ' + esc(a.player.tier) : ''} · ${a.price} cr</div>
+        </div>
+        <div class="delta ${cls}">${sign}${d === null ? '—' : d}</div>
+      </div>`;
+      })
+      .join('')}
+  </div>`;
+}
+
+function targetsCard() {
+  const plan = state.plan;
+  if (!plan?.ok) return '';
+  const pending = plan.picks.filter((p) => !state.auction.owned[p.id] && !state.auction.taken[p.id]);
+  if (!pending.length) return '';
+  const byRole = {};
+  for (const p of pending) (byRole[p.role] ||= []).push(p);
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:8px">
+      <h2 style="margin:0">Obiettivi ancora liberi</h2>
+      <span class="tiny muted">${pending.length}</span>
+    </div>
+    <div class="tiny muted" style="margin-bottom:10px">
+      Durante l'asta tocca <b>✕</b> quando uno di questi va a un avversario: un solo tocco, senza prezzo.
+      Gli altri giocatori puoi ignorarli.
+    </div>
+    <div class="listwrap">
+      <ul class="plist">
+        ${ROLES.flatMap((r) => (byRole[r] || []).sort((a, b) => b.plannedPrice - a.plannedPrice))
+          .map(
+            (p) => `<li>
+              ${roleChip(p.role)}
+              <div class="grow" data-action="select" data-id="${esc(p.id)}">
+                <div class="nm">${esc(p.name)}</div>
+                <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+              </div>
+              <div class="pr mono" data-action="select" data-id="${esc(p.id)}">${p.plannedPrice}<small>a piano</small></div>
+              <button class="btn danger" style="min-width:46px;padding:10px" data-action="quick-gone" data-id="${esc(p.id)}" aria-label="Preso da un avversario">✕</button>
+            </li>`
+          )
+          .join('')}
+      </ul>
+    </div>
+  </div>`;
+}
+
+function render(rerender) {
+  if (!state.players.length) {
+    return `<div class="view">${emptyState('📋', 'Nessun listone caricato', 'Vai su <b>Listone</b> e importa il CSV delle fasce dei creators.')}</div>`;
+  }
+  if (!state.plan) rebuildPlan();
+
+  const selected = state.ui.selectedId ? playerById(state.ui.selectedId) : null;
+  if (selected) ensureAdvice(rerender);
+
+  const q = state.ui.query;
+  const roleFilter = state.ui.roleFilter;
+  let results = [];
+  if (q.trim()) {
+    results = state.players
+      .filter((p) => (roleFilter === 'ALL' || p.role === roleFilter) && matches(p, q))
+      .sort((a, b) => (b.expectedPrice ?? 0) - (a.expectedPrice ?? 0))
+      .slice(0, 40);
+  }
+
+  return `
+  <div class="view">
+    ${hud()}
+
+    <div class="card">
+      <input type="search" id="astaQuery" placeholder="Cerca il giocatore all'asta…" value="${esc(q)}" data-action="query" autocomplete="off" autocorrect="off" spellcheck="false">
+      <div class="segment" style="margin-top:10px">
+        ${['ALL', ...ROLES]
+          .map(
+            (r) =>
+              `<button data-action="rolefilter" data-role="${r}" aria-pressed="${roleFilter === r}">${r === 'ALL' ? 'Tutti' : r}</button>`
+          )
+          .join('')}
+      </div>
+      ${
+        results.length
+          ? `<div class="listwrap" style="margin-top:12px"><ul class="plist">${results
+              .map((p) =>
+                playerRow(p, {
+                  status: state.auction.owned[p.id] !== undefined ? 'mine' : state.auction.taken[p.id] !== undefined ? 'other' : null,
+                  selected: p.id === state.ui.selectedId,
+                  inPlan: state.plan?.picks?.some((x) => x.id === p.id),
+                })
+              )
+              .join('')}</ul></div>`
+          : q.trim()
+            ? `<div class="small muted center" style="padding:14px">Nessun giocatore trovato.</div>`
+            : ''
+      }
+    </div>
+
+    ${selected ? detail(selected) : ''}
+    ${selected ? '' : targetsCard()}
+
+    <div class="row" style="gap:10px">
+      <button class="btn grow" data-action="undo" ${state.auction.log.length ? '' : 'disabled'}>↩︎ Annulla ultima</button>
+    </div>
+  </div>`;
+}
+
+function onAction(action, target, ev, rerender) {
+  const id = target.dataset.id;
+  switch (action) {
+    case 'select':
+      state.ui.selectedId = id;
+      state.ui.bidPrice = null;
+      rerender();
+      return true;
+    case 'close-detail':
+      state.ui.selectedId = null;
+      state.ui.bidPrice = null;
+      rerender();
+      return true;
+    case 'rolefilter':
+      state.ui.roleFilter = target.dataset.role;
+      rerender();
+      return true;
+    case 'bid-minus':
+    case 'bid-plus': {
+      const input = document.getElementById('bidprice');
+      const step = action === 'bid-plus' ? 1 : -1;
+      state.ui.bidPrice = Math.max(0, (Number(input?.value) || 0) + step);
+      rerender();
+      return true;
+    }
+    case 'take-mine':
+    case 'take-other': {
+      const price = Number(document.getElementById('bidprice')?.value) || 0;
+      const p = playerById(id);
+      if (action === 'take-mine') {
+        const spendable = maxSpendableNow(state.settings, ownedMap());
+        if (price > spendable) {
+          toast(`Non puoi spendere ${price}: il tetto e' ${spendable}.`);
+          return true;
+        }
+      }
+      assign(id, action === 'take-mine' ? 'mine' : 'other', price);
+      invalidate();
+      state.ui.selectedId = null;
+      state.ui.bidPrice = null;
+      state.ui.query = '';
+      toast(action === 'take-mine' ? `${p?.name} tuo a ${price}.` : `${p?.name} va a un avversario.`);
+      rerender();
+      return true;
+    }
+    case 'quick-gone': {
+      const p = playerById(id);
+      // Il prezzo pagato dagli avversari non entra in nessun calcolo: registriamo la stima
+      // per avere comunque uno storico, senza chiedere niente durante l'asta.
+      assign(id, 'other', Math.round(p?.expectedPrice ?? 0));
+      invalidate();
+      toast(`${p?.name} va via.`);
+      rerender();
+      return true;
+    }
+    case 'release':
+      release(id);
+      invalidate();
+      rerender();
+      return true;
+    case 'undo':
+      undo();
+      invalidate();
+      state.ui.selectedId = null;
+      rerender();
+      return true;
+    default:
+      return false;
+  }
+}
+
+function onInput(action, target, rerender) {
+  if (action === 'query') {
+    state.ui.query = target.value;
+    rerender({ keepFocus: 'astaQuery' });
+    return true;
+  }
+  if (action === 'bid-input') {
+    state.ui.bidPrice = Number(target.value) || 0;
+    rerender({ keepFocus: 'bidprice' });
+    return true;
+  }
+  return false;
+}
+
+return { invalidate, render, onAction, onInput };
+})();
+
+// ===== src/ui/piano.js =====
+const __m_src_ui_piano_js = (() => {
+// Il piano: la miglior rosa possibile con i crediti che restano, e come sono distribuiti.
+
+const { state, rebuildPlan } = __m_src_store_js;
+const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
+const { tierBudgetReport, maxBid, alternatives } = __m_src_domain_advisor_js;
+const { clubExposure } = __m_src_domain_valuation_js;
+const { ownedMap, unavailableSet } = __m_src_store_js;
+const { esc, roleChip, emptyState, playerRow } = __m_src_ui_common_js;
+
+function roleBlock(role, plan) {
+  const owned = plan.owned.filter((p) => p.role === role).map((p) => ({ ...p, plannedPrice: p.paid, mine: true }));
+  const picks = plan.picks.filter((p) => p.role === role);
+  const all = [...owned, ...picks].sort((a, b) => b.plannedPrice - a.plannedPrice);
+  const spent = plan.spentByRole[role] || 0;
+  const cap = state.settings.roleBudget?.[role];
+  const budget = state.settings.budget || 500;
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:10px">
+      <h3 style="margin:0">${roleChip(role)} ${ROLE_LABEL[role]}</h3>
+      <div class="mono"><b>${spent}</b> <span class="small muted">cr · ${Math.round((spent / budget) * 100)}%${cap ? ` · tetto ${cap}` : ''}</span></div>
+    </div>
+    <div class="listwrap">
+      <ul class="plist">
+        ${all
+          .map((p) =>
+            playerRow(p, {
+              price: p.plannedPrice,
+              priceLabel: p.mine ? 'pagato' : 'stima',
+              status: p.mine ? 'mine' : null,
+            })
+          )
+          .join('')}
+      </ul>
+    </div>
+  </div>`;
+}
+
+function exposureCard(plan) {
+  const all = [...plan.owned.map((p) => ({ ...p, plannedPrice: p.paid })), ...plan.picks];
+  const rows = [...clubExposure(all, state.settings).entries()]
+    .map(([team, v]) => ({ team, ...v }))
+    .sort((a, b) => b.effettivi - a.effettivi)
+    .slice(0, 6);
+  if (!rows.length) return '';
+  const cap = Number(state.settings.maxPerClub) || 0;
+  return `
+  <div class="card">
+    <h2>Esposizione per club</h2>
+    <div class="tiny muted" style="margin-bottom:10px">
+      Quanti giocatori di ogni squadra finiresti per schierare davvero. I riempitivi contano per una frazione.
+    </div>
+    <table class="tiers">
+      <thead><tr><th>Club</th><th class="r">In rosa</th><th class="r">Titolari</th></tr></thead>
+      <tbody>
+        ${rows
+          .map(
+            (r) => `<tr>
+              <td>${esc(r.team || '—')}</td>
+              <td class="r">${r.inRosa}</td>
+              <td class="r ${cap && r.effettivi > cap ? '' : ''}"><b>${r.effettivi.toFixed(1)}</b></td>
+            </tr>`
+          )
+          .join('')}
+      </tbody>
+    </table>
+    ${cap ? `<div class="tiny muted" style="margin-top:8px">Tetto impostato: ${cap} titolari per club.</div>` : ''}
+  </div>`;
+}
+
+// La scheda d'asta si calcola su richiesta: sono 25 ottimizzazioni complete.
+let scheda = null;
+let schedaInCorso = false;
+
+function buildScheda(rerender) {
+  schedaInCorso = true;
+  setTimeout(() => {
+    try {
+      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet() };
+      scheda = (state.plan?.picks || [])
+        .slice()
+        .sort((a, b) => b.plannedPrice - a.plannedPrice)
+        .map((p) => ({
+          player: p,
+          bid: maxBid({ ...args, playerId: p.id }).maxBid,
+          alts: alternatives({ ...args, playerId: p.id, limit: 3 }).alternatives,
+        }));
+    } catch (err) {
+      console.error(err);
+      scheda = [];
+    } finally {
+      schedaInCorso = false;
+      rerender();
+    }
+  }, 30);
+}
+
+function schedaCard() {
+  if (schedaInCorso) {
+    return `<div class="card"><h2>Scheda d'asta</h2><div class="small muted"><span class="spinner"></span> Calcolo offerte massime e alternative…</div></div>`;
+  }
+  if (!scheda) {
+    return `
+    <div class="card">
+      <h2>Scheda d'asta</h2>
+      <p class="small muted" style="margin-top:0">
+        Il foglio da tenere sott'occhio: per ogni obiettivo l'offerta massima e le tre alternative
+        migliori se te lo soffiano. Preparalo prima di iniziare.
+      </p>
+      <button class="btn primary block" data-action="scheda">Prepara la scheda</button>
+    </div>`;
+  }
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:10px">
+      <h2 style="margin:0">Scheda d'asta</h2>
+      <button class="btn ghost small" data-action="scheda">Ricalcola</button>
+    </div>
+    ${scheda
+      .map(
+        (row) => `
+      <div style="padding:10px 0;border-bottom:1px solid var(--line)">
+        <div class="row between">
+          <div class="grow">
+            ${roleChip(row.player.role)} <b>${esc(row.player.name)}</b>
+            <span class="small muted">${esc(row.player.team || '')}</span>
+          </div>
+          <div class="mono" style="text-align:right">
+            <b style="font-size:19px;color:var(--accent)">${row.bid}</b>
+            <div class="tiny muted">max</div>
+          </div>
+        </div>
+        ${
+          row.alts.length
+            ? `<div class="tiny muted" style="margin-top:4px">se lo perdi: ${row.alts
+                .map((a) => `${esc(a.player.name)} <b>${a.price}</b>`)
+                .join(' · ')}</div>`
+            : ''
+        }
+      </div>`
+      )
+      .join('')}
+  </div>`;
+}
+
+function tiersCard(plan) {
+  const rows = tierBudgetReport({ plan, settings: state.settings, players: state.players, owned: ownedMap() });
+  if (!rows.length) return '';
+  return `
+  <div class="card">
+    <h2>Budget per fascia</h2>
+    <table class="tiers">
+      <thead><tr><th>Ruolo</th><th>Fascia</th><th class="r">Giocatori</th><th class="r">Crediti</th><th class="r">Speso</th></tr></thead>
+      <tbody>
+        ${rows
+          .map(
+            (r) => `<tr>
+              <td>${roleChip(r.role)}</td>
+              <td>${esc(r.tier)}</td>
+              <td class="r">${r.plannedCount}</td>
+              <td class="r"><b>${r.planned}</b></td>
+              <td class="r ${r.spent ? '' : 'muted'}">${r.spent || '—'}</td>
+            </tr>`
+          )
+          .join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function render() {
+  if (!state.players.length) {
+    return `<div class="view">${emptyState('📋', 'Nessun listone caricato', 'Importa prima il CSV delle fasce.')}</div>`;
+  }
+  if (!state.plan) rebuildPlan();
+  const plan = state.plan;
+
+  if (!plan?.ok) {
+    return `<div class="view">
+      <div class="card">
+        <h3>Piano non calcolabile</h3>
+        <div class="small" style="margin-top:8px">${esc(plan?.reason || 'Errore sconosciuto.')}</div>
+      </div>
+    </div>`;
+  }
+
+  const budget = state.settings.budget || 500;
+  const filled = plan.owned.length;
+  return `
+  <div class="view">
+    <div class="card">
+      <div class="row between">
+        <div>
+          <div class="credits mono" style="font-size:26px;font-weight:800">${plan.cost}<small style="font-size:11px;color:var(--muted)">crediti impegnati su ${budget}</small></div>
+        </div>
+        <button class="btn" data-action="replan">Rigenera</button>
+      </div>
+      <div class="bar" style="margin-top:12px"><i style="width:${Math.min(100, (plan.cost / budget) * 100)}%"></i></div>
+      <div class="row between small muted" style="margin-top:8px">
+        <span>${filled} presi · ${plan.picks.length} da prendere</span>
+        <span>avanzo ${plan.leftover} cr</span>
+      </div>
+      <div class="grid4" style="margin-top:12px">
+        ${ROLES.map(
+          (r) => `<div class="slotbar"><div><b class="mono">${plan.spentByRole[r]}</b><span>${r}</span></div></div>`
+        ).join('')}
+      </div>
+    </div>
+
+    ${schedaCard()}
+    ${ROLES.map((r) => roleBlock(r, plan)).join('')}
+    ${tiersCard(plan)}
+    ${exposureCard(plan)}
+
+    <div class="card">
+      <div class="small muted">
+        Il piano tiene conto di chi hai gia' preso, di chi e' stato preso dagli altri e dei crediti che ti restano.
+        Si aggiorna da solo dopo ogni assegnazione durante l'asta.
+      </div>
+    </div>
+  </div>`;
+}
+
+function onAction(action, target, ev, rerender) {
+  if (action === 'replan') {
+    rebuildPlan();
+    scheda = null;
+    rerender();
+    return true;
+  }
+  if (action === 'scheda') {
+    scheda = null;
+    buildScheda(rerender);
+    rerender();
+    return true;
+  }
+  return false;
+}
+
+return { render, onAction };
+})();
+
+// ===== src/domain/xlsx.js =====
+const __m_src_domain_xlsx_js = (() => {
+// Lettore .xlsx minimale e senza dipendenze: apre lo zip con DecompressionStream
+// e legge i fogli con una scansione mirata dell'XML.
+// I listoni dei creators arrivano come xlsx con un foglio per ruolo: chiedere all'utente
+// di convertirli in CSV sul telefono sarebbe una barriera assurda.
+
+const EOCD_SIG = 0x06054b50;
+
+function findEocd(view) {
+  const max = Math.min(view.byteLength, 66000);
+  for (let i = 22; i <= max; i++) {
+    const off = view.byteLength - i;
+    if (off < 0) break;
+    if (view.getUint32(off, true) === EOCD_SIG) return off;
+  }
+  return -1;
+}
+
+async function inflateRaw(bytes) {
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error("Questo browser non sa aprire i file .xlsx: esporta il listone in CSV.");
+  }
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** Estrae i file di uno zip. Ritorna una mappa nome -> Uint8Array. */
+async function unzip(arrayBuffer, wanted = null) {
+  const view = new DataView(arrayBuffer);
+  const bytes = new Uint8Array(arrayBuffer);
+  const eocd = findEocd(view);
+  if (eocd < 0) throw new Error('File non valido: non sembra un .xlsx.');
+
+  const count = view.getUint16(eocd + 10, true);
+  let ptr = view.getUint32(eocd + 16, true);
+  const out = new Map();
+  const decoder = new TextDecoder();
+
+  for (let i = 0; i < count; i++) {
+    if (view.getUint32(ptr, true) !== 0x02014b50) break;
+    const method = view.getUint16(ptr + 10, true);
+    const compSize = view.getUint32(ptr + 20, true);
+    const nameLen = view.getUint16(ptr + 28, true);
+    const extraLen = view.getUint16(ptr + 30, true);
+    const commentLen = view.getUint16(ptr + 32, true);
+    const localOff = view.getUint32(ptr + 42, true);
+    const name = decoder.decode(bytes.subarray(ptr + 46, ptr + 46 + nameLen));
+    ptr += 46 + nameLen + extraLen + commentLen;
+
+    if (wanted && !wanted(name)) continue;
+    if (view.getUint32(localOff, true) !== 0x04034b50) continue;
+    const lNameLen = view.getUint16(localOff + 26, true);
+    const lExtraLen = view.getUint16(localOff + 28, true);
+    const start = localOff + 30 + lNameLen + lExtraLen;
+    const raw = bytes.subarray(start, start + compSize);
+    out.set(name, method === 0 ? raw : await inflateRaw(raw));
+  }
+  return out;
+}
+
+const decoder = new TextDecoder();
+
+function unescapeXml(s) {
+  return s.replace(/&(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);/g, (m, g) => {
+    switch (g) {
+      case 'amp': return '&';
+      case 'lt': return '<';
+      case 'gt': return '>';
+      case 'quot': return '"';
+      case 'apos': return "'";
+      default:
+        return g[0] === '#'
+          ? String.fromCodePoint(g[1] === 'x' ? parseInt(g.slice(2), 16) : parseInt(g.slice(1), 10))
+          : m;
+    }
+  });
+}
+
+/** Testo di tutti i <t> dentro un frammento, concatenato (i testi ricchi sono spezzati in run). */
+function textOf(fragment) {
+  let out = '';
+  const re = /<t[^>]*>([\s\S]*?)<\/t>/g;
+  let m;
+  while ((m = re.exec(fragment))) out += unescapeXml(m[1]);
+  return out;
+}
+
+function parseSharedStrings(buf) {
+  if (!buf) return [];
+  const xml = decoder.decode(buf);
+  const out = [];
+  const re = /<si[^>]*>([\s\S]*?)<\/si>|<si[^>]*\/>/g;
+  let m;
+  while ((m = re.exec(xml))) out.push(m[1] ? textOf(m[1]) : '');
+  return out;
+}
+
+function columnToIndex(ref) {
+  let n = 0;
+  for (const ch of ref) {
+    const c = ch.charCodeAt(0);
+    if (c < 65 || c > 90) break;
+    n = n * 26 + (c - 64);
+  }
+  return n - 1;
+}
+
+/** Legge un foglio in una griglia di stringhe. */
+function parseSheet(buf, shared) {
+  const xml = decoder.decode(buf);
+  const grid = [];
+  const rowRe = /<row[^>]*\br="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
+  const cellRe = /<c\b([^>]*)(?:\/>|>([\s\S]*?)<\/c>)/g;
+  let rowMatch;
+  while ((rowMatch = rowRe.exec(xml))) {
+    const cells = [];
+    let cellMatch;
+    cellRe.lastIndex = 0;
+    while ((cellMatch = cellRe.exec(rowMatch[2]))) {
+      const attrs = cellMatch[1] || '';
+      const body = cellMatch[2] || '';
+      const refMatch = attrs.match(/\br="([A-Z]+)\d+"/);
+      if (!refMatch) continue;
+      const col = columnToIndex(refMatch[1]);
+      const type = (attrs.match(/\bt="([^"]+)"/) || [])[1];
+      let value = '';
+      if (type === 'inlineStr') value = textOf(body);
+      else {
+        const v = body.match(/<v[^>]*>([\s\S]*?)<\/v>/);
+        if (v) {
+          const raw = unescapeXml(v[1]);
+          value = type === 's' ? shared[Number(raw)] ?? '' : raw;
+        }
+      }
+      cells[col] = value;
+    }
+    for (let i = 0; i < cells.length; i++) if (cells[i] === undefined) cells[i] = '';
+    grid.push(cells);
+  }
+  return grid;
+}
+
+function parseWorkbook(buf) {
+  if (!buf) return [];
+  const xml = decoder.decode(buf);
+  const out = [];
+  const re = /<sheet\b([^>]*)\/?>/g;
+  let m;
+  while ((m = re.exec(xml))) {
+    const attrs = m[1];
+    const name = unescapeXml((attrs.match(/\bname="([^"]*)"/) || [])[1] || '');
+    const rid = (attrs.match(/r:id="([^"]+)"/) || [])[1] || '';
+    if (name) out.push({ name, rid });
+  }
+  return out;
+}
+
+function parseRels(buf) {
+  const map = new Map();
+  if (!buf) return map;
+  const xml = decoder.decode(buf);
+  const re = /<Relationship\b([^>]*)\/?>/g;
+  let m;
+  while ((m = re.exec(xml))) {
+    const id = (m[1].match(/Id="([^"]+)"/) || [])[1];
+    const target = (m[1].match(/Target="([^"]+)"/) || [])[1];
+    if (id && target) map.set(id, target.replace(/^\/?xl\//, '').replace(/^\.\//, ''));
+  }
+  return map;
+}
+
+/**
+ * Legge un .xlsx e restituisce i fogli come griglie di stringhe.
+ * Ritorna [{ name, grid }] nell'ordine del file.
+ */
+async function readXlsx(arrayBuffer) {
+  const files = await unzip(arrayBuffer, (n) => n.startsWith('xl/') || n === '[Content_Types].xml');
+  const shared = parseSharedStrings(files.get('xl/sharedStrings.xml'));
+  const rels = parseRels(files.get('xl/_rels/workbook.xml.rels'));
+  const declared = parseWorkbook(files.get('xl/workbook.xml'));
+
+  const sheets = [];
+  for (const { name, rid } of declared) {
+    const target = rels.get(rid);
+    const buf = (target && files.get(`xl/${target}`)) || null;
+    if (buf) sheets.push({ name, grid: parseSheet(buf, shared) });
+  }
+  if (!sheets.length) {
+    // Nessuna relazione leggibile: ripieghiamo sull'ordine dei file dei fogli.
+    const names = [...files.keys()].filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort();
+    names.forEach((n, i) => sheets.push({ name: `Foglio ${i + 1}`, grid: parseSheet(files.get(n), shared) }));
+  }
+  return sheets;
+}
+
+return { unzip, columnToIndex, readXlsx };
+})();
+
+// ===== src/ui/listone.js =====
+const __m_src_ui_listone_js = (() => {
+// Import dei listoni (xlsx dei creators o CSV) e consultazione dei giocatori.
+
+const { state, addSource, removeSource } = __m_src_store_js;
+const { parseCsv, sheetsToTable, autoMap, refineMapping, buildPlayers } = __m_src_domain_csv_js;
+const { readXlsx } = __m_src_domain_xlsx_js;
+const { ROLES } = __m_src_domain_model_js;
+const { esc, matches, playerRow, emptyState, toast } = __m_src_ui_common_js;
+
+// Import in corso: vive solo finche' l'utente conferma la mappatura delle colonne.
+let draft = null;
+let showMapping = false;
+
+const FIELDS = [
+  ['name', 'Nome', true],
+  ['team', 'Squadra', false],
+  ['role', 'Ruolo', true],
+  ['tier', 'Fascia', false],
+  ['price', 'Prezzo consigliato', false],
+  ['fmvExp', 'Fantamedia attesa', false],
+  ['titolarita', 'Titolarita', false],
+  ['integrita', 'Integrita', false],
+  ['notes', 'Commento', false],
+];
+
+function sourceName(fileName) {
+  return String(fileName || 'listone')
+    .replace(/\.(xlsx|xlsm|csv|tsv|txt)$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .slice(0, 40);
+}
+
+/** Prende un file (o un testo incollato) e prepara l'anteprima dell'import. */
+async function ingestFile(file) {
+  const name = file.name || 'listone';
+  try {
+    let table;
+    if (/\.(xlsx|xlsm)$/i.test(name)) {
+      const sheets = await readXlsx(await file.arrayBuffer());
+      table = sheetsToTable(sheets);
+      table.origine = `${sheets.length} fogli`;
+    } else {
+      const parsed = parseCsv(await file.text());
+      table = { ...parsed, origine: `separatore ${parsed.delimiter === '\t' ? 'tab' : parsed.delimiter}` };
+    }
+    if (!table.headers?.length) {
+      toast('Non riesco a leggere questo file.');
+      return;
+    }
+    const mapping = refineMapping(table.rows, autoMap(table.headers));
+    draft = { ...table, mapping, fileName: name, source: sourceName(name) };
+    showMapping = !mapping.name || !mapping.role;
+  } catch (err) {
+    console.error(err);
+    toast(err.message || 'Import non riuscito.');
+  }
+}
+
+function ingestText(text) {
+  const parsed = parseCsv(text);
+  if (!parsed.headers.length) {
+    toast('Non riesco a leggere il testo incollato.');
+    return;
+  }
+  const mapping = refineMapping(parsed.rows, autoMap(parsed.headers));
+  draft = { ...parsed, mapping, fileName: 'testo incollato', source: 'incollato', origine: `separatore ${parsed.delimiter}` };
+  showMapping = !mapping.name || !mapping.role;
+}
+
+function preview() {
+  const { players, warnings } = buildPlayers(draft.rows, draft.mapping, { source: draft.source });
+  const counts = {};
+  for (const r of ROLES) counts[r] = players.filter((p) => p.role === r).length;
+  const withTier = players.filter((p) => p.tier).length;
+  const withProjection = players.filter((p) => Number.isFinite(p.fmvExp)).length;
+  return { players, warnings, counts, withTier, withProjection };
+}
+
+function emptyImport() {
+  return `
+  <div class="card">
+    <h2>Carica il listone</h2>
+    <p class="small muted" style="margin-top:0">
+      Il file <b>.xlsx</b> del creator va bene cosi' com'e', con i suoi quattro fogli per ruolo.
+      Puoi caricarne <b>piu' di uno</b>: l'app fa la media dei giudizi e ti segnala dove i creators non sono d'accordo.
+    </p>
+    <input type="file" id="csvfile" accept=".xlsx,.xlsm,.csv,.tsv,.txt" multiple style="display:none" data-action="file">
+    <button class="btn primary block" data-action="pickfile">Scegli il file</button>
+    <div class="row" style="margin:12px 0 6px"><div class="grow" style="height:1px;background:var(--line)"></div><span class="tiny muted">oppure incolla un CSV</span><div class="grow" style="height:1px;background:var(--line)"></div></div>
+    <textarea id="pastearea" rows="3" placeholder="Incolla qui il contenuto" style="width:100%;background:var(--surface-2);border:1px solid var(--line);border-radius:11px;padding:11px"></textarea>
+    <button class="btn block" style="margin-top:8px" data-action="paste">Importa dal testo</button>
+  </div>`;
+}
+
+function draftCard() {
+  const { players, warnings, counts, withTier, withProjection } = preview();
+  const options = (sel) =>
+    ['<option value="">— nessuna —</option>']
+      .concat(draft.headers.map((h) => `<option value="${esc(h)}" ${h === sel ? 'selected' : ''}>${esc(h)}</option>`))
+      .join('');
+
+  return `
+  <div class="card">
+    <div class="row between"><h2 style="margin:0">Anteprima</h2><button class="btn ghost" data-action="cancel-import">Annulla</button></div>
+    <div class="small muted" style="margin:8px 0 12px">${esc(draft.fileName)} · ${esc(draft.origine || '')} · ${draft.rows.length} righe</div>
+
+    <div class="card" style="background:var(--surface-2);box-shadow:none;margin-bottom:12px">
+      <div class="row between"><b>${players.length} giocatori</b><span class="small muted">${ROLES.map((r) => `${r} ${counts[r]}`).join(' · ')}</span></div>
+      <div class="tiny muted" style="margin-top:6px">
+        ${withTier} con fascia · ${withProjection} con fantamedia attesa
+      </div>
+      ${
+        warnings.length
+          ? `<details style="margin-top:8px"><summary class="small muted">${warnings.length} righe scartate</summary>
+             <div class="tiny muted" style="margin-top:6px;max-height:120px;overflow:auto">${warnings.slice(0, 30).map((w) => esc(w)).join('<br>')}</div></details>`
+          : ''
+      }
+    </div>
+
+    <label class="field"><span>Nome del creator</span>
+      <input type="text" id="srcname" value="${esc(draft.source)}" data-action="srcname"></label>
+
+    <button class="btn ghost block" data-action="togglemap">${showMapping ? 'Nascondi' : 'Correggi'} le colonne riconosciute</button>
+    <div class="${showMapping ? '' : 'hidden'}" style="margin-top:12px">
+      ${FIELDS.map(
+        ([field, label, req]) => `
+        <label class="field">
+          <span>${esc(label)}${req ? ' *' : ''}</span>
+          <select data-action="map" data-field="${field}">${options(draft.mapping[field])}</select>
+        </label>`
+      ).join('')}
+    </div>
+
+    <button class="btn primary block" style="margin-top:12px" data-action="confirm-import" ${players.length ? '' : 'disabled'}>
+      Aggiungi ${players.length} giocatori
+    </button>
+  </div>`;
+}
+
+function sourcesCard() {
+  if (!state.sources.length) return '';
+  return `
+  <div class="card">
+    <h2>Creators caricati</h2>
+    <div class="listwrap">
+      <ul class="plist">
+        ${state.sources
+          .map(
+            (s) => `<li>
+              <div class="grow"><div class="nm">${esc(s.name)}</div><div class="sub">${s.players.length} giocatori</div></div>
+              <button class="btn ghost" data-action="removesource" data-name="${esc(s.name)}">Rimuovi</button>
+            </li>`
+          )
+          .join('')}
+      </ul>
+    </div>
+    ${
+      state.sources.length > 1
+        ? `<div class="tiny muted" style="margin-top:8px">Valori mediati fra le fonti. Dove i creators non sono d'accordo lo vedi sulla scheda del giocatore.</div>`
+        : `<div class="tiny muted" style="margin-top:8px">Puoi aggiungere un secondo creator: il confronto rende le stime piu' solide.</div>`
+    }
+    <button class="btn block" style="margin-top:10px" data-action="pickfile">Aggiungi un altro listone</button>
+    <input type="file" id="csvfile" accept=".xlsx,.xlsm,.csv,.tsv,.txt" multiple style="display:none" data-action="file">
+  </div>`;
+}
+
+function browseCard() {
+  const q = state.ui.listQuery;
+  const role = state.ui.listRole;
+  const list = state.players
+    .filter((p) => (role === 'ALL' || p.role === role) && matches(p, q))
+    .filter((p) => !state.ui.onlyAvailable || state.auction.taken[p.id] === undefined)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    .slice(0, 80);
+
+  return `
+  <div class="card">
+    <h2>Listone · ${state.players.length}</h2>
+    <input type="search" id="listQuery" placeholder="Cerca…" value="${esc(q)}" data-action="listquery" autocomplete="off">
+    <div class="segment" style="margin-top:10px">
+      ${['ALL', ...ROLES]
+        .map((r) => `<button data-action="listrole" data-role="${r}" aria-pressed="${role === r}">${r === 'ALL' ? 'Tutti' : r}</button>`)
+        .join('')}
+    </div>
+    <div class="switch" style="margin-top:6px">
+      <span class="lbl small">Nascondi chi e' gia' stato preso</span>
+      <input type="checkbox" data-action="onlyavail" ${state.ui.onlyAvailable ? 'checked' : ''}>
+    </div>
+    <div class="listwrap" style="margin-top:6px">
+      <ul class="plist">
+        ${
+          list.length
+            ? list
+                .map((p) =>
+                  playerRow(p, {
+                    status: state.auction.owned[p.id] !== undefined ? 'mine' : state.auction.taken[p.id] !== undefined ? 'other' : null,
+                    inPlan: state.plan?.picks?.some((x) => x.id === p.id),
+                  })
+                )
+                .join('')
+            : '<li class="muted small">Nessun risultato.</li>'
+        }
+      </ul>
+    </div>
+  </div>`;
+}
+
+function render() {
+  if (draft) return `<div class="view">${draftCard()}</div>`;
+  if (!state.players.length) {
+    return `<div class="view">${emptyImport()}${emptyState('⚽️', 'Si parte dal listone', 'Senza listone non c\'e\' piano: carica il file del tuo creator.')}</div>`;
+  }
+  return `<div class="view">${sourcesCard()}${browseCard()}</div>`;
+}
+
+function onAction(action, target, ev, rerender) {
+  switch (action) {
+    case 'pickfile':
+      document.getElementById('csvfile')?.click();
+      return true;
+    case 'paste': {
+      const text = document.getElementById('pastearea')?.value || '';
+      if (!text.trim()) {
+        toast('Incolla prima il contenuto.');
+        return true;
+      }
+      ingestText(text);
+      rerender();
+      return true;
+    }
+    case 'togglemap':
+      showMapping = !showMapping;
+      rerender();
+      return true;
+    case 'cancel-import':
+      draft = null;
+      rerender();
+      return true;
+    case 'removesource':
+      removeSource(target.dataset.name);
+      rerender();
+      return true;
+    case 'confirm-import': {
+      const { players, warnings } = preview();
+      addSource({
+        name: draft.source || 'listone',
+        players,
+        headers: draft.headers,
+        mapping: draft.mapping,
+        warnings,
+        fileName: draft.fileName,
+      });
+      const n = players.length;
+      draft = null;
+      showMapping = false;
+      toast(`${n} giocatori aggiunti.`);
+      rerender();
+      return true;
+    }
+    case 'listrole':
+      state.ui.listRole = target.dataset.role;
+      rerender();
+      return true;
+    case 'select':
+      state.ui.selectedId = target.dataset.id;
+      state.ui.tab = 'asta';
+      rerender();
+      return true;
+    default:
+      return false;
+  }
+}
+
+function onInput(action, target, rerender) {
+  if (action === 'map') {
+    draft.mapping = { ...draft.mapping, [target.dataset.field]: target.value || undefined };
+    rerender();
+    return true;
+  }
+  if (action === 'srcname') {
+    draft.source = target.value;
+    return true;
+  }
+  if (action === 'listquery') {
+    state.ui.listQuery = target.value;
+    rerender({ keepFocus: 'listQuery' });
+    return true;
+  }
+  if (action === 'onlyavail') {
+    state.ui.onlyAvailable = target.checked;
+    rerender();
+    return true;
+  }
+  if (action === 'file') {
+    const files = [...(target.files || [])];
+    if (!files.length) return true;
+    (async () => {
+      for (const file of files) {
+        await ingestFile(file);
+        // Con piu' file in coda importiamo subito quelli riconosciuti senza chiedere nulla.
+        if (draft && files.length > 1 && draft.mapping.name && draft.mapping.role) {
+          const { players, warnings } = preview();
+          addSource({ name: draft.source, players, headers: draft.headers, mapping: draft.mapping, warnings, fileName: draft.fileName });
+          draft = null;
+        }
+      }
+      rerender();
+    })();
+    return true;
+  }
+  return false;
+}
+
+return { ingestFile, ingestText, render, onAction, onInput };
+})();
+
+// ===== src/ui/setup.js =====
+const __m_src_ui_setup_js = (() => {
+// Impostazioni della lega: e' qui che si dice all'app che asta si sta giocando.
+
+const { state, updateSettings, resetAll, rebuildPlan } = __m_src_store_js;
+const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
+const { esc, roleChip, toast } = __m_src_ui_common_js;
+
+function tierEditor() {
+  const role = state.ui.tierRole || 'D';
+  const order = state.settings.tierOrder?.[role] || [];
+  if (!state.players.length) return '';
+  return `
+  <div class="card">
+    <h2>Ordine delle fasce</h2>
+    <p class="small muted" style="margin-top:0">
+      Dalla migliore alla peggiore. L'ordine e' dedotto dalle etichette del tuo listone: correggilo se non
+      corrisponde a come le usano i creators.
+    </p>
+    <div class="segment" style="margin-bottom:10px">
+      ${ROLES.map((r) => `<button data-action="tierrole" data-role="${r}" aria-pressed="${role === r}">${r}</button>`).join('')}
+    </div>
+    ${
+      order.length
+        ? `<div class="listwrap"><ul class="plist tiersort">
+            ${order
+              .map(
+                (t, i) => `<li>
+                  <span class="idx">${i + 1}</span>
+                  <span class="grow">${esc(t)}</span>
+                  <button class="btn ghost" data-action="tierup" data-role="${role}" data-i="${i}" ${i === 0 ? 'disabled' : ''}>▲</button>
+                  <button class="btn ghost" data-action="tierdown" data-role="${role}" data-i="${i}" ${i === order.length - 1 ? 'disabled' : ''}>▼</button>
+                </li>`
+              )
+              .join('')}
+          </ul></div>`
+        : `<div class="small muted">Il listone importato non ha una colonna fascia per questo ruolo.</div>`
+    }
+  </div>`;
+}
+
+function render() {
+  const s = state.settings;
+  return `
+  <div class="view">
+    <div class="card">
+      <h2>La lega</h2>
+      <div class="grid2">
+        <label class="field"><span>Crediti a squadra</span>
+          <input type="number" inputmode="numeric" value="${s.budget}" data-action="set" data-key="budget" min="1"></label>
+        <label class="field"><span>Partecipanti</span>
+          <input type="number" inputmode="numeric" value="${s.participants}" data-action="set" data-key="participants" min="2" max="30"></label>
+      </div>
+      <div class="small muted">Con ${s.participants} squadre girano <b>${s.budget * s.participants}</b> crediti in totale: e' da qui che nasce la stima dei prezzi d'asta.</div>
+    </div>
+
+    <div class="card">
+      <h2>Rosa</h2>
+      <div class="grid4">
+        ${ROLES.map(
+          (r) => `<label class="field" style="margin:0"><span>${r}</span>
+            <input type="number" inputmode="numeric" value="${s.slots[r]}" data-action="setslot" data-key="${r}" min="0" max="15"></label>`
+        ).join('')}
+      </div>
+      <div class="small muted" style="margin-top:4px">${totalSlots(s)} giocatori in rosa.</div>
+    </div>
+
+    <div class="card">
+      <h2>Modulo di riferimento</h2>
+      <p class="small muted" style="margin-top:0">Quanti ne schieri per ruolo. Serve a non farti spendere crediti sui panchinari: in porta ne gioca uno solo.</p>
+      <div class="grid4">
+        ${ROLES.map(
+          (r) => `<label class="field" style="margin:0"><span>${r}</span>
+            <input type="number" inputmode="numeric" value="${s.starters[r]}" data-action="setstarter" data-key="${r}" min="1" max="${s.slots[r]}"></label>`
+        ).join('')}
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Modificatori</h2>
+      <div class="switch">
+        <div class="grow"><div class="lbl">Modificatore di difesa</div><div class="tiny muted">Alza il peso della difesa e premia i blocchi di club</div></div>
+        <input type="checkbox" data-action="toggle" data-key="defenseModifier" ${s.defenseModifier ? 'checked' : ''}>
+      </div>
+      <div class="switch">
+        <div class="grow"><div class="lbl">Imbattibilita' del portiere</div><div class="tiny muted">Premia il portiere titolare di una squadra solida</div></div>
+        <input type="checkbox" data-action="toggle" data-key="cleanSheetModifier" ${s.cleanSheetModifier ? 'checked' : ''}>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Come stimare i prezzi</h2>
+      <div class="segment">
+        ${[
+          ['blend', 'Media'],
+          ['model', 'Modello'],
+          ['listone', 'Listone'],
+        ]
+          .map(([v, l]) => `<button data-action="pricesource" data-v="${v}" aria-pressed="${s.priceSource === v}">${l}</button>`)
+          .join('')}
+      </div>
+      <div class="small muted" style="margin-top:8px">
+        <b>Modello</b>: ridistribuisce i crediti della lega in base ai punteggi. <b>Listone</b>: usa le quotazioni del CSV.
+        <b>Media</b>: la via di mezzo, consigliata.
+      </div>
+      <label class="field" style="margin-top:14px"><span>Aggressivita' del mercato sui top: ${Number(s.aggressiveness).toFixed(2)}</span>
+        <input type="range" min="1" max="2.4" step="0.05" value="${s.aggressiveness}" data-action="aggr" style="width:100%">
+      </label>
+      <div class="tiny muted">Piu' e' alta, piu' l'app si aspetta aste furiose sui big.</div>
+    </div>
+
+    <div class="card">
+      <h2>Tetti di spesa per ruolo</h2>
+      <p class="small muted" style="margin-top:0">Facoltativi. Vincolano il piano: lascia vuoto per lasciar decidere all'ottimizzatore.</p>
+      <div class="grid4">
+        ${ROLES.map(
+          (r) => `<label class="field" style="margin:0"><span>${r}</span>
+            <input type="number" inputmode="numeric" placeholder="—" value="${s.roleBudget?.[r] ?? ''}" data-action="setcap" data-key="${r}" min="0"></label>`
+        ).join('')}
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Concentrazione per club</h2>
+      <p class="small muted" style="margin-top:0">
+        Con il modificatore di difesa conviene avere piu' difensori della stessa squadra: prendono voto
+        alto nella stessa giornata e la soglia scatta. Ma legare mezza rosa a un solo club significa
+        crollare tutti insieme se quella squadra va male. Il conteggio e' sui <b>titolari</b>: i
+        riempitivi da un credito non pesano.
+      </p>
+      <label class="field" style="margin-bottom:0"><span>Massimo titolari dallo stesso club${s.maxPerClub ? '' : ' — nessun limite'}</span>
+        <input type="number" inputmode="numeric" value="${s.maxPerClub || ''}" placeholder="nessun limite" data-action="setmaxclub" min="0" max="11">
+      </label>
+      <div class="tiny muted" style="margin-top:6px">4 lascia passare il blocco portiere + tre difensori e ferma tutto il resto.</div>
+    </div>
+
+    ${tierEditor()}
+
+    <div class="card">
+      <button class="btn danger block" data-action="reset">Cancella tutto e ricomincia</button>
+      <div class="tiny muted center" style="margin-top:8px">Listone, impostazioni e asta in corso restano solo su questo dispositivo.</div>
+    </div>
+  </div>`;
+}
+
+function onAction(action, target, ev, rerender) {
+  const s = state.settings;
+  switch (action) {
+    case 'pricesource':
+      updateSettings({ priceSource: target.dataset.v });
+      rerender();
+      return true;
+    case 'tierrole':
+      state.ui.tierRole = target.dataset.role;
+      rerender();
+      return true;
+    case 'tierup':
+    case 'tierdown': {
+      const role = target.dataset.role;
+      const i = Number(target.dataset.i);
+      const order = [...(s.tierOrder[role] || [])];
+      const j = action === 'tierup' ? i - 1 : i + 1;
+      if (j < 0 || j >= order.length) return true;
+      [order[i], order[j]] = [order[j], order[i]];
+      updateSettings({ tierOrder: { ...s.tierOrder, [role]: order } });
+      rerender();
+      return true;
+    }
+    case 'reset':
+      if (confirm('Cancello listone, impostazioni e asta in corso. Confermi?')) {
+        resetAll();
+        toast('Tutto azzerato.');
+        rerender();
+      }
+      return true;
+    default:
+      return false;
+  }
+}
+
+function onInput(action, target, rerender) {
+  const s = state.settings;
+  switch (action) {
+    case 'set': {
+      const v = Math.max(1, Number(target.value) || 0);
+      updateSettings({ [target.dataset.key]: v });
+      rerender({ keepFocus: null, soft: true });
+      return true;
+    }
+    case 'setslot': {
+      const slots = { ...s.slots, [target.dataset.key]: Math.max(0, Number(target.value) || 0) };
+      const starters = { ...s.starters };
+      // I titolari non possono superare gli slot disponibili.
+      for (const r of ROLES) starters[r] = Math.min(starters[r], Math.max(1, slots[r]));
+      updateSettings({ slots, starters });
+      rerender({ soft: true });
+      return true;
+    }
+    case 'setstarter': {
+      const r = target.dataset.key;
+      const v = Math.min(Math.max(1, Number(target.value) || 1), s.slots[r] || 1);
+      updateSettings({ starters: { ...s.starters, [r]: v } });
+      rerender({ soft: true });
+      return true;
+    }
+    case 'setcap': {
+      const raw = target.value.trim();
+      updateSettings({ roleBudget: { ...s.roleBudget, [target.dataset.key]: raw === '' ? null : Math.max(0, Number(raw) || 0) } });
+      rerender({ soft: true });
+      return true;
+    }
+    case 'setmaxclub': {
+      const raw = target.value.trim();
+      updateSettings({ maxPerClub: raw === '' ? 0 : Math.max(0, Number(raw) || 0) });
+      rerender({ soft: true });
+      return true;
+    }
+    case 'toggle':
+      updateSettings({ [target.dataset.key]: target.checked });
+      rerender();
+      return true;
+    case 'aggr':
+      updateSettings({ aggressiveness: Number(target.value) });
+      rerender({ soft: true });
+      return true;
+    default:
+      return false;
+  }
+}
+
+return { render, onAction, onInput };
+})();
+
+// ===== src/app.js =====
+const __m_src_app_js = (() => {
+// Punto d'ingresso: schede, instradamento e delega degli eventi.
+
+const { state, load, save, notify, subscribe, rebuildPlan } = __m_src_store_js;
+const asta = __m_src_ui_asta_js;
+const piano = __m_src_ui_piano_js;
+const listone = __m_src_ui_listone_js;
+const setup = __m_src_ui_setup_js;
+
+const TABS = [
+  ['asta', 'Asta', '🎯'],
+  ['piano', 'Piano', '📊'],
+  ['listone', 'Listone', '📋'],
+  ['setup', 'Lega', '⚙️'],
+];
+
+const VIEWS = { asta, piano, listone, setup };
+
+const root = document.getElementById('app');
+const tabbar = document.getElementById('tabbar');
+
+let scrollByTab = {};
+
+function renderTabs() {
+  tabbar.innerHTML = TABS.map(
+    ([id, label, icon]) =>
+      `<button data-tab="${id}" aria-current="${state.ui.tab === id}"><span class="ico">${icon}</span>${label}</button>`
+  ).join('');
+}
+
+/** Ridisegna la vista corrente conservando il focus e la posizione del cursore. */
+function render(opts = {}) {
+  const view = VIEWS[state.ui.tab] || asta;
+  const active = document.activeElement;
+  const focusId = opts.keepFocus ?? (active && active.id ? active.id : null);
+  const selection = focusId && active?.id === focusId ? [active.selectionStart, active.selectionEnd] : null;
+
+  root.innerHTML = view.render(render);
+  renderTabs();
+
+  if (focusId) {
+    const next = document.getElementById(focusId);
+    if (next) {
+      next.focus({ preventScroll: true });
+      if (selection && next.setSelectionRange && next.type !== 'number') {
+        try {
+          next.setSelectionRange(selection[0], selection[1]);
+        } catch {
+          /* alcuni input non lo permettono */
+        }
+      }
+    }
+  }
+}
+
+function switchTab(tab) {
+  scrollByTab[state.ui.tab] = window.scrollY;
+  state.ui.tab = tab;
+  save();
+  render();
+  window.scrollTo(0, scrollByTab[tab] || 0);
+}
+
+function handle(kind, ev) {
+  const target = ev.target.closest('[data-action]');
+  if (!target) return;
+  const action = target.dataset.action;
+  const view = VIEWS[state.ui.tab] || asta;
+  if (kind === 'click') {
+    if (target.matches('input, select, textarea')) return;
+    if (view.onAction?.(action, target, ev, render)) ev.preventDefault();
+  } else if (view.onInput?.(action, target, render)) {
+    // gestito dalla vista
+  }
+}
+
+document.addEventListener('click', (ev) => {
+  const tab = ev.target.closest('[data-tab]');
+  if (tab) {
+    switchTab(tab.dataset.tab);
+    return;
+  }
+  handle('click', ev);
+});
+document.addEventListener('input', (ev) => handle('input', ev));
+document.addEventListener('change', (ev) => handle('input', ev));
+
+subscribe(() => {
+  /* le viste si ridisegnano esplicitamente: qui basta tenere il piano allineato */
+});
+
+// Avvio
+const restored = load();
+if (restored && state.players.length && !state.plan) rebuildPlan();
+if (!restored) state.ui.tab = 'listone';
+render();
+
+// Se il listone c'e' ma il piano no (primo avvio dopo un import), lo calcoliamo subito.
+if (state.players.length && !state.plan) {
+  setTimeout(() => {
+    rebuildPlan();
+    render();
+  }, 30);
+}
+
+return { render };
+})();
+
+</script>
+</body>
+</html>

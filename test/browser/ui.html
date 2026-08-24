@@ -1,0 +1,115 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ui</title>
+<pre id="out">in corso…</pre>
+<script type="module">
+import * as store from '../../src/store.js';
+import * as asta from '../../src/ui/asta.js';
+import * as piano from '../../src/ui/piano.js';
+import * as listone from '../../src/ui/listone.js';
+import * as setup from '../../src/ui/setup.js';
+import { ROLES } from '../../src/domain/model.js';
+
+const lines = [];
+const check = (name, ok, extra = '') => lines.push(`${ok ? 'PASS' : 'FAIL'} ${name}${extra ? ' :: ' + extra : ''}`);
+const noop = () => {};
+
+try {
+  localStorage.clear();
+
+  // Un listone credibile: fasce, prezzi, giudizi di titolarita'.
+  const clubs = ['ROM','INT','MIL','NAP','ATA','LAZ','JUV','BOL','FIO','TOR','GEN','COM','CAG','LEC','UDI','PAR','VER','MON','EMP','VEN'];
+  const perRole = { P: 3, D: 9, C: 9, A: 6 };
+  const tiers = ['Top','Semi-Top','Terza','Quarta','Scomm.','Outsider'];
+  const players = [];
+  for (const club of clubs) for (const role of ROLES) for (let i = 0; i < perRole[role]; i++) {
+    const t = Math.min(tiers.length - 1, Math.floor(i * tiers.length / perRole[role]));
+    players.push({
+      id: `${club}-${role}-${i}`, name: `${role}${i}${club}`, team: club, role, tier: tiers[t],
+      tags: role === 'P' && t === 0 ? ['imbattibilità'] : [], notes: '', sources: ['prova'],
+      price: Math.max(1, Math.round((30 - t * 5) * (role === 'A' ? 2 : role === 'C' ? 1.4 : role === 'D' ? 0.9 : 0.5))),
+      fmvExp: 5 + (role === 'P' ? 0 : 1.2) + (tiers.length - t) * 0.25,
+      titolarita: Math.max(1, 5 - t), integrita: 4,
+    });
+  }
+
+  store.addSource({ name: 'prova', players, headers: [], mapping: {}, warnings: [], fileName: 'prova.xlsx' });
+  check('import nello stato', store.state.players.length === 540 && store.state.sources.length === 1);
+  check('ordine fasce dedotto', store.state.settings.tierOrder.A[0] === 'Top');
+
+  const plan = store.state.plan;
+  check('piano pronto dopo import', plan?.ok === true && plan.picks.length === 25, `${plan?.cost} crediti`);
+
+  // --- schermata asta -------------------------------------------------------------
+  store.state.ui.tab = 'asta';
+  let html = asta.render(noop);
+  check('la schermata asta mostra i crediti', html.includes('crediti liberi') && html.includes('500'));
+  check('mostra gli obiettivi ancora liberi', html.includes('Obiettivi ancora liberi'));
+  check('ogni obiettivo ha il tocco singolo per dirlo perso', html.includes('data-action="quick-gone"'));
+
+  // Seleziono un obiettivo: deve comparire il pannello con offerta massima e alternative.
+  const target = plan.picks.filter((p) => p.role === 'A').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  store.state.ui.selectedId = target.id;
+  asta.render(noop); // primo giro: avvia il calcolo
+  await new Promise((r) => setTimeout(r, 400));
+  html = asta.render(noop);
+  check('pannello del giocatore aperto', html.includes(target.name));
+  check("mostra l'offerta massima", html.includes('offerta massima conveniente'));
+  check('mostra le alternative se lo perdo', html.includes('Se lo perdo'));
+  check('mostra i pulsanti di assegnazione', html.includes('data-action="take-mine"') && html.includes('data-action="take-other"'));
+
+  // --- compro un giocatore ---------------------------------------------------------
+  const prezzo = 40;
+  store.assign(target.id, 'mine', prezzo);
+  check('crediti scalati', store.creditsLeft() === 500 - prezzo, `restano ${store.creditsLeft()}`);
+  check('il giocatore entra in rosa', store.state.plan.owned.some((p) => p.id === target.id));
+  check('il piano si ricalcola su 24 slot', store.state.plan.picks.length === 24);
+  check('il budget totale resta rispettato', store.state.plan.cost <= 500, `${store.state.plan.cost}`);
+
+  // --- un avversario mi soffia un obiettivo ----------------------------------------
+  const perso = store.state.plan.picks.filter((p) => p.role === 'D').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  const puntiPrima = store.state.plan.score;
+  store.assign(perso.id, 'other', 0);
+  check('chi va agli altri esce dal piano', !store.state.plan.picks.some((p) => p.id === perso.id));
+  check('il piano resta valido', store.state.plan.ok && store.state.plan.picks.length === 24);
+  check('perdere un obiettivo non migliora la rosa', store.state.plan.score <= puntiPrima + 1e-6);
+
+  // --- annullo -----------------------------------------------------------------------
+  store.undo();
+  check("l'annulla riporta il giocatore disponibile", store.state.auction.taken[perso.id] === undefined);
+  check('la rosa comprata resta', store.state.plan.owned.some((p) => p.id === target.id));
+
+  // --- altre schermate ---------------------------------------------------------------
+  store.state.ui.selectedId = null;
+  store.state.ui.tab = 'piano';
+  html = piano.render(noop);
+  check('il piano elenca i quattro reparti', ['Portieri','Difensori','Centrocampisti','Attaccanti'].every((r) => html.includes(r)));
+  check('il piano mostra il budget per fascia', html.includes('Budget per fascia'));
+  check("il piano mostra l'esposizione per club", html.includes('Esposizione per club'));
+
+  store.state.ui.tab = 'listone';
+  html = listone.render(noop);
+  check('il listone mostra la fonte caricata', html.includes('prova') && html.includes('Creators caricati'));
+
+  store.state.ui.tab = 'setup';
+  html = setup.render(noop);
+  check('le impostazioni mostrano i modificatori', html.includes('Modificatore di difesa') && html.includes('Imbattibilita'));
+  check('le impostazioni mostrano il tetto per club', html.includes('Concentrazione per club'));
+
+  // --- persistenza -------------------------------------------------------------------
+  const primaDelReload = store.creditsLeft();
+  store.state.roster = [];
+  store.state.players = [];
+  store.state.plan = null;
+  const ok = store.load();
+  check('lo stato si ricarica dal telefono', ok && store.state.players.length === 540 && store.creditsLeft() === primaDelReload);
+  check("l'asta in corso sopravvive alla chiusura", store.state.auction.owned[target.id] === prezzo);
+
+  localStorage.clear();
+} catch (err) {
+  lines.push(`FAIL eccezione :: ${err && err.stack ? err.stack.split('\n').slice(0, 2).join(' | ') : err}`);
+}
+
+document.getElementById('out').textContent = lines.join('\n');
+document.title = lines.some((l) => l.startsWith('FAIL')) ? 'ROSSO' : 'VERDE';
+</script>
