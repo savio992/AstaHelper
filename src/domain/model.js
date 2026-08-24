@@ -87,6 +87,24 @@ export function annotateTierPct(players) {
   });
 }
 
+/**
+ * Normalizza la colonna PMA in quote di mercato confrontabili fra creators.
+ *
+ * PMA e' il prezzo medio pagato per quel giocatore nelle altre aste, in percentuale del budget
+ * di squadra: e' un dato osservato, non un'opinione. Ma ogni creator lo calcola sul proprio
+ * campione di aste, e i totali non coincidono (in questi listoni 1009% contro 810%, cioe' aste
+ * da dieci squadre contro aste da otto). Mediare le percentuali grezze mescolerebbe due scale
+ * diverse: si mediano le quote sul totale di ciascuna fonte.
+ */
+export function annotatePmaShare(players) {
+  let total = 0;
+  for (const p of players) if (Number.isFinite(p.pma) && p.pma > 0) total += p.pma;
+  return players.map((p) => ({
+    ...p,
+    pmaShare: total > 0 && Number.isFinite(p.pma) && p.pma > 0 ? p.pma / total : null,
+  }));
+}
+
 /** Ordina un elenco di etichette di fascia dalla migliore alla peggiore, con euristica sui nomi. */
 export function sortTierLabels(labels) {
   return [...labels].sort((a, b) => {

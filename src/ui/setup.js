@@ -90,16 +90,18 @@ export function render() {
       <h2>Come stimare i prezzi</h2>
       <div class="segment">
         ${[
+          ['listone', 'Aste reali'],
           ['blend', 'Media'],
           ['model', 'Modello'],
-          ['listone', 'Listone'],
         ]
           .map(([v, l]) => `<button data-action="pricesource" data-v="${v}" aria-pressed="${s.priceSource === v}">${l}</button>`)
           .join('')}
       </div>
       <div class="small muted" style="margin-top:8px">
-        <b>Modello</b>: ridistribuisce i crediti della lega in base ai punteggi. <b>Listone</b>: usa le quotazioni del CSV.
-        <b>Media</b>: la via di mezzo, consigliata.
+        <b>Aste reali</b>: usa la colonna PMA, cioe' quanto quel giocatore e' stato pagato in media nelle
+        altre aste. E' una rilevazione, non un'opinione, ed e' la scelta consigliata.
+        <b>Modello</b>: ridistribuisce i crediti della lega in base ai punteggi, per listoni senza prezzi.
+        <b>Media</b>: la via di mezzo.
       </div>
       <label class="field" style="margin-top:14px"><span>Aggressivita' del mercato sui top: ${Number(s.aggressiveness).toFixed(2)}</span>
         <input type="range" min="1" max="2.4" step="0.05" value="${s.aggressiveness}" data-action="aggr" style="width:100%">

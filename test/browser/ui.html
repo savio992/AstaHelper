@@ -54,9 +54,18 @@ try {
   await new Promise((r) => setTimeout(r, 400));
   html = asta.render(noop);
   check('pannello del giocatore aperto', html.includes(target.name));
-  check("mostra l'offerta massima", html.includes('offerta massima conveniente'));
+  check("mostra l'offerta massima", html.includes('fin qui conviene'));
   check('mostra le alternative se lo perdo', html.includes('Se lo perdo'));
   check('mostra i pulsanti di assegnazione', html.includes('data-action="take-mine"') && html.includes('data-action="take-other"'));
+  check('le alternative sono spiegate a parole, non con un delta', /praticamente uguale|poco sotto|sensibilmente sotto|ripiego|meglio di lui/.test(html));
+
+  // La schermata iniziale deve dire cosa e' impostato e cosa manca.
+  store.state.ui.selectedId = null;
+  const home = asta.render(noop);
+  check('la schermata iniziale riepiloga la configurazione', home.includes('Prima di cominciare'));
+  check('riepiloga la lega impostata', home.includes(`${store.state.settings.participants} squadre`));
+  check('i passi portano alle altre schede', home.includes('data-action="goto"'));
+  store.state.ui.selectedId = target.id;
 
   // --- compro un giocatore ---------------------------------------------------------
   const prezzo = 40;

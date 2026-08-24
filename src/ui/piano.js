@@ -5,7 +5,7 @@ import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
 import { tierBudgetReport, maxBid, alternatives } from '../domain/advisor.js';
 import { clubExposure } from '../domain/valuation.js';
 import { ownedMap, unavailableSet } from '../store.js';
-import { esc, roleChip, emptyState, playerRow } from './common.js';
+import { esc, roleChip, emptyState, playerRow, edgeBadge } from './common.js';
 
 function roleBlock(role, plan) {
   const owned = plan.owned.filter((p) => p.role === role).map((p) => ({ ...p, plannedPrice: p.paid, mine: true }));
@@ -122,7 +122,7 @@ function schedaCard() {
       <div style="padding:10px 0;border-bottom:1px solid var(--line)">
         <div class="row between">
           <div class="grow">
-            ${roleChip(row.player.role)} <b>${esc(row.player.name)}</b>
+            ${roleChip(row.player.role)} <b>${esc(row.player.name)}</b> ${edgeBadge(row.player)}
             <span class="small muted">${esc(row.player.team || '')}</span>
           </div>
           <div class="mono" style="text-align:right">

@@ -3,7 +3,7 @@
 import { state, assign, release, undo, ownedMap, unavailableSet, playerById, creditsLeft, rebuildPlan } from '../store.js';
 import { ROLES, totalSlots } from '../domain/model.js';
 import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole } from '../domain/advisor.js';
-import { esc, roleChip, matches, playerRow, emptyState, toast } from './common.js';
+import { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } from './common.js';
 
 // I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
 let cache = { key: null, bid: null, alts: null };
@@ -68,6 +68,53 @@ function hud() {
   </div>`;
 }
 
+/**
+ * Riepilogo di cosa e' impostato, prima che l'asta cominci.
+ * Atterrare su una schermata con una casella di ricerca vuota non dice cosa fare:
+ * qui si vede a colpo d'occhio se manca qualcosa e dove andare a metterlo.
+ */
+function readyCard() {
+  const s = state.settings;
+  const plan = state.plan;
+  const passi = [
+    {
+      fatto: state.sources.length > 0,
+      titolo: state.sources.length
+        ? `Listone: ${state.sources.map((x) => esc(x.name)).join(' + ')}`
+        : 'Carica il listone del creator',
+      tab: 'listone',
+    },
+    {
+      fatto: true,
+      titolo: `${s.participants} squadre · ${s.budget} crediti · ${s.slots.P}-${s.slots.D}-${s.slots.C}-${s.slots.A}`,
+      nota: [s.defenseModifier ? 'mod. difesa' : null, s.cleanSheetModifier ? 'imbattibilita' : null]
+        .filter(Boolean)
+        .join(' + ') || 'nessun modificatore',
+      tab: 'setup',
+    },
+    {
+      fatto: !!plan?.ok,
+      titolo: plan?.ok ? `Piano pronto: ${plan.cost} crediti impegnati` : 'Piano non ancora calcolato',
+      tab: 'piano',
+    },
+  ];
+  return `
+  <div class="card">
+    <h2>Prima di cominciare</h2>
+    ${passi
+      .map(
+        (x) => `<div class="switch" data-action="goto" data-tab="${x.tab}">
+          <div class="grow">
+            <div class="lbl">${x.fatto ? '✓' : '○'} ${x.titolo}</div>
+            ${x.nota ? `<div class="tiny muted">${esc(x.nota)}</div>` : ''}
+          </div>
+          <span class="muted">›</span>
+        </div>`
+      )
+      .join('')}
+  </div>`;
+}
+
 function verdictFor(price, bid) {
   if (!bid) return '';
   if (bid.maxBid <= 0) return `<div class="verdict stop">Lascialo andare: non migliora la rosa.</div>`;
@@ -99,6 +146,7 @@ function detail(p) {
           <span class="chip">${esc(p.team || '—')}</span>
           ${p.tier ? `<span class="chip">${esc(p.tier)}</span>` : ''}
           ${inPlan ? '<span class="chip plan">In piano</span>' : ''}
+          ${edgeBadge(p)}
           ${status === 'mine' ? `<span class="chip mine">Mio a ${paid}</span>` : ''}
           ${status === 'other' ? `<span class="chip gone">Preso da altri a ${paid}</span>` : ''}
         </div>
@@ -116,7 +164,8 @@ function detail(p) {
       ${
         bid
           ? `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid}</div>
-             <div class="lbl">offerta massima conveniente</div>
+             <div class="lbl">fin qui conviene</div>
+             ${ripiego(alts)}
              ${bid.reason ? `<div class="small muted" style="margin-top:6px">${esc(bid.reason)}</div>` : ''}`
           : `<div class="n mono"><span class="spinner"></span></div><div class="lbl">calcolo in corso</div>`
       }
@@ -144,6 +193,13 @@ function detail(p) {
 
   ${status === 'other' || !status ? altsCard(p, alts) : ''}
   `;
+}
+
+/** Un numero da solo non basta: si dice a chi si ripiega, con nome e prezzo. */
+function ripiego(alts) {
+  const first = alts?.alternatives?.[0];
+  if (!first) return '';
+  return `<div class="small muted" style="margin-top:8px">se lo superi, meglio <b>${esc(first.player.name)}</b> a ${first.price}</div>`;
 }
 
 /** Quello che i creators dicono di lui: giudizi, etichette, disaccordo sul prezzo. */
@@ -188,21 +244,22 @@ function altsCard(p, alts) {
   <div class="card">
     <h2>Se lo perdo</h2>
     <div class="small muted" style="margin-bottom:10px">
-      Rosa ricalcolata senza di lui. <b>Δ</b> = punti guadagnati o persi rispetto a prenderlo al suo prezzo atteso.
+      Rosa ricalcolata senza di lui, confrontata con l'averlo preso al suo prezzo atteso.
     </div>
     ${alts.alternatives
       .map((a) => {
-        const d = a.deltaVsTarget;
-        const cls = d === null ? '' : d >= 0 ? 'pos' : 'neg';
-        const sign = d === null ? '' : d > 0 ? '+' : '';
+        const v = altVerdict(a.deltaVsTarget, p.score);
         return `
       <div class="alt" data-action="select" data-id="${esc(a.player.id)}">
         ${roleChip(a.player.role)}
         <div class="grow">
-          <div class="nm">${esc(a.player.name)}</div>
-          <div class="sub small muted">${esc(a.player.team || '—')}${a.player.tier ? ' · ' + esc(a.player.tier) : ''} · ${a.price} cr</div>
+          <div class="nm">${esc(a.player.name)} ${edgeBadge(a.player)}</div>
+          <div class="sub small muted">${esc(a.player.team || '—')}${a.player.tier ? ' · ' + esc(a.player.tier) : ''}</div>
         </div>
-        <div class="delta ${cls}">${sign}${d === null ? '—' : d}</div>
+        <div style="text-align:right">
+          <div class="mono" style="font-weight:800">${a.price}<span class="tiny muted"> cr</span></div>
+          <div class="tiny ${v.classe === 'pos' ? '' : v.classe === 'neg' ? '' : ''}" style="color:var(--${v.classe === 'pos' ? 'accent' : v.classe === 'neg' ? 'danger' : 'muted'})">${v.parola}</div>
+        </div>
       </div>`;
       })
       .join('')}
@@ -270,7 +327,7 @@ export function render(rerender) {
     ${hud()}
 
     <div class="card">
-      <input type="search" id="astaQuery" placeholder="Cerca il giocatore all'asta…" value="${esc(q)}" data-action="query" autocomplete="off" autocorrect="off" spellcheck="false">
+      <input type="search" id="astaQuery" placeholder="Chi stanno chiamando?" value="${esc(q)}" data-action="query" autocomplete="off" autocorrect="off" spellcheck="false">
       <div class="segment" style="margin-top:10px">
         ${['ALL', ...ROLES]
           .map(
@@ -297,6 +354,7 @@ export function render(rerender) {
     </div>
 
     ${selected ? detail(selected) : ''}
+    ${!selected && !state.auction.log.length ? readyCard() : ''}
     ${selected ? '' : targetsCard()}
 
     <div class="row" style="gap:10px">
@@ -350,6 +408,10 @@ export function onAction(action, target, ev, rerender) {
       rerender();
       return true;
     }
+    case 'goto':
+      state.ui.tab = target.dataset.tab;
+      rerender();
+      return true;
     case 'quick-gone': {
       const p = playerById(id);
       // Il prezzo pagato dagli avversari non entra in nessun calcolo: registriamo la stima

@@ -425,6 +425,24 @@ function annotateTierPct(players) {
   });
 }
 
+/**
+ * Normalizza la colonna PMA in quote di mercato confrontabili fra creators.
+ *
+ * PMA e' il prezzo medio pagato per quel giocatore nelle altre aste, in percentuale del budget
+ * di squadra: e' un dato osservato, non un'opinione. Ma ogni creator lo calcola sul proprio
+ * campione di aste, e i totali non coincidono (in questi listoni 1009% contro 810%, cioe' aste
+ * da dieci squadre contro aste da otto). Mediare le percentuali grezze mescolerebbe due scale
+ * diverse: si mediano le quote sul totale di ciascuna fonte.
+ */
+function annotatePmaShare(players) {
+  let total = 0;
+  for (const p of players) if (Number.isFinite(p.pma) && p.pma > 0) total += p.pma;
+  return players.map((p) => ({
+    ...p,
+    pmaShare: total > 0 && Number.isFinite(p.pma) && p.pma > 0 ? p.pma / total : null,
+  }));
+}
+
 /** Ordina un elenco di etichette di fascia dalla migliore alla peggiore, con euristica sui nomi. */
 function sortTierLabels(labels) {
   return [...labels].sort((a, b) => {
@@ -479,7 +497,7 @@ function tierRank(settings, role, tier) {
   return idx >= 0 ? idx : order.length;
 }
 
-return { inferTierOrder, annotateTierPct, sortTierLabels, defaultSettings, totalSlots, tierKey, tierRank, ROLES, ROLE_LABEL, ROLE_LABEL_SHORT };
+return { inferTierOrder, annotateTierPct, annotatePmaShare, sortTierLabels, defaultSettings, totalSlots, tierKey, tierRank, ROLES, ROLE_LABEL, ROLE_LABEL_SHORT };
 })();
 
 // ===== src/domain/csv.js =====
@@ -693,6 +711,9 @@ const FIELD_SYNONYMS = {
 // Colonne di etichette: "Nota 1", "Nota 2", ... Vengono raccolte tutte insieme.
 const TAG_HEADER = /^nota ?\d*$|^tag ?\d*$|^etichett[ae] ?\d*$/;
 
+// Campi calcolati dopo l'import, normalizzati all'interno di ogni fonte.
+const DERIVED_FIELDS = ['tierPct', 'pmaShare'];
+
 const NUMERIC_FIELDS = [
   'price', 'pma', 'quo', 'fmvExp', 'fvm', 'fantamedia', 'mediavoto',
   'titolarita', 'affidabilita', 'integrita', 'matches', 'starts', 'minutes',
@@ -894,9 +915,12 @@ function mergeSources(lists) {
       if (p.tier) target.tiersBySource[src] = p.tier;
       target.bySource = target.bySource || {};
       target.bySource[src] = { tier: p.tier, price: p.price, pma: p.pma, fmvExp: p.fmvExp, tierPct: p.tierPct };
-      if (Number.isFinite(p.tierPct)) {
-        target._acc.tierPct = (target._acc.tierPct || 0) + p.tierPct;
-        target._n.tierPct = (target._n.tierPct || 0) + 1;
+      // Campi gia' normalizzati per fonte: si mediano come gli altri ma non stanno
+      // fra i valori grezzi importati dal file.
+      for (const field of DERIVED_FIELDS) {
+        if (!Number.isFinite(p[field])) continue;
+        target._acc[field] = (target._acc[field] || 0) + p[field];
+        target._n[field] = (target._n[field] || 0) + 1;
       }
       for (const tag of p.tags) if (!target.tags.includes(tag)) target.tags.push(tag);
       if (p.notes && !target.notes.includes(p.notes)) target.notes = target.notes ? `${target.notes}\n\n${p.notes}` : p.notes;
@@ -914,7 +938,7 @@ function mergeSources(lists) {
     for (const field of NUMERIC_FIELDS) {
       out[field] = p._n[field] ? p._acc[field] / p._n[field] : null;
     }
-    out.tierPct = p._n.tierPct ? p._acc.tierPct / p._n.tierPct : null;
+    for (const field of DERIVED_FIELDS) out[field] = p._n[field] ? p._acc[field] / p._n[field] : null;
     delete out._acc;
     delete out._n;
     // La fascia mostrata e' quella della prima fonte che ne ha una.
@@ -1307,6 +1331,44 @@ function boughtSet(players, settings) {
   return bought;
 }
 
+/**
+ * Sceglie il segnale di mercato e lo restituisce in un'unica unita' di misura.
+ *
+ * Le fonti disponibili non sono confrontabili fra loro: PMA e' una quota (0,03), il prezzo
+ * consigliato e' in crediti (155). Mescolarle nella stessa mappa fa esplodere le quote di chi
+ * ha solo il prezzo. Si sceglie quindi una scala sola e si convertono gli altri valori in
+ * quella, usando il rapporto osservato sui giocatori che hanno entrambi i dati.
+ *
+ * Ordine di attendibilita': PMA, il prezzo medio effettivamente pagato nelle altre aste, e'
+ * una rilevazione; il prezzo consigliato dal creator e' una valutazione; la quotazione
+ * ufficiale e' solo un ordine di grandezza.
+ */
+function marketSignal(players) {
+  const out = new Map();
+  const hasPma = players.filter((p) => Number.isFinite(p.pmaShare) && p.pmaShare > 0);
+
+  if (hasPma.length > players.length / 3) {
+    // Rapporto mediano fra quota di mercato e prezzo consigliato, per convertire
+    // i giocatori che hanno solo il secondo senza cambiare scala.
+    const ratios = hasPma
+      .filter((p) => Number.isFinite(p.price) && p.price > 0)
+      .map((p) => p.pmaShare / p.price)
+      .sort((a, b) => a - b);
+    const ratio = ratios.length ? ratios[Math.floor(ratios.length / 2)] : null;
+    for (const p of players) {
+      if (Number.isFinite(p.pmaShare) && p.pmaShare > 0) out.set(p.id, p.pmaShare);
+      else if (ratio && Number.isFinite(p.price) && p.price > 0) out.set(p.id, p.price * ratio);
+    }
+    return out;
+  }
+
+  for (const p of players) {
+    const v = p.price ?? p.fvm ?? p.quo ?? null;
+    if (Number.isFinite(v) && v > 0) out.set(p.id, v);
+  }
+  return out;
+}
+
 function normalizeShares(raw, bought) {
   let sum = 0;
   for (const [id, v] of raw) if (bought.has(id)) sum += v;
@@ -1331,12 +1393,7 @@ function expectedPrices(players, settings) {
   const discretionary = Math.max(0, (budget - slotsTotal) * n);
   const maxPrice = Math.max(1, budget - (slotsTotal - 1));
 
-  // Forma "creators": il prezzo consigliato, o in mancanza la percentuale massima d'asta.
-  const listoneRaw = new Map();
-  for (const p of players) {
-    const v = p.price ?? p.pma ?? p.fvm ?? p.quo ?? null;
-    if (Number.isFinite(v) && v > 0) listoneRaw.set(p.id, v);
-  }
+  const listoneRaw = marketSignal(players);
   const hasListone = listoneRaw.size > players.length / 3;
 
   // Forma "modello": i crediti si distribuiscono in proporzione al punteggio, con un
@@ -1352,14 +1409,15 @@ function expectedPrices(players, settings) {
   const useListone = hasListone && source !== 'model';
   const useModel = !hasListone || source !== 'listone';
 
-  // Correzione per la dimensione della lega: i prezzi dei creators sono tarati su dieci
-  // squadre, con piu' partecipanti la concorrenza si concentra sui giocatori unici.
-  const tilt = 1 + 0.04 * (n - 10);
-
+  // Nessuna correzione arbitraria per la dimensione della lega: l'effetto vero e' gia' nel
+  // modello, perche' con meno squadre si comprano meno giocatori e le quote si ridistribuiscono
+  // su un insieme piu' ristretto e migliore. Un esponente in piu' conterebbe due volte lo stesso
+  // fenomeno, e i dati a disposizione non permettono di calibrarlo: il confronto fra i campioni
+  // di due creators e' confuso dalla diversa copertura del listone.
   const combined = new Map();
   for (const p of players) {
     const parts = [];
-    if (useListone && listoneShare.has(p.id)) parts.push(Math.pow(listoneShare.get(p.id), tilt));
+    if (useListone && listoneShare.has(p.id)) parts.push(listoneShare.get(p.id));
     if (useModel && modelShare.has(p.id)) parts.push(modelShare.get(p.id));
     if (!parts.length) {
       combined.set(p.id, 0);
@@ -1380,13 +1438,39 @@ function expectedPrices(players, settings) {
   return out;
 }
 
-/** Applica i prezzi attesi ai giocatori, restituendo nuovi oggetti con `expectedPrice`. */
+/**
+ * Applica i prezzi attesi ai giocatori.
+ *
+ * Aggiunge anche `edge`: la differenza fra quanto il creator dice che il giocatore vale
+ * (colonna Prezzo) e quanto il mercato lo paga davvero (PMA). Positivo significa che il
+ * creator lo valuta piu' di quanto costa, ed e' li' che si fanno gli affari all'asta.
+ */
 function withExpectedPrices(players, settings) {
   const prices = expectedPrices(players, settings);
-  return players.map((p) => ({ ...p, expectedPrice: prices.get(p.id) ?? 1 }));
+  // Il prezzo consigliato e' tarato su una lega da dieci: va riportato alla lega vera
+  // prima di confrontarlo con il prezzo atteso.
+  let sumPrice = 0;
+  let sumExpected = 0;
+  for (const p of players) {
+    if (!Number.isFinite(p.price)) continue;
+    sumPrice += p.price;
+    sumExpected += prices.get(p.id) ?? 0;
+  }
+  const scale = sumPrice > 0 ? sumExpected / sumPrice : 1;
+
+  return players.map((p) => {
+    const expectedPrice = prices.get(p.id) ?? 1;
+    const consigliato = Number.isFinite(p.price) ? p.price * scale : null;
+    return {
+      ...p,
+      expectedPrice,
+      consigliato: consigliato === null ? null : Math.round(consigliato),
+      edge: consigliato === null ? null : Math.round(consigliato - expectedPrice),
+    };
+  });
 }
 
-return { expectedPrices, withExpectedPrices };
+return { marketSignal, expectedPrices, withExpectedPrices };
 })();
 
 // ===== src/domain/optimizer.js =====
@@ -1871,7 +1955,7 @@ const __m_src_store_js = (() => {
 // Stato dell'applicazione e persistenza locale.
 // Tutto vive nel browser: nessun server, nessun dato che esce dal telefono.
 
-const { defaultSettings, inferTierOrder, annotateTierPct, ROLES } = __m_src_domain_model_js;
+const { defaultSettings, inferTierOrder, annotateTierPct, annotatePmaShare, ROLES } = __m_src_domain_model_js;
 const { mergeSources } = __m_src_domain_csv_js;
 const { valuePlayers } = __m_src_domain_valuation_js;
 const { withExpectedPrices } = __m_src_domain_market_js;
@@ -2004,7 +2088,7 @@ function rebuildPlan(opts = {}) {
 
 /** Unisce le fonti importate in un unico listone e riordina le fasce. */
 function rebuildRoster() {
-  const lists = state.sources.map((s) => annotateTierPct(s.players));
+  const lists = state.sources.map((s) => annotatePmaShare(annotateTierPct(s.players)));
   const roster = mergeSources(lists);
   for (const role of ROLES) state.settings.tierOrder[role] = inferTierOrder(roster, role);
   return roster;
@@ -2355,11 +2439,38 @@ function playerRow(p, { status, price, priceLabel = 'atteso', selected, inPlan }
     </li>`;
 }
 
+/**
+ * Il divario fra prezzo consigliato dal creator e prezzo pagato nelle altre aste,
+ * detto in una parola. E' il segnale piu' azionabile che c'e' durante l'asta.
+ */
+function edgeBadge(p) {
+  if (!Number.isFinite(p.edge) || !Number.isFinite(p.expectedPrice) || p.expectedPrice < 5) return '';
+  const rel = p.edge / p.expectedPrice;
+  if (rel > 0.15) return `<span class="chip plan">Occasione +${p.edge}</span>`;
+  if (rel < -0.15) return `<span class="chip gone">Caro ${p.edge}</span>`;
+  return '';
+}
+
+/**
+ * Quanto perdo passando all'alternativa, detto a parole.
+ * Un numero come "-26,1" non dice niente a chi sta rilanciando: conta se il sostituto
+ * e' equivalente o se e' un ripiego vero.
+ */
+function altVerdict(delta, riferimento) {
+  if (delta === null || !riferimento) return { parola: '', classe: '' };
+  const rel = delta / riferimento;
+  if (rel >= 0) return { parola: 'meglio di lui', classe: 'pos' };
+  if (rel > -0.05) return { parola: 'praticamente uguale', classe: 'pos' };
+  if (rel > -0.15) return { parola: 'poco sotto', classe: '' };
+  if (rel > -0.3) return { parola: 'sensibilmente sotto', classe: 'neg' };
+  return { parola: 'ripiego', classe: 'neg' };
+}
+
 function emptyState(icon, title, text) {
   return `<div class="empty"><div class="big">${icon}</div><div><b>${esc(title)}</b></div><div class="small" style="margin-top:6px">${text}</div></div>`;
 }
 
-return { esc, n, roleChip, toast, matches, playerRow, emptyState, ROLE_NAME };
+return { esc, n, roleChip, toast, matches, playerRow, edgeBadge, altVerdict, emptyState, ROLE_NAME };
 })();
 
 // ===== src/ui/asta.js =====
@@ -2369,7 +2480,7 @@ const __m_src_ui_asta_js = (() => {
 const { state, assign, release, undo, ownedMap, unavailableSet, playerById, creditsLeft, rebuildPlan } = __m_src_store_js;
 const { ROLES, totalSlots } = __m_src_domain_model_js;
 const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole } = __m_src_domain_advisor_js;
-const { esc, roleChip, matches, playerRow, emptyState, toast } = __m_src_ui_common_js;
+const { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } = __m_src_ui_common_js;
 
 // I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
 let cache = { key: null, bid: null, alts: null };
@@ -2434,6 +2545,53 @@ function hud() {
   </div>`;
 }
 
+/**
+ * Riepilogo di cosa e' impostato, prima che l'asta cominci.
+ * Atterrare su una schermata con una casella di ricerca vuota non dice cosa fare:
+ * qui si vede a colpo d'occhio se manca qualcosa e dove andare a metterlo.
+ */
+function readyCard() {
+  const s = state.settings;
+  const plan = state.plan;
+  const passi = [
+    {
+      fatto: state.sources.length > 0,
+      titolo: state.sources.length
+        ? `Listone: ${state.sources.map((x) => esc(x.name)).join(' + ')}`
+        : 'Carica il listone del creator',
+      tab: 'listone',
+    },
+    {
+      fatto: true,
+      titolo: `${s.participants} squadre · ${s.budget} crediti · ${s.slots.P}-${s.slots.D}-${s.slots.C}-${s.slots.A}`,
+      nota: [s.defenseModifier ? 'mod. difesa' : null, s.cleanSheetModifier ? 'imbattibilita' : null]
+        .filter(Boolean)
+        .join(' + ') || 'nessun modificatore',
+      tab: 'setup',
+    },
+    {
+      fatto: !!plan?.ok,
+      titolo: plan?.ok ? `Piano pronto: ${plan.cost} crediti impegnati` : 'Piano non ancora calcolato',
+      tab: 'piano',
+    },
+  ];
+  return `
+  <div class="card">
+    <h2>Prima di cominciare</h2>
+    ${passi
+      .map(
+        (x) => `<div class="switch" data-action="goto" data-tab="${x.tab}">
+          <div class="grow">
+            <div class="lbl">${x.fatto ? '✓' : '○'} ${x.titolo}</div>
+            ${x.nota ? `<div class="tiny muted">${esc(x.nota)}</div>` : ''}
+          </div>
+          <span class="muted">›</span>
+        </div>`
+      )
+      .join('')}
+  </div>`;
+}
+
 function verdictFor(price, bid) {
   if (!bid) return '';
   if (bid.maxBid <= 0) return `<div class="verdict stop">Lascialo andare: non migliora la rosa.</div>`;
@@ -2465,6 +2623,7 @@ function detail(p) {
           <span class="chip">${esc(p.team || '—')}</span>
           ${p.tier ? `<span class="chip">${esc(p.tier)}</span>` : ''}
           ${inPlan ? '<span class="chip plan">In piano</span>' : ''}
+          ${edgeBadge(p)}
           ${status === 'mine' ? `<span class="chip mine">Mio a ${paid}</span>` : ''}
           ${status === 'other' ? `<span class="chip gone">Preso da altri a ${paid}</span>` : ''}
         </div>
@@ -2482,7 +2641,8 @@ function detail(p) {
       ${
         bid
           ? `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid}</div>
-             <div class="lbl">offerta massima conveniente</div>
+             <div class="lbl">fin qui conviene</div>
+             ${ripiego(alts)}
              ${bid.reason ? `<div class="small muted" style="margin-top:6px">${esc(bid.reason)}</div>` : ''}`
           : `<div class="n mono"><span class="spinner"></span></div><div class="lbl">calcolo in corso</div>`
       }
@@ -2510,6 +2670,13 @@ function detail(p) {
 
   ${status === 'other' || !status ? altsCard(p, alts) : ''}
   `;
+}
+
+/** Un numero da solo non basta: si dice a chi si ripiega, con nome e prezzo. */
+function ripiego(alts) {
+  const first = alts?.alternatives?.[0];
+  if (!first) return '';
+  return `<div class="small muted" style="margin-top:8px">se lo superi, meglio <b>${esc(first.player.name)}</b> a ${first.price}</div>`;
 }
 
 /** Quello che i creators dicono di lui: giudizi, etichette, disaccordo sul prezzo. */
@@ -2554,21 +2721,22 @@ function altsCard(p, alts) {
   <div class="card">
     <h2>Se lo perdo</h2>
     <div class="small muted" style="margin-bottom:10px">
-      Rosa ricalcolata senza di lui. <b>Δ</b> = punti guadagnati o persi rispetto a prenderlo al suo prezzo atteso.
+      Rosa ricalcolata senza di lui, confrontata con l'averlo preso al suo prezzo atteso.
     </div>
     ${alts.alternatives
       .map((a) => {
-        const d = a.deltaVsTarget;
-        const cls = d === null ? '' : d >= 0 ? 'pos' : 'neg';
-        const sign = d === null ? '' : d > 0 ? '+' : '';
+        const v = altVerdict(a.deltaVsTarget, p.score);
         return `
       <div class="alt" data-action="select" data-id="${esc(a.player.id)}">
         ${roleChip(a.player.role)}
         <div class="grow">
-          <div class="nm">${esc(a.player.name)}</div>
-          <div class="sub small muted">${esc(a.player.team || '—')}${a.player.tier ? ' · ' + esc(a.player.tier) : ''} · ${a.price} cr</div>
+          <div class="nm">${esc(a.player.name)} ${edgeBadge(a.player)}</div>
+          <div class="sub small muted">${esc(a.player.team || '—')}${a.player.tier ? ' · ' + esc(a.player.tier) : ''}</div>
         </div>
-        <div class="delta ${cls}">${sign}${d === null ? '—' : d}</div>
+        <div style="text-align:right">
+          <div class="mono" style="font-weight:800">${a.price}<span class="tiny muted"> cr</span></div>
+          <div class="tiny ${v.classe === 'pos' ? '' : v.classe === 'neg' ? '' : ''}" style="color:var(--${v.classe === 'pos' ? 'accent' : v.classe === 'neg' ? 'danger' : 'muted'})">${v.parola}</div>
+        </div>
       </div>`;
       })
       .join('')}
@@ -2636,7 +2804,7 @@ function render(rerender) {
     ${hud()}
 
     <div class="card">
-      <input type="search" id="astaQuery" placeholder="Cerca il giocatore all'asta…" value="${esc(q)}" data-action="query" autocomplete="off" autocorrect="off" spellcheck="false">
+      <input type="search" id="astaQuery" placeholder="Chi stanno chiamando?" value="${esc(q)}" data-action="query" autocomplete="off" autocorrect="off" spellcheck="false">
       <div class="segment" style="margin-top:10px">
         ${['ALL', ...ROLES]
           .map(
@@ -2663,6 +2831,7 @@ function render(rerender) {
     </div>
 
     ${selected ? detail(selected) : ''}
+    ${!selected && !state.auction.log.length ? readyCard() : ''}
     ${selected ? '' : targetsCard()}
 
     <div class="row" style="gap:10px">
@@ -2716,6 +2885,10 @@ function onAction(action, target, ev, rerender) {
       rerender();
       return true;
     }
+    case 'goto':
+      state.ui.tab = target.dataset.tab;
+      rerender();
+      return true;
     case 'quick-gone': {
       const p = playerById(id);
       // Il prezzo pagato dagli avversari non entra in nessun calcolo: registriamo la stima
@@ -2768,7 +2941,7 @@ const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
 const { tierBudgetReport, maxBid, alternatives } = __m_src_domain_advisor_js;
 const { clubExposure } = __m_src_domain_valuation_js;
 const { ownedMap, unavailableSet } = __m_src_store_js;
-const { esc, roleChip, emptyState, playerRow } = __m_src_ui_common_js;
+const { esc, roleChip, emptyState, playerRow, edgeBadge } = __m_src_ui_common_js;
 
 function roleBlock(role, plan) {
   const owned = plan.owned.filter((p) => p.role === role).map((p) => ({ ...p, plannedPrice: p.paid, mine: true }));
@@ -2885,7 +3058,7 @@ function schedaCard() {
       <div style="padding:10px 0;border-bottom:1px solid var(--line)">
         <div class="row between">
           <div class="grow">
-            ${roleChip(row.player.role)} <b>${esc(row.player.name)}</b>
+            ${roleChip(row.player.role)} <b>${esc(row.player.name)}</b> ${edgeBadge(row.player)}
             <span class="small muted">${esc(row.player.team || '')}</span>
           </div>
           <div class="mono" style="text-align:right">
@@ -3614,16 +3787,18 @@ function render() {
       <h2>Come stimare i prezzi</h2>
       <div class="segment">
         ${[
+          ['listone', 'Aste reali'],
           ['blend', 'Media'],
           ['model', 'Modello'],
-          ['listone', 'Listone'],
         ]
           .map(([v, l]) => `<button data-action="pricesource" data-v="${v}" aria-pressed="${s.priceSource === v}">${l}</button>`)
           .join('')}
       </div>
       <div class="small muted" style="margin-top:8px">
-        <b>Modello</b>: ridistribuisce i crediti della lega in base ai punteggi. <b>Listone</b>: usa le quotazioni del CSV.
-        <b>Media</b>: la via di mezzo, consigliata.
+        <b>Aste reali</b>: usa la colonna PMA, cioe' quanto quel giocatore e' stato pagato in media nelle
+        altre aste. E' una rilevazione, non un'opinione, ed e' la scelta consigliata.
+        <b>Modello</b>: ridistribuisce i crediti della lega in base ai punteggi, per listoni senza prezzi.
+        <b>Media</b>: la via di mezzo.
       </div>
       <label class="field" style="margin-top:14px"><span>Aggressivita' del mercato sui top: ${Number(s.aggressiveness).toFixed(2)}</span>
         <input type="range" min="1" max="2.4" step="0.05" value="${s.aggressiveness}" data-action="aggr" style="width:100%">

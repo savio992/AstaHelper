@@ -61,6 +61,33 @@ export function playerRow(p, { status, price, priceLabel = 'atteso', selected, i
     </li>`;
 }
 
+/**
+ * Il divario fra prezzo consigliato dal creator e prezzo pagato nelle altre aste,
+ * detto in una parola. E' il segnale piu' azionabile che c'e' durante l'asta.
+ */
+export function edgeBadge(p) {
+  if (!Number.isFinite(p.edge) || !Number.isFinite(p.expectedPrice) || p.expectedPrice < 5) return '';
+  const rel = p.edge / p.expectedPrice;
+  if (rel > 0.15) return `<span class="chip plan">Occasione +${p.edge}</span>`;
+  if (rel < -0.15) return `<span class="chip gone">Caro ${p.edge}</span>`;
+  return '';
+}
+
+/**
+ * Quanto perdo passando all'alternativa, detto a parole.
+ * Un numero come "-26,1" non dice niente a chi sta rilanciando: conta se il sostituto
+ * e' equivalente o se e' un ripiego vero.
+ */
+export function altVerdict(delta, riferimento) {
+  if (delta === null || !riferimento) return { parola: '', classe: '' };
+  const rel = delta / riferimento;
+  if (rel >= 0) return { parola: 'meglio di lui', classe: 'pos' };
+  if (rel > -0.05) return { parola: 'praticamente uguale', classe: 'pos' };
+  if (rel > -0.15) return { parola: 'poco sotto', classe: '' };
+  if (rel > -0.3) return { parola: 'sensibilmente sotto', classe: 'neg' };
+  return { parola: 'ripiego', classe: 'neg' };
+}
+
 export function emptyState(icon, title, text) {
   return `<div class="empty"><div class="big">${icon}</div><div><b>${esc(title)}</b></div><div class="small" style="margin-top:6px">${text}</div></div>`;
 }

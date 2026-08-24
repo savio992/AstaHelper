@@ -39,9 +39,13 @@ attese dei creators sono quasi identiche per tutti tranne i primissimi, e cio' c
 un titolare da un rincalzo e' **quante partite gioca**. Titolarita' e integrita' fisica diventano
 presenze attese, e le presenze moltiplicano la fantamedia.
 
-**Il prezzo atteso** parte dai prezzi consigliati dai creators, che sono gia' calibrati sul
-montepremi di una lega da dieci squadre (la somma dei prezzi di un listone fa esattamente dieci
-volte il budget di squadra), e li corregge per il numero reale di partecipanti.
+**Il prezzo atteso** viene dalla colonna PMA, il prezzo medio effettivamente pagato per quel
+giocatore nelle altre aste: e' una rilevazione, non un'opinione, ed e' il dato piu' affidabile
+per sapere quanto costera' davvero. Le percentuali vengono normalizzate per fonte prima di essere
+mediate, perche' ogni creator le calcola sul proprio campione di aste e i totali non coincidono.
+La colonna Prezzo, che e' invece la valutazione del creator, serve a un'altra cosa: il divario fra
+quanto dice che vale e quanto il mercato lo paga segnala le **occasioni** (lo paghi meno di quanto
+vale) e i giocatori **cari** (il mercato lo sopravvaluta).
 
 **La rosa migliore** e' un problema di zaino multi-vincolo — budget totale piu' slot esatti per
 ruolo — risolto esattamente in programmazione dinamica, non per approssimazione. I giocatori

@@ -207,6 +207,9 @@ const FIELD_SYNONYMS = {
 // Colonne di etichette: "Nota 1", "Nota 2", ... Vengono raccolte tutte insieme.
 const TAG_HEADER = /^nota ?\d*$|^tag ?\d*$|^etichett[ae] ?\d*$/;
 
+// Campi calcolati dopo l'import, normalizzati all'interno di ogni fonte.
+const DERIVED_FIELDS = ['tierPct', 'pmaShare'];
+
 const NUMERIC_FIELDS = [
   'price', 'pma', 'quo', 'fmvExp', 'fvm', 'fantamedia', 'mediavoto',
   'titolarita', 'affidabilita', 'integrita', 'matches', 'starts', 'minutes',
@@ -408,9 +411,12 @@ export function mergeSources(lists) {
       if (p.tier) target.tiersBySource[src] = p.tier;
       target.bySource = target.bySource || {};
       target.bySource[src] = { tier: p.tier, price: p.price, pma: p.pma, fmvExp: p.fmvExp, tierPct: p.tierPct };
-      if (Number.isFinite(p.tierPct)) {
-        target._acc.tierPct = (target._acc.tierPct || 0) + p.tierPct;
-        target._n.tierPct = (target._n.tierPct || 0) + 1;
+      // Campi gia' normalizzati per fonte: si mediano come gli altri ma non stanno
+      // fra i valori grezzi importati dal file.
+      for (const field of DERIVED_FIELDS) {
+        if (!Number.isFinite(p[field])) continue;
+        target._acc[field] = (target._acc[field] || 0) + p[field];
+        target._n[field] = (target._n[field] || 0) + 1;
       }
       for (const tag of p.tags) if (!target.tags.includes(tag)) target.tags.push(tag);
       if (p.notes && !target.notes.includes(p.notes)) target.notes = target.notes ? `${target.notes}\n\n${p.notes}` : p.notes;
@@ -428,7 +434,7 @@ export function mergeSources(lists) {
     for (const field of NUMERIC_FIELDS) {
       out[field] = p._n[field] ? p._acc[field] / p._n[field] : null;
     }
-    out.tierPct = p._n.tierPct ? p._acc.tierPct / p._n.tierPct : null;
+    for (const field of DERIVED_FIELDS) out[field] = p._n[field] ? p._acc[field] / p._n[field] : null;
     delete out._acc;
     delete out._n;
     // La fascia mostrata e' quella della prima fonte che ne ha una.
