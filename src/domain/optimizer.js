@@ -3,7 +3,7 @@
 // (blocco difensivo, portiere + difesa dello stesso club) che il DP lineare non vede.
 
 import { ROLES } from './model.js';
-import { rosterScore, synergyBonus, depthWeights } from './valuation.js';
+import { rosterScore, synergyBonus, depthWeights, clubExposure } from './valuation.js';
 
 const NEG = -1e9;
 
@@ -294,7 +294,12 @@ export function optimizeRoster({
   }
 
   if (localSearch) {
-    picks = improveWithSynergy({ picks, ownedPlayers, players, settings, owned, unavailable, priceOverride, budgetLeft });
+    const ctx = { ownedPlayers, players, settings, owned, unavailable, priceOverride, budgetLeft };
+    picks = improveWithSynergy({ picks, ...ctx });
+    // Il DP non sa nulla di club: se e' andato oltre il tetto di concentrazione si ripara qui.
+    picks = enforceClubCap({ picks, ...ctx });
+    picks = improveWithSynergy({ picks, ...ctx });
+    picks = enforceClubCap({ picks, ...ctx });
   }
 
   const cost = ownedCost + picks.reduce((s, p) => s + p.plannedPrice, 0);
@@ -326,7 +331,7 @@ function spendByRole(ownedPlayers, picks) {
  * modificatore. Qui proviamo scambi 1-a-1 e riutilizziamo i crediti avanzati.
  */
 function improveWithSynergy({ picks, ownedPlayers, players, settings, owned, unavailable, priceOverride, budgetLeft }) {
-  const hasSynergy = settings.defenseModifier || settings.cleanSheetModifier;
+  const hasSynergy = settings.defenseModifier || settings.cleanSheetModifier || Number(settings.maxPerClub) > 0;
   let current = [...picks];
   const inRoster = new Set([...current.map((p) => p.id), ...ownedPlayers.map((p) => p.id)]);
 
@@ -339,23 +344,38 @@ function improveWithSynergy({ picks, ownedPlayers, players, settings, owned, una
       .slice(0, 120);
   }
 
+  const roleSpend = (list, role, owned) =>
+    list.filter((p) => p.role === role).reduce((a, p) => a + p.plannedPrice, 0) +
+    owned.filter((p) => p.role === role).reduce((a, p) => a + (p.paid || 0), 0);
+
   const evaluate = (list) => rosterScore([...ownedPlayers.map((p) => ({ ...p, score: p.score })), ...list], settings);
   const spend = (list) => list.reduce((s, p) => s + p.plannedPrice, 0);
 
   let improved = true;
   let sweeps = 0;
-  const maxSweeps = hasSynergy ? 4 : 2;
+  const maxSweeps = hasSynergy ? 5 : 2;
   while (improved && sweeps++ < maxSweeps) {
     improved = false;
     for (let i = 0; i < current.length; i++) {
       const out = current[i];
       const budgetForSlot = budgetLeft - (spend(current) - out.plannedPrice);
+      // Il tetto di spesa del ruolo vale anche qui: il DP lo rispettava, uno scambio
+      // conveniente ma fuori budget di reparto lo violerebbe in silenzio.
+      const cap = settings.roleBudget?.[out.role];
+      const roleCapLeft =
+        cap === null || cap === undefined || cap === ''
+          ? Infinity
+          : Math.max(0, Number(cap) - roleSpend(current, out.role, ownedPlayers) + out.plannedPrice);
       let bestList = null;
       let bestScore = evaluate(current);
+      const clubCap = Number(settings.maxPerClub) || 0;
+      const exposure = clubCap > 0 ? clubExposure([...ownedPlayers, ...current], settings) : null;
       for (const cand of poolByRole[out.role]) {
         if (inRoster.has(cand.id)) continue;
         const cost = priceOf(cand);
-        if (cost > budgetForSlot) continue;
+        if (cost > budgetForSlot || cost > roleCapLeft) continue;
+        // Non riportare dentro un club gia' al limite: il tetto e' appena stato rispettato.
+        if (exposure && cand.team !== out.team && (exposure.get(cand.team)?.effettivi ?? 0) >= clubCap) continue;
         const trial = current.slice();
         trial[i] = { ...cand, plannedPrice: cost };
         const sc = evaluate(trial);
@@ -373,6 +393,61 @@ function improveWithSynergy({ picks, ownedPlayers, players, settings, owned, una
     }
   }
 
+  return current;
+}
+
+/**
+ * Riporta la rosa sotto il tetto di giocatori per club.
+ * Sostituisce i giocatori meno utili dei club sovraesposti, partendo dal piu' sacrificabile,
+ * finche' la soglia rientra o non ci sono piu' rimpiazzi sostenibili.
+ */
+function enforceClubCap({ picks, ownedPlayers, players, settings, owned, unavailable, priceOverride, budgetLeft }) {
+  const cap = Number(settings.maxPerClub) || 0;
+  if (cap <= 0) return picks;
+
+  const priceOf = (p) => Math.max(1, Math.round(priceOverride.get(p.id) ?? p.expectedPrice ?? 1));
+  let current = [...picks];
+
+  for (let guard = 0; guard < 60; guard++) {
+    const full = [...ownedPlayers, ...current];
+    const exposure = clubExposure(full, settings);
+    const over = [...exposure.entries()]
+      .filter(([, v]) => v.effettivi > cap + 0.25)
+      .sort((a, b) => b[1].effettivi - a[1].effettivi);
+    if (!over.length) return current;
+
+    const [team] = over[0];
+    // Si sacrifica per primo chi rende meno rispetto a quello che costa.
+    const sacrificable = current
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => p.team === team)
+      .sort((a, b) => a.p.score / a.p.plannedPrice - b.p.score / b.p.plannedPrice);
+
+    let replaced = false;
+    for (const { p: outPlayer, i } of sacrificable) {
+      const inRoster = new Set([...current.map((x) => x.id), ...ownedPlayers.map((x) => x.id)]);
+      const spendOthers = current.reduce((a, x) => a + x.plannedPrice, 0) - outPlayer.plannedPrice;
+      const budgetForSlot = budgetLeft - spendOthers;
+      const candidate = players
+        .filter(
+          (c) =>
+            c.role === outPlayer.role &&
+            c.team !== team &&
+            !inRoster.has(c.id) &&
+            !owned.has(c.id) &&
+            !unavailable.has(c.id) &&
+            priceOf(c) <= budgetForSlot &&
+            (exposure.get(c.team)?.effettivi ?? 0) < cap
+        )
+        .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+      if (!candidate) continue;
+      current = current.slice();
+      current[i] = { ...candidate, plannedPrice: priceOf(candidate) };
+      replaced = true;
+      break;
+    }
+    if (!replaced) return current;
+  }
   return current;
 }
 

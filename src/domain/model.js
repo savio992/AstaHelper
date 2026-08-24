@@ -40,7 +40,54 @@ function tierSortKey(label) {
   return [50, n];
 }
 
-/** Ordina un elenco di etichette di fascia dalla migliore alla peggiore, con euristica. */
+/**
+ * Ordine delle fasce dedotto dai dati, non dai nomi.
+ * I creators usano vocabolari incompatibili ("Terza", "SOPRA AI LOW COST", "JOLLY 2a FASCIA"):
+ * il prezzo mediano dei giocatori di una fascia dice molto piu' chiaramente quanto vale.
+ * Si ripiega sull'euristica sui nomi solo quando i prezzi mancano.
+ */
+export function inferTierOrder(players, role) {
+  const groups = new Map();
+  for (const p of players) {
+    if (p.role !== role || !p.tier) continue;
+    if (!groups.has(p.tier)) groups.set(p.tier, []);
+    const v = p.price ?? p.pma ?? p.quo ?? null;
+    if (Number.isFinite(v)) groups.get(p.tier).push(v);
+  }
+  if (!groups.size) return [];
+
+  const withPrice = [];
+  const withoutPrice = [];
+  for (const [tier, values] of groups) {
+    if (!values.length) {
+      withoutPrice.push(tier);
+      continue;
+    }
+    const sorted = [...values].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    withPrice.push({ tier, median });
+  }
+  withPrice.sort((a, b) => b.median - a.median);
+  return [...withPrice.map((t) => t.tier), ...sortTierLabels(withoutPrice)];
+}
+
+/**
+ * Assegna a ogni giocatore la sua posizione relativa nella scala delle fasce del proprio ruolo
+ * (0 = fascia migliore, 1 = peggiore). E' l'unico modo di confrontare due creators che usano
+ * vocabolari diversi: "Terza" di uno e "FASCIA ALTA" dell'altro diventano numeri comparabili.
+ */
+export function annotateTierPct(players) {
+  const orders = {};
+  for (const role of ROLES) orders[role] = inferTierOrder(players, role);
+  return players.map((p) => {
+    const order = orders[p.role] || [];
+    const idx = order.indexOf(p.tier);
+    const pct = order.length > 1 && idx >= 0 ? idx / (order.length - 1) : idx === 0 ? 0 : null;
+    return { ...p, tierPct: pct };
+  });
+}
+
+/** Ordina un elenco di etichette di fascia dalla migliore alla peggiore, con euristica sui nomi. */
 export function sortTierLabels(labels) {
   return [...labels].sort((a, b) => {
     const ka = tierSortKey(a);
@@ -65,13 +112,16 @@ export function defaultSettings() {
     // Quanto il mercato "impenna" sui top: 1 = lineare, 2 = aste molto aggressive sui big.
     aggressiveness: 1.55,
     // Da dove arrivano i prezzi attesi: modello di mercato, quotazioni del listone, o media.
-    priceSource: 'blend',
+    // I prezzi consigliati dai creators sono gia' calibrati sul montepremi di una lega da
+    // dieci: quando ci sono, sono la stima migliore. 'model' serve ai listoni senza prezzi.
+    priceSource: 'listone',
     // Tetti opzionali di spesa per ruolo (crediti). null = nessun vincolo.
     roleBudget: { P: null, D: null, C: null, A: null },
     // Ordine delle fasce per ruolo (dalla migliore alla peggiore), popolato all'import.
     tierOrder: { P: [], D: [], C: [], A: [] },
     // Massimo numero di giocatori dallo stesso club (0 = nessun limite).
-    maxPerClub: 0,
+    // Serve a non ritrovarsi mezza rosa legata alla stagione di una sola squadra.
+    maxPerClub: 4,
   };
 }
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseCsv, sniffDelimiter, autoMap, buildPlayers, normalizeRole, parseNumber } from '../src/domain/csv.js';
+import { parseCsv, sniffDelimiter, autoMap, buildPlayers, normalizeRole, parseNumber, refineMapping, mergeSources, gridToTable, sheetsToTable } from '../src/domain/csv.js';
 import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domain/model.js';
 import { valuePlayers, rosterScore, depthWeights } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
@@ -41,7 +41,28 @@ test('autoMap riconosce le intestazioni piu' + "'" + ' comuni dei listoni', () =
   assert.equal(m.roleMantra, 'RM');
   assert.equal(m.tier, 'Fascia');
   assert.equal(m.price, 'Qt.A');
-  assert.equal(m.fvm, 'FVM');
+});
+
+test('autoMap riconosce il formato dei listoni dei creators', () => {
+  const m = autoMap(['Obiett.', 'Fascia', 'Ruolo', 'Team', 'Nome', 'Prezzo', 'PMA', 'Quo',
+    'Titolarita', 'Affidabilita', 'Integrita', 'Commento', 'Nota 1', 'Nota 2', 'MV', 'FMV',
+    'Presenze', 'FMV Exp.']);
+  assert.equal(m.name, 'Nome');
+  assert.equal(m.team, 'Team');
+  assert.equal(m.price, 'Prezzo');
+  assert.equal(m.pma, 'PMA');
+  assert.equal(m.quo, 'Quo');
+  assert.equal(m.fmvExp, 'FMV Exp.');
+  assert.equal(m.titolarita, 'Titolarita');
+  assert.deepEqual(m.tags, ['Nota 1', 'Nota 2']);
+});
+
+test('refineMapping distingue FVM fantamedia da FVM valore di mercato', () => {
+  const asAverage = refineMapping([{ FVM: '6,4' }, { FVM: '7,1' }, { FVM: '5,9' }], { fantamedia: 'FVM' });
+  assert.equal(asAverage.fantamedia, 'FVM');
+  const asMarket = refineMapping([{ FVM: '120' }, { FVM: '340' }, { FVM: '80' }], { fantamedia: 'FVM' });
+  assert.equal(asMarket.fvm, 'FVM');
+  assert.equal(asMarket.fantamedia, undefined);
 });
 
 test('normalizeRole mappa i ruoli mantra su quelli classic', () => {
@@ -73,7 +94,9 @@ test('buildPlayers scarta righe senza nome o ruolo e segnala i duplicati', () =>
   const mapping = { name: 'Nome', role: 'Ruolo', team: 'Squadra' };
   const { players, warnings } = buildPlayers(rows, mapping);
   assert.equal(players.length, 1);
-  assert.equal(warnings.length, 3);
+  // Le righe senza nome sono code vuote del file e non meritano un avviso;
+  // ruolo illeggibile e duplicato invece si'.
+  assert.equal(warnings.length, 2);
 });
 
 test('sortTierLabels ordina dalla fascia migliore alla peggiore', () => {

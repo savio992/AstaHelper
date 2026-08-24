@@ -100,11 +100,21 @@ export function parseCsv(text, delimiter) {
   const grid = records.filter((r) => r.some((c) => c.trim() !== ''));
   if (!grid.length) return { headers: [], rows: [], delimiter: d };
 
-  // Alcuni export mettono titolo/legenda prima dell'intestazione vera:
-  // prendiamo come header la prima riga con almeno 3 celle non vuote e nessun numero puro.
+  return { ...gridToTable(grid), delimiter: d };
+}
+
+/**
+ * Da griglia di celle a tabella con intestazioni.
+ * Alcuni export mettono titolo o legenda prima della tabella vera: si sceglie come
+ * intestazione la prima riga con almeno 3 celle non vuote e pochi numeri puri.
+ */
+export function gridToTable(grid) {
+  const rowsRaw = grid.filter((r) => r.some((c) => String(c ?? '').trim() !== ''));
+  if (!rowsRaw.length) return { headers: [], rows: [] };
+
   let headerIdx = 0;
-  for (let i = 0; i < Math.min(grid.length, 10); i++) {
-    const cells = grid[i].map((c) => c.trim()).filter(Boolean);
+  for (let i = 0; i < Math.min(rowsRaw.length, 10); i++) {
+    const cells = rowsRaw[i].map((c) => String(c ?? '').trim()).filter(Boolean);
     const looksNumeric = cells.filter((c) => /^-?\d+([.,]\d+)?$/.test(c)).length;
     if (cells.length >= 3 && looksNumeric <= cells.length / 3) {
       headerIdx = i;
@@ -112,17 +122,34 @@ export function parseCsv(text, delimiter) {
     }
   }
 
-  const headers = dedupeHeaders(grid[headerIdx].map((h, i) => h.trim() || `col_${i + 1}`));
+  const headers = dedupeHeaders(rowsRaw[headerIdx].map((h, i) => String(h ?? '').trim() || `col_${i + 1}`));
   const rows = [];
-  for (let i = headerIdx + 1; i < grid.length; i++) {
-    const raw = grid[i];
+  for (let i = headerIdx + 1; i < rowsRaw.length; i++) {
+    const raw = rowsRaw[i];
     const obj = {};
     headers.forEach((h, j) => {
-      obj[h] = (raw[j] ?? '').trim();
+      obj[h] = String(raw[j] ?? '').trim();
     });
     rows.push(obj);
   }
-  return { headers, rows, delimiter: d };
+  return { headers, rows };
+}
+
+/**
+ * Unisce i fogli di un xlsx in un'unica tabella.
+ * I listoni dei creators hanno un foglio per ruolo: il nome del foglio serve da
+ * ruolo di riserva se la colonna Ruolo manca.
+ */
+export function sheetsToTable(sheets) {
+  const headers = [];
+  const rows = [];
+  for (const sheet of sheets) {
+    const table = gridToTable(sheet.grid);
+    if (!table.rows.length) continue;
+    for (const h of table.headers) if (!headers.includes(h)) headers.push(h);
+    for (const row of table.rows) rows.push({ ...row, __foglio: sheet.name });
+  }
+  return { headers, rows, sheetNames: sheets.map((s) => s.name) };
 }
 
 function dedupeHeaders(headers) {
@@ -150,16 +177,41 @@ const FIELD_SYNONYMS = {
   role: ['ruolo', 'r', 'ruolo classic', 'role', 'pos', 'posizione'],
   roleMantra: ['ruolo mantra', 'rm', 'mantra', 'ruoli mantra'],
   tier: ['fascia', 'fasce', 'tier', 'fascia creator', 'fascia creators', 'categoria', 'livello'],
-  price: ['quotazione', 'qt', 'qt a', 'qta', 'quot', 'prezzo', 'crediti', 'quotazione iniziale', 'qi'],
-  fvm: ['fvm', 'fantavalore', 'valore di mercato', 'fvm m', 'valore'],
-  fantamedia: ['fantamedia', 'fm', 'fanta media', 'fmv'],
-  mediavoto: ['media voto', 'mv', 'mediavoto', 'voto medio'],
+  // Prezzo consigliato dal creator: e' la stima d'asta migliore quando c'e'.
+  price: ['prezzo', 'prezzo consigliato', 'quotazione', 'qt a', 'qt', 'qta', 'quot', 'crediti', 'quotazione iniziale', 'qi'],
+  // Percentuale massima del budget da investire sul giocatore.
+  pma: ['pma', 'percentuale max asta', 'perc max asta', 'max asta'],
+  // Quotazione ufficiale del listone.
+  quo: ['quo', 'quotazione ufficiale', 'qt i'],
+  // Fantamedia attesa per la stagione che inizia: il predittore piu' forte.
+  fmvExp: ['fmv exp', 'fmv exp.', 'fmv atteso', 'fm exp', 'fantamedia attesa', 'fantamedia prevista'],
+  fvm: ['fvm m', 'fantavalore', 'valore di mercato'],
+  fantamedia: ['fmv', 'fantamedia', 'fm', 'fanta media'],
+  mediavoto: ['mv', 'media voto', 'mediavoto', 'voto medio'],
+  // Giudizi 0-5 del creator.
+  titolarita: ['titolarita', 'titolarieta', 'tit'],
+  affidabilita: ['affidabilita', 'affidabilita rendimento'],
+  integrita: ['integrita', 'integrita fisica'],
   matches: ['presenze', 'pg', 'partite', 'presenze campionato'],
+  starts: ['pt tit', 'partite da titolare', 'titolarita partite'],
+  minutes: ['minuti', 'min giocati'],
+  injuries: ['pt inf', 'partite saltate', 'infortuni'],
   goals: ['gol', 'goal', 'reti', 'gf'],
   assists: ['assist', 'ass', 'assists'],
-  penalties: ['rigorista', 'rigori', 'rig', 'calcia rigori'],
-  notes: ['note', 'nota', 'commento', 'descrizione', 'consiglio'],
+  goalsAgainst: ['gol subiti', 'reti subite'],
+  penaltiesSaved: ['rig parati', 'rigori parati'],
+  penalties: ['rig segnati', 'rigorista', 'rigori', 'calcia rigori'],
+  notes: ['commento', 'note', 'nota', 'descrizione', 'consiglio'],
 };
+
+// Colonne di etichette: "Nota 1", "Nota 2", ... Vengono raccolte tutte insieme.
+const TAG_HEADER = /^nota ?\d*$|^tag ?\d*$|^etichett[ae] ?\d*$/;
+
+const NUMERIC_FIELDS = [
+  'price', 'pma', 'quo', 'fmvExp', 'fvm', 'fantamedia', 'mediavoto',
+  'titolarita', 'affidabilita', 'integrita', 'matches', 'starts', 'minutes',
+  'injuries', 'goals', 'assists', 'goalsAgainst', 'penaltiesSaved',
+];
 
 /** Deduce automaticamente quale colonna del CSV corrisponde a quale campo. */
 export function autoMap(headers) {
@@ -183,7 +235,38 @@ export function autoMap(headers) {
       used.add(found.header);
     }
   }
+  mapping.tags = norm.filter((h) => TAG_HEADER.test(h.n)).map((h) => h.header);
+  for (const h of mapping.tags) used.add(h);
   return mapping;
+}
+
+/**
+ * Corregge la mappatura guardando i valori, non solo le intestazioni.
+ * "FVM" vuol dire fantamedia nei listoni dei creators e fantavalore di mercato in quelli
+ * ufficiali: sono la stessa parola per due cose diverse, e solo la scala dei numeri lo dice.
+ */
+export function refineMapping(rows, mapping) {
+  const out = { ...mapping };
+  const median = (header) => {
+    const vals = rows
+      .map((r) => parseNumber(r[header]))
+      .filter((v) => Number.isFinite(v) && v > 0)
+      .sort((a, b) => a - b);
+    return vals.length ? vals[Math.floor(vals.length / 2)] : null;
+  };
+  for (const [from, to] of [['fantamedia', 'fvm'], ['fvm', 'fantamedia']]) {
+    const header = out[from];
+    if (!header || out[to]) continue;
+    const m = median(header);
+    if (m === null) continue;
+    // Una fantamedia sta sotto 12; un valore di mercato e' molto piu' grande.
+    const isAverage = m < 12;
+    if ((from === 'fantamedia') !== isAverage) {
+      delete out[from];
+      out[to] = header;
+    }
+  }
+  return out;
 }
 
 export const ROLES = ['P', 'D', 'C', 'A'];
@@ -244,23 +327,25 @@ export function makePlayerId(name, team, role) {
 
 /**
  * Converte le righe grezze in giocatori tipizzati.
- * Ritorna { players, warnings, tierLabels } - i giocatori senza nome o ruolo vengono scartati con warning.
+ * Ritorna { players, warnings, tierLabels }: le righe senza nome o ruolo vengono
+ * scartate con un avviso, cosi' l'utente vede sempre cosa e' rimasto fuori.
  */
-export function buildPlayers(rows, mapping) {
+export function buildPlayers(rows, mapping, opts = {}) {
+  const source = opts.source || '';
   const players = [];
   const warnings = [];
   const tierLabels = new Set();
-  const seen = new Set();
+  const seen = new Map();
+
+  const num = (row, field) => (mapping[field] ? parseNumber(row[mapping[field]]) : null);
 
   rows.forEach((row, idx) => {
     const name = mapping.name ? (row[mapping.name] || '').trim() : '';
-    if (!name) {
-      warnings.push(`Riga ${idx + 2}: nome mancante, scartata.`);
-      return;
-    }
+    if (!name) return; // riga vuota di coda: non vale un avviso
     const rawRole = mapping.role ? row[mapping.role] : '';
     const rawMantra = mapping.roleMantra ? row[mapping.roleMantra] : '';
-    const role = normalizeRole(rawRole) || normalizeRole(rawMantra);
+    // Nei listoni a fogli separati il nome del foglio e' gia' il ruolo.
+    const role = normalizeRole(rawRole) || normalizeRole(rawMantra) || normalizeRole(row.__foglio);
     if (!role) {
       warnings.push(`Riga ${idx + 2}: ruolo non riconosciuto per "${name}", scartata.`);
       return;
@@ -269,31 +354,101 @@ export function buildPlayers(rows, mapping) {
     const tier = mapping.tier ? (row[mapping.tier] || '').trim() : '';
     if (tier) tierLabels.add(tier);
 
+    const tags = [];
+    for (const header of mapping.tags || []) {
+      const v = (row[header] || '').trim();
+      if (v) tags.push(v.toLowerCase());
+    }
+
     const id = makePlayerId(name, team, role);
     if (seen.has(id)) {
       warnings.push(`Riga ${idx + 2}: "${name}" (${team}) duplicato, tenuta la prima occorrenza.`);
       return;
     }
-    seen.add(id);
 
-    players.push({
+    const player = {
       id,
       name,
       team,
       role,
-      roleMantra: (rawMantra || rawRole || '').trim(),
+      roleMantra: (rawMantra || '').trim(),
       tier,
-      price: mapping.price ? parseNumber(row[mapping.price]) : null,
-      fvm: mapping.fvm ? parseNumber(row[mapping.fvm]) : null,
-      fantamedia: mapping.fantamedia ? parseNumber(row[mapping.fantamedia]) : null,
-      mediavoto: mapping.mediavoto ? parseNumber(row[mapping.mediavoto]) : null,
-      matches: mapping.matches ? parseNumber(row[mapping.matches]) : null,
-      goals: mapping.goals ? parseNumber(row[mapping.goals]) : null,
-      assists: mapping.assists ? parseNumber(row[mapping.assists]) : null,
-      penalties: mapping.penalties ? (row[mapping.penalties] || '').trim() : '',
+      tags,
       notes: mapping.notes ? (row[mapping.notes] || '').trim() : '',
-    });
+      sources: source ? [source] : [],
+    };
+    for (const field of NUMERIC_FIELDS) player[field] = num(row, field);
+
+    seen.set(id, player);
+    players.push(player);
   });
 
   return { players, warnings, tierLabels: [...tierLabels] };
+}
+
+/**
+ * Unisce i listoni di piu' creators in uno solo.
+ * Stesso giocatore = stesso nome e squadra. I valori numerici diventano la media
+ * delle fonti, le etichette si sommano: il consenso vale piu' di una firma sola.
+ */
+export function mergeSources(lists) {
+  const valid = lists.filter((l) => l && l.length);
+  if (valid.length <= 1) return valid[0] || [];
+
+  const merged = new Map();
+  for (const list of valid) {
+    for (const p of list) {
+      const key = p.id;
+      if (!merged.has(key)) {
+        merged.set(key, { ...p, tiersBySource: {}, bySource: {}, _acc: {}, _n: {} });
+      }
+      const target = merged.get(key);
+      for (const src of p.sources) if (!target.sources.includes(src)) target.sources.push(src);
+      const src = p.sources[0] || `fonte ${valid.indexOf(list) + 1}`;
+      if (p.tier) target.tiersBySource[src] = p.tier;
+      target.bySource = target.bySource || {};
+      target.bySource[src] = { tier: p.tier, price: p.price, pma: p.pma, fmvExp: p.fmvExp, tierPct: p.tierPct };
+      if (Number.isFinite(p.tierPct)) {
+        target._acc.tierPct = (target._acc.tierPct || 0) + p.tierPct;
+        target._n.tierPct = (target._n.tierPct || 0) + 1;
+      }
+      for (const tag of p.tags) if (!target.tags.includes(tag)) target.tags.push(tag);
+      if (p.notes && !target.notes.includes(p.notes)) target.notes = target.notes ? `${target.notes}\n\n${p.notes}` : p.notes;
+      for (const field of NUMERIC_FIELDS) {
+        const v = p[field];
+        if (v === null || v === undefined || !Number.isFinite(v)) continue;
+        target._acc[field] = (target._acc[field] || 0) + v;
+        target._n[field] = (target._n[field] || 0) + 1;
+      }
+    }
+  }
+
+  return [...merged.values()].map((p) => {
+    const out = { ...p };
+    for (const field of NUMERIC_FIELDS) {
+      out[field] = p._n[field] ? p._acc[field] / p._n[field] : null;
+    }
+    out.tierPct = p._n.tierPct ? p._acc.tierPct / p._n.tierPct : null;
+    delete out._acc;
+    delete out._n;
+    // La fascia mostrata e' quella della prima fonte che ne ha una.
+    out.tier = Object.values(p.tiersBySource)[0] || p.tier || '';
+
+    // Quanto le fonti sono d'accordo sul prezzo. Un disaccordo forte e' un'occasione:
+    // il mercato seguira' una via di mezzo, e chi lo valuta di piu' ha visto qualcosa.
+    const prices = Object.values(out.bySource || {})
+      .map((v) => v.price)
+      .filter((v) => Number.isFinite(v));
+    if (prices.length > 1) {
+      out.priceMin = Math.min(...prices);
+      out.priceMax = Math.max(...prices);
+      const mean = prices.reduce((a, b) => a + b, 0) / prices.length;
+      out.priceSpread = mean > 0 ? (out.priceMax - out.priceMin) / mean : 0;
+    } else {
+      out.priceMin = out.price;
+      out.priceMax = out.price;
+      out.priceSpread = 0;
+    }
+    return out;
+  });
 }
