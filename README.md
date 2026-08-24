@@ -88,5 +88,20 @@ Nessuna dipendenza: il progetto usa solo Node e le API standard del browser. Il 
 e' scritto a mano sopra `DecompressionStream`, cosi' il listone si carica dal telefono senza
 doverlo convertire prima.
 
-Per usarlo su iPhone: apri `dist/index.html` da un indirizzo qualsiasi e usa
-**Condividi → Aggiungi alla schermata Home**. Da li' funziona anche senza rete.
+## Come metterlo sul telefono
+
+L'app e' un unico file, `dist/index.html`, e funziona in tre modi.
+
+**Da un indirizzo web.** Apri l'indirizzo in Safari e usa **Condividi → Aggiungi alla schermata
+Home**: da li' parte a tutto schermo e funziona anche senza rete.
+
+**Da GitHub Pages.** Il workflow in `.github/workflows/pages.yml` pubblica l'app a ogni push, ma
+richiede che il repository sia **pubblico** (Pages sui repository privati e' riservato ai piani a
+pagamento) e che in *Settings → Pages → Build and deployment* la sorgente sia impostata su
+**GitHub Actions**. Fatto questo, l'app vive su `https://<utente>.github.io/AstaHelper/`.
+
+**Da file, senza rete.** Scarica `dist/index.html`, salvalo nell'app File e aprilo da li':
+essendo autosufficiente funziona anche a doppio clic, senza alcun server.
+
+I dati (listoni, impostazioni, asta in corso) restano nel browser del dispositivo dove li carichi:
+se usi anche l'iPad, li' vanno ricaricati.
