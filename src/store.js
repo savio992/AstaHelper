@@ -3,9 +3,10 @@
 
 import { defaultSettings, inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, ROLES } from './domain/model.js';
 import { mergeSources } from './domain/csv.js';
-import { valuePlayers } from './domain/valuation.js';
+import { valuePlayers, markTopPlayers } from './domain/valuation.js';
 import { withExpectedPrices } from './domain/market.js';
 import { optimizeRoster } from './domain/optimizer.js';
+import { aggregateForm, applyForm, matchCount } from './domain/form.js';
 
 const KEY = 'astahelper:v1';
 
@@ -14,6 +15,8 @@ export const state = {
   // Un elemento per creator importato: { name, players }. Il listone di lavoro e' la loro unione.
   sources: [],
   roster: [], // listone unito, dati grezzi
+  // Rendimento nelle giornate gia' giocate: { entries, giornate, fileName, abbinati }
+  formData: null,
   players: [], // listone con punteggi e prezzi attesi (derivato)
   importMeta: null, // { headers, mapping, rows, warnings, fileName }
   auction: {
@@ -22,6 +25,8 @@ export const state = {
     log: [], // { id, kind, price, at }
   },
   plan: null,
+  // Il piano precedente, per poter raccontare cosa e' cambiato dopo l'ultima assegnazione.
+  prevPlan: null,
   ui: {
     tab: 'asta',
     query: '',
@@ -48,6 +53,7 @@ export function save() {
     const payload = {
       settings: state.settings,
       sources: state.sources,
+      formData: state.formData,
       auction: state.auction,
       importMeta: state.importMeta ? { headers: state.importMeta.headers, mapping: state.importMeta.mapping, fileName: state.importMeta.fileName, count: state.roster.length } : null,
       ui: { tab: state.ui.tab },
@@ -72,6 +78,7 @@ export function load() {
     state.roster = rebuildRoster();
     state.auction = { owned: {}, taken: {}, log: [], ...(data.auction || {}) };
     state.importMeta = data.importMeta || null;
+    state.formData = data.formData || null;
     if (data.ui?.tab) state.ui.tab = data.ui.tab;
     recompute();
     return true;
@@ -82,10 +89,12 @@ export function load() {
 }
 
 export function resetAll() {
+  state.prevPlan = null;
   localStorage.removeItem(KEY);
   state.settings = defaultSettings();
   state.sources = [];
   state.roster = [];
+  state.formData = null;
   state.players = [];
   state.importMeta = null;
   state.auction = { owned: {}, taken: {}, log: [] };
@@ -100,8 +109,36 @@ export function recompute() {
     state.plan = null;
     return;
   }
-  const valued = valuePlayers(state.roster, state.settings);
-  state.players = withExpectedPrices(valued, state.settings);
+  // Il rendimento delle giornate gia' giocate corregge le proiezioni prima di ogni altro calcolo.
+  const base = state.formData
+    ? applyForm(state.roster, new Map(state.formData.entries), state.formData.giornate)
+    : state.roster;
+  const valued = valuePlayers(base, state.settings);
+  state.players = markTopPlayers(withExpectedPrices(valued, state.settings), state.settings);
+}
+
+/** Carica i voti delle giornate gia' giocate. */
+export function setForm({ rows, mapping, fileName, giornate }) {
+  const { form, giornate: dedotte } = aggregateForm(rows, mapping);
+  const n = giornate || dedotte || 1;
+  state.formData = {
+    entries: [...form.entries()],
+    giornate: n,
+    fileName,
+    abbinati: matchCount(state.roster, form),
+  };
+  recompute();
+  rebuildPlan();
+  save();
+  notify();
+}
+
+export function clearForm() {
+  state.formData = null;
+  recompute();
+  rebuildPlan();
+  save();
+  notify();
 }
 
 export function ownedMap() {
@@ -122,6 +159,7 @@ export function rebuildPlan(opts = {}) {
     state.plan = null;
     return null;
   }
+  if (opts.ricorda !== false && state.plan?.ok) state.prevPlan = state.plan;
   state.plan = optimizeRoster({
     players: state.players,
     settings: state.settings,

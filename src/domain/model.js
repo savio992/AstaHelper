@@ -156,6 +156,14 @@ export function defaultSettings() {
     roleBudget: { P: null, D: null, C: null, A: null },
     // Ordine delle fasce per ruolo (dalla migliore alla peggiore), popolato all'import.
     tierOrder: { P: [], D: [], C: [], A: [] },
+    // Ordine dei reparti all'asta. Nelle aste a chiamata per ruolo si parte dai portieri e si
+    // scende fino agli attaccanti: i crediti vanno impegnati prima di sapere cosa costera' il resto.
+    auctionOrder: ['P', 'D', 'C', 'A'],
+    // Minimo di giocatori di prima fascia per reparto. Una rosa fatta solo di occasioni e'
+    // matematicamente efficiente ma fragile: i top sono i giocatori che vincono le giornate.
+    minTop: { P: 0, D: 1, C: 1, A: 1 },
+    // Quanto in alto deve stare la fascia perche' un giocatore conti come top (0 = solo la prima).
+    topThreshold: 0.06,
     // Massimo numero di giocatori dallo stesso club (0 = nessun limite).
     // Serve a non ritrovarsi mezza rosa legata alla stagione di una sola squadra.
     maxPerClub: 4,

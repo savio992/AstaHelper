@@ -1,5 +1,5 @@
-import { defaultSettings, sortTierLabels, ROLES } from '../src/domain/model.js';
-import { valuePlayers } from '../src/domain/valuation.js';
+import { defaultSettings, inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, ROLES } from '../src/domain/model.js';
+import { valuePlayers, markTopPlayers } from '../src/domain/valuation.js';
 import { withExpectedPrices } from '../src/domain/market.js';
 
 const CLUBS = ['Inter', 'Napoli', 'Juventus', 'Milan', 'Atalanta', 'Roma', 'Lazio', 'Bologna',
@@ -70,13 +70,16 @@ export function makeListone(seed = 42) {
   return players;
 }
 
+/**
+ * Ricostruisce la stessa catena dello store, cosi' i test vedono i giocatori come li vede
+ * l'applicazione: quote normalizzate, fasce in percentile, prezzi attesi e marcatura dei top.
+ */
 export function makeContext(overrides = {}, seed = 42) {
   const raw = overrides.projected ? makeListoneProjected(seed) : makeListone(seed);
   const settings = { ...defaultSettings(), ...overrides };
-  for (const role of ROLES) {
-    const labels = [...new Set(raw.filter((p) => p.role === role).map((p) => p.tier))];
-    settings.tierOrder[role] = sortTierLabels(labels);
-  }
-  const players = withExpectedPrices(valuePlayers(raw, settings), settings);
+  if (overrides.minTop) settings.minTop = { ...defaultSettings().minTop, ...overrides.minTop };
+  const annotated = annotatePriceShare(annotatePmaShare(annotateTierPct(raw)));
+  for (const role of ROLES) settings.tierOrder[role] = inferTierOrder(annotated, role);
+  const players = markTopPlayers(withExpectedPrices(valuePlayers(annotated, settings), settings), settings);
   return { players, settings };
 }

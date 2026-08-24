@@ -1,6 +1,6 @@
 // L'assistente d'asta: quanto posso offrire davvero, e chi prendo se questo giocatore me lo soffiano.
 
-import { ROLES, tierKey, totalSlots } from './model.js';
+import { ROLES, ROLE_LABEL, tierKey, totalSlots } from './model.js';
 import { optimizeRoster, creditShadowPrice } from './optimizer.js';
 
 /** Impostazioni ridotte per i ricalcoli in tempo reale durante l'asta. */
@@ -23,6 +23,62 @@ export function slotsLeftByRole(settings, players, owned) {
   const out = {};
   for (const role of ROLES) out[role] = Math.max(0, (settings.slots[role] || 0) - used[role]);
   return out;
+}
+
+/**
+ * In che reparto siamo, in un'asta a chiamata per ruolo.
+ * E' il primo reparto dell'ordine che ha ancora slot da riempire.
+ */
+export function faseCorrente(settings, players, owned) {
+  const ordine = settings.auctionOrder?.length ? settings.auctionOrder : ROLES;
+  const mancanti = slotsLeftByRole(settings, players, owned);
+  return ordine.find((r) => mancanti[r] > 0) ?? null;
+}
+
+/**
+ * Quanto posso davvero spendere adesso, in un'asta che procede per reparti.
+ *
+ * Il tetto tecnico (un credito per ogni slot rimasto) non basta quando i reparti si comprano
+ * in sequenza: chi spende duecento crediti in porta arriva all'attacco senza niente, e a quel
+ * punto non c'e' piano che tenga. Qui si mette da parte quello che il piano ha destinato ai
+ * reparti che verranno dopo, e si guarda quanto resta per quello in corso.
+ */
+export function budgetDiFase({ settings, players, owned, plan, role = null }) {
+  const ordine = settings.auctionOrder?.length ? settings.auctionOrder : ROLES;
+  const fase = role || faseCorrente(settings, players, owned) || ordine[ordine.length - 1];
+  const indice = ordine.indexOf(fase);
+  const mancanti = slotsLeftByRole(settings, players, owned);
+  const speso = [...owned.values()].reduce((a, b) => a + b, 0);
+  const residuo = (settings.budget || 500) - speso;
+
+  // Quanto il piano prevede ancora di spendere nei reparti successivi.
+  let riservatoDopo = 0;
+  for (let i = indice + 1; i < ordine.length; i++) {
+    const r = ordine[i];
+    const dalPiano = (plan?.picks || []).filter((p) => p.role === r).reduce((a, p) => a + p.plannedPrice, 0);
+    // Anche senza piano si tiene almeno un credito per slot.
+    riservatoDopo += Math.max(dalPiano, mancanti[r]);
+  }
+
+  const perLaFase = Math.max(0, residuo - riservatoDopo);
+  const pianificatoFase = (plan?.picks || []).filter((p) => p.role === fase).reduce((a, p) => a + p.plannedPrice, 0);
+  const spesoFase = [...owned.entries()].reduce((a, [id, prezzo]) => {
+    const p = players.find((x) => x.id === id);
+    return a + (p && p.role === fase ? prezzo : 0);
+  }, 0);
+
+  return {
+    fase,
+    etichetta: ROLE_LABEL[fase],
+    slotMancanti: mancanti[fase],
+    residuo,
+    riservatoDopo,
+    perLaFase,
+    pianificatoFase,
+    spesoFase,
+    // Massimo su un singolo giocatore adesso: lascia un credito per gli altri slot del reparto.
+    massimoOra: Math.max(0, perLaFase - Math.max(0, mancanti[fase] - 1)),
+  };
 }
 
 /**

@@ -48,9 +48,12 @@ class Trail {
  * i migliori per punteggio, i migliori per rapporto punti/credito e i piu' economici
  * (servono per chiudere gli slot con 1 credito).
  */
-export function pruneCandidates(cands, keepTop = 70, keepRatio = 50, keepCheap = 25) {
+export function pruneCandidates(cands, keepTop = 70, keepRatio = 50, keepCheap = 25, tieniPrimaFascia = false) {
   if (cands.length <= keepTop + keepRatio + keepCheap) return cands;
   const chosen = new Set();
+  // Con il vincolo sui top attivo, i giocatori di prima fascia non possono essere potati:
+  // se sparissero tutti dai candidati il vincolo diventerebbe insoddisfacibile.
+  if (tieniPrimaFascia) for (const c of cands) if (c.isTop) chosen.add(c);
   const byScore = [...cands].sort((a, b) => b.score - a.score);
   const byRatio = [...cands].sort((a, b) => b.score / b.cost - a.score / a.cost);
   const byCheap = [...cands].sort((a, b) => a.cost - b.cost || b.score - a.score);
@@ -67,33 +70,45 @@ export function pruneCandidates(cands, keepTop = 70, keepRatio = 50, keepCheap =
  * di profondita' corretto (titolare, primo cambio, panchinaro...) senza rompere il DP.
  * Ritorna dp[k * (B+1) + b] = punteggio massimo con esattamente k giocatori e costo esatto b.
  */
-function roleKnapsack(cands, slots, B) {
+function roleKnapsack(cands, slots, B, minTop = 0) {
   const W = B + 1;
-  const dp = new Float64Array((slots + 1) * W).fill(NEG);
-  const refs = new Int32Array((slots + 1) * W);
-  const trail = new Trail(Math.min(1 << 20, Math.max(1024, cands.length * (slots + 1) * 8)));
-  dp[0] = 0;
+  const T = Math.max(0, Math.min(minTop, slots));
+  // Terza dimensione: quanti giocatori di prima fascia sono stati presi, saturata a T
+  // (oltre il minimo richiesto non serve distinguere).
+  const at = (k, t) => (k * (T + 1) + t) * W;
+  const size = (slots + 1) * (T + 1) * W;
+  const dp = new Float64Array(size).fill(NEG);
+  const refs = new Int32Array(size);
+  const trail = new Trail(Math.min(1 << 21, Math.max(1024, cands.length * (slots + 1) * (T + 1) * 4)));
+  dp[at(0, 0)] = 0;
 
   for (let i = 0; i < cands.length; i++) {
     const c = cands[i].cost;
     const weighted = cands[i].weighted;
+    const isTop = cands[i].isTop ? 1 : 0;
     if (c > B) continue;
     for (let k = slots; k >= 1; k--) {
-      const rowPrev = (k - 1) * W;
-      const row = k * W;
       const s = weighted[k - 1];
-      for (let b = B; b >= c; b--) {
-        const prev = dp[rowPrev + b - c];
-        if (prev <= NEG / 2) continue;
-        const val = prev + s;
-        if (val > dp[row + b]) {
-          dp[row + b] = val;
-          refs[row + b] = trail.push(i, refs[rowPrev + b - c]);
+      for (let t = T; t >= 0; t--) {
+        // Stati che portano a (k, t) prendendo questo giocatore.
+        const sorgenti = isTop ? (t === T ? (T > 0 ? [T - 1, T] : [T]) : t > 0 ? [t - 1] : []) : [t];
+        for (const tPrev of sorgenti) {
+          const rowPrev = at(k - 1, tPrev);
+          const row = at(k, t);
+          for (let b = B; b >= c; b--) {
+            const prev = dp[rowPrev + b - c];
+            if (prev <= NEG / 2) continue;
+            const val = prev + s;
+            if (val > dp[row + b]) {
+              dp[row + b] = val;
+              refs[row + b] = trail.push(i, refs[rowPrev + b - c]);
+            }
+          }
         }
       }
     }
   }
-  return { dp, refs, trail, W };
+  return { dp, refs, trail, W, T, at };
 }
 
 /**
@@ -152,6 +167,19 @@ export function optimizeRoster({
 
   const B = Math.max(0, Math.floor(budgetLeft));
 
+  // I top gia' comprati contano: il vincolo riguarda la rosa finita, non i soli acquisti futuri.
+  // E non puo' chiedere piu' top di quanti ne restino disponibili, altrimenti un listone senza
+  // fasce, o un reparto in cui li hanno gia' presi tutti, renderebbe il piano impossibile.
+  const topNeed = {};
+  for (const role of ROLES) {
+    const richiesti = Math.max(0, Math.round(settings.minTop?.[role] ?? 0));
+    const gia = ownedPlayers.filter((p) => p.role === role && p.isTop).length;
+    const disponibili = players.filter(
+      (p) => p.role === role && p.isTop && !owned.has(p.id) && !unavailable.has(p.id)
+    ).length;
+    topNeed[role] = Math.max(0, Math.min(need[role], disponibili, richiesti - gia));
+  }
+
   // Candidati per ruolo
   const roleData = {};
   for (const role of ROLES) {
@@ -166,10 +194,11 @@ export function optimizeRoster({
       .map((p) => ({
         id: p.id,
         score: p.score || 0,
+        isTop: !!p.isTop,
         cost: Math.max(1, Math.round(priceOverride.get(p.id) ?? p.expectedPrice ?? 1)),
       }))
       .filter((c) => c.cost <= B);
-    if (prune) cands = pruneCandidates(cands);
+    if (prune) cands = pruneCandidates(cands, 70, 50, 25, topNeed[role] > 0);
     cands.sort((a, b) => b.score - a.score);
     // Rango reale nel ruolo = giocatori gia' in rosa piu' forti + candidati migliori gia' scelti.
     // Comprare un giocatore piu' forte retrocede di un posto tutti quelli gia' in rosa piu' deboli:
@@ -205,7 +234,7 @@ export function optimizeRoster({
   // DP per ruolo
   const solved = {};
   for (const role of ROLES) {
-    solved[role] = need[role] > 0 ? roleKnapsack(roleData[role], need[role], B) : null;
+    solved[role] = need[role] > 0 ? roleKnapsack(roleData[role], need[role], B, topNeed[role]) : null;
   }
 
   // Convoluzione fra i ruoli, rispettando eventuali tetti di spesa per ruolo.
@@ -223,8 +252,8 @@ export function optimizeRoster({
       cur = next;
       continue;
     }
-    const { dp } = solved[role];
-    const row = need[role] * W;
+    const { dp, at, T } = solved[role];
+    const row = at(need[role], T);
     const cap = settings.roleBudget?.[role];
     const maxRole = cap === null || cap === undefined || cap === '' ? B : Math.min(B, Math.max(0, Math.floor(cap)));
     for (let c = 0; c <= maxRole; c++) {
@@ -284,8 +313,8 @@ export function optimizeRoster({
     const c = splits[r][b];
     if (c > 0 || need[role] > 0) {
       if (need[role] > 0) {
-        const { refs, trail, W: rw } = solved[role];
-        const ref = refs[need[role] * rw + c];
+        const { refs, trail, at, T } = solved[role];
+        const ref = refs[at(need[role], T) + c];
         for (const idx of trail.collect(ref)) {
           const cand = roleData[role][idx];
           picks.push({ ...byId.get(cand.id), plannedPrice: cand.cost });
@@ -372,8 +401,13 @@ function improveWithSynergy({ picks, ownedPlayers, players, settings, owned, una
       let bestScore = evaluate(current);
       const clubCap = Number(settings.maxPerClub) || 0;
       const exposure = clubCap > 0 ? clubExposure([...ownedPlayers, ...current], settings) : null;
+      // Se sto togliendo un top e il reparto e' gia' al minimo, il sostituto deve essere un top.
+      const minTop = Math.max(0, Math.round(settings.minTop?.[out.role] ?? 0));
+      const topInRuolo = [...current, ...ownedPlayers].filter((p) => p.role === out.role && p.isTop).length;
+      const serveTop = out.isTop && topInRuolo <= minTop;
       for (const cand of poolByRole[out.role]) {
         if (inRoster.has(cand.id)) continue;
+        if (serveTop && !cand.isTop) continue;
         const cost = priceOf(cand);
         if (cost > budgetForSlot || cost > roleCapLeft) continue;
         // Non riportare dentro un club gia' al limite: il tetto e' appena stato rispettato.
@@ -427,6 +461,9 @@ function enforceClubCap({ picks, ownedPlayers, players, settings, owned, unavail
 
     let replaced = false;
     for (const { p: outPlayer, i } of sacrificable) {
+      const minTop = Math.max(0, Math.round(settings.minTop?.[outPlayer.role] ?? 0));
+      const topInRuolo = [...current, ...ownedPlayers].filter((p) => p.role === outPlayer.role && p.isTop).length;
+      const serveTop = outPlayer.isTop && topInRuolo <= minTop;
       const inRoster = new Set([...current.map((x) => x.id), ...ownedPlayers.map((x) => x.id)]);
       const spendOthers = current.reduce((a, x) => a + x.plannedPrice, 0) - outPlayer.plannedPrice;
       const budgetForSlot = budgetLeft - spendOthers;
@@ -439,7 +476,8 @@ function enforceClubCap({ picks, ownedPlayers, players, settings, owned, unavail
             !owned.has(c.id) &&
             !unavailable.has(c.id) &&
             priceOf(c) <= budgetForSlot &&
-            (exposure.get(c.team)?.effettivi ?? 0) < cap
+            (exposure.get(c.team)?.effettivi ?? 0) < cap &&
+            (!serveTop || c.isTop)
         )
         .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
       if (!candidate) continue;

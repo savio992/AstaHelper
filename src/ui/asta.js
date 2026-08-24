@@ -1,8 +1,9 @@
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
 import { state, assign, release, undo, ownedMap, unavailableSet, playerById, creditsLeft, rebuildPlan } from '../store.js';
-import { ROLES, totalSlots } from '../domain/model.js';
-import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole } from '../domain/advisor.js';
+import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
+import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase } from '../domain/advisor.js';
+import { consiglioStrategico, scenarioSenzaBig, narrazione } from '../domain/strategia.js';
 import { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } from './common.js';
 
 // I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
@@ -15,6 +16,7 @@ function cacheKey() {
 
 export function invalidate() {
   cache = { key: null, bid: null, alts: null };
+  scenario = null;
 }
 
 function ensureAdvice(rerender) {
@@ -49,7 +51,8 @@ function hud() {
   const slots = slotsLeftByRole(state.settings, state.players, owned);
   const filled = owned.size;
   const pct = Math.max(0, Math.min(100, (left / budget) * 100));
-  const spendable = maxSpendableNow(state.settings, owned);
+  const fase = budgetDiFase({ settings: state.settings, players: state.players, owned, plan: state.plan });
+  const sforato = fase.spesoFase > fase.pianificatoFase && fase.pianificatoFase > 0;
   return `
   <div class="card">
     <div class="hud">
@@ -58,12 +61,22 @@ function hud() {
         <div class="bar"><i style="width:${pct}%" class="${left < 0 ? 'over' : ''}"></i></div>
         <div class="row between small muted" style="margin-top:6px">
           <span>${filled}/${totalSlots(state.settings)} slot</span>
-          <span>max su un giocatore: <b class="mono">${spendable}</b></span>
+          <span>max su un giocatore: <b class="mono">${fase.massimoOra}</b></span>
         </div>
       </div>
     </div>
     <div class="slotbar" style="margin-top:12px">
-      ${ROLES.map((r) => `<div><b class="mono">${slots[r]}</b><span>${r === 'P' ? 'POR' : r === 'D' ? 'DIF' : r === 'C' ? 'CEN' : 'ATT'}</span></div>`).join('')}
+      ${ROLES.map(
+        (r) =>
+          `<div style="${r === fase.fase ? 'outline:2px solid var(--accent);outline-offset:-2px' : ''}"><b class="mono">${slots[r]}</b><span>${
+            r === 'P' ? 'POR' : r === 'D' ? 'DIF' : r === 'C' ? 'CEN' : 'ATT'
+          }</span></div>`
+      ).join('')}
+    </div>
+    <div class="row between small" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+      <span class="muted">si gioca sui <b style="color:var(--text)">${esc(fase.etichetta.toLowerCase())}</b></span>
+      <span class="muted"><b class="mono" style="color:var(--${sforato ? 'danger' : 'text'})">${fase.perLaFase}</b> per il reparto ·
+        <b class="mono">${fase.riservatoDopo}</b> riservati al resto</span>
     </div>
   </div>`;
 }
@@ -133,6 +146,7 @@ function detail(p) {
   const planned = state.plan?.picks?.find((x) => x.id === p.id)?.plannedPrice;
   const current = state.ui.bidPrice ?? Math.round(p.expectedPrice ?? 1);
   const spendable = maxSpendableNow(state.settings, owned);
+  const fase = budgetDiFase({ settings: state.settings, players: state.players, owned, plan: state.plan, role: p.role });
 
   const paid = status === 'mine' ? state.auction.owned[p.id] : status === 'other' ? state.auction.taken[p.id] : null;
 
@@ -174,7 +188,7 @@ function detail(p) {
     <div class="row between small muted" style="margin-bottom:10px">
       <span>prezzo atteso <b class="mono">${Math.round(p.expectedPrice ?? 0)}</b></span>
       ${planned ? `<span>a piano <b class="mono">${planned}</b></span>` : ''}
-      <span>tetto tecnico <b class="mono">${spendable}</b></span>
+      <span>ti resta per il reparto <b class="mono">${fase.perLaFase}</b></span>
     </div>
 
     <div class="stepper">
@@ -182,7 +196,13 @@ function detail(p) {
       <input type="number" inputmode="numeric" class="mono" id="bidprice" value="${current}" min="0" max="${spendable}" data-action="bid-input">
       <button class="btn" data-action="bid-plus">+</button>
     </div>
-    <div style="margin-top:10px">${verdictFor(current, bid)}</div>
+    <div style="margin-top:10px">${
+      current > fase.massimoOra && fase.slotMancanti > 0
+        ? `<div class="verdict stop">A ${current} sfori il reparto: resteresti senza crediti per ${esc(
+            (state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder || ROLES).indexOf(p.role) + 1).map((r) => ROLE_LABEL[r].toLowerCase()).join(' e ')
+          ) || 'il resto'}.</div>`
+        : verdictFor(current, bid)
+    }</div>
 
     <div class="grid2" style="margin-top:12px">
       <button class="btn primary" data-action="take-mine" data-id="${esc(p.id)}">L'ho preso io</button>
@@ -277,6 +297,78 @@ function altsCard(p, alts) {
   </div>`;
 }
 
+// Lo scenario "se finiscono i big" si calcola su richiesta: sono ottimizzazioni complete.
+let scenario = null;
+
+/**
+ * La bussola strategica: quanti big restano, cosa e' cambiato dopo l'ultima assegnazione,
+ * e cosa succederebbe restando senza. E' la differenza fra sapere chi prendere al posto di uno
+ * e capire che la strada e' cambiata.
+ */
+function strategiaCard() {
+  const plan = state.plan;
+  if (!plan?.ok) return '';
+  const owned = ownedMap();
+  const unavailable = unavailableSet();
+  const consiglio = consiglioStrategico({ players: state.players, settings: state.settings, owned, unavailable, piano: plan });
+  if (!consiglio) return '';
+
+  const cambiamenti = state.prevPlan
+    ? narrazione({ prima: state.prevPlan, dopo: plan, settings: state.settings })
+    : [];
+
+  const bigRow = ROLES.map((r) => {
+    const b = consiglio.big[r];
+    const richiesti = Math.max(0, Math.round(state.settings.minTop?.[r] ?? 0));
+    const colore = b.miei >= richiesti && richiesti > 0 ? 'accent' : b.liberi === 0 ? 'danger' : b.liberi <= 2 ? 'warn' : 'muted';
+    return `<div><b class="mono" style="color:var(--${colore})">${b.miei}/${b.liberi}</b><span>${r}</span></div>`;
+  }).join('');
+
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:8px">
+      <h2 style="margin:0">Strategia</h2>
+      <span class="tiny muted">big: tuoi / ancora liberi</span>
+    </div>
+    <div class="slotbar">${bigRow}</div>
+
+    ${
+      cambiamenti.length
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+             <div class="tiny muted" style="margin-bottom:4px">dopo l'ultima assegnazione</div>
+             <div class="small">${cambiamenti.map((f) => esc(f)).join(' ')}</div>
+           </div>`
+        : ''
+    }
+
+    ${consiglio.avvisi
+      .map(
+        (a) => `<div class="verdict ${a.gravita === 'finiti' ? 'stop' : 'edge'}" style="margin-top:12px;text-align:left">
+          <div>${esc(a.titolo)}</div>
+          <div class="small" style="font-weight:500;margin-top:4px">${esc(a.testo)}</div>
+        </div>`
+      )
+      .join('')}
+
+    ${
+      scenario
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+             <div class="row between" style="margin-bottom:6px">
+               <b class="small">Se non prendi nessun big in ${esc(ROLE_LABEL[scenario.role].toLowerCase())}</b>
+               <button class="btn ghost tiny" data-action="chiudi-scenario">chiudi</button>
+             </div>
+             <div class="small">${scenario.frasi.map((f) => esc(f)).join(' ') || 'Il piano non cambierebbe granche&#39;.'}</div>
+             <div class="tiny muted" style="margin-top:6px">costo del cambio: ${scenario.costo} punti</div>
+           </div>`
+        : `<div class="segment" style="margin-top:12px">
+             ${ROLES.filter((r) => consiglio.big[r].liberi > 0)
+               .map((r) => `<button data-action="scenario" data-role="${r}">se perdo i big ${r}</button>`)
+               .join('')}
+           </div>`
+    }
+  </div>`;
+}
+
 function targetsCard() {
   const plan = state.plan;
   if (!plan?.ok) return '';
@@ -366,6 +458,7 @@ export function render(rerender) {
 
     ${selected ? detail(selected) : ''}
     ${!selected && !state.auction.log.length ? readyCard() : ''}
+    ${selected ? '' : strategiaCard()}
     ${selected ? '' : targetsCard()}
 
     <div class="row" style="gap:10px">
@@ -419,6 +512,27 @@ export function onAction(action, target, ev, rerender) {
       rerender();
       return true;
     }
+    case 'scenario': {
+      const role = target.dataset.role;
+      const dopo = scenarioSenzaBig({
+        players: state.players,
+        settings: state.settings,
+        owned: ownedMap(),
+        unavailable: unavailableSet(),
+        role,
+      });
+      scenario = {
+        role,
+        frasi: narrazione({ prima: state.plan, dopo, settings: state.settings }),
+        costo: Math.max(0, Math.round(state.plan.score - dopo.score)),
+      };
+      rerender();
+      return true;
+    }
+    case 'chiudi-scenario':
+      scenario = null;
+      rerender();
+      return true;
     case 'goto':
       state.ui.tab = target.dataset.tab;
       rerender();

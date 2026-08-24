@@ -68,6 +68,31 @@ Si trova per ricerca binaria, ricalcolando il piano a ogni tentativo.
 aver perso l'obiettivo e misura quanto vale ogni possibile sostituto dentro il piano che ne
 risulta. A volte la risposta migliore non e' un altro attaccante, e' spostare i crediti in difesa.
 
+**I big in rosa.** Lasciato libero, l'ottimizzatore schiva i campioni: costano piu' di quanto
+rendano, e comprare valore e' matematicamente superiore. Ma una rosa senza big non vince le
+giornate, e il premio che il mercato chiede per un campione compra anche qualcosa che il modello
+non misura. Il vincolo **minimo big per reparto** decide quanto pagare quel premio, e il costo e'
+sempre visibile: sui listoni di prova forzare un big in attacco fa entrare Malen a 163 crediti e
+costa il 3,7% dei punti attesi.
+
+**L'asta a chiamata per ruolo** cambia la disciplina di spesa. Si parte dai portieri e si scende
+fino agli attaccanti, quindi i crediti vanno impegnati prima di sapere cosa costera' il resto:
+un tetto che lascia soltanto un credito per ogni slot rimasto e' inutile, perche' permette di
+spendere duecento crediti in porta e arrivare all'attacco senza niente. L'app mette da parte
+quello che il piano ha destinato ai reparti successivi e mostra quanto resta davvero per quello
+in corso.
+
+**Quando salta il piano** non basta sapere chi prendere al posto di un giocatore: serve capire
+che la strada e' cambiata. Se i big di un reparto finiscono tutti, l'app ricalcola la rosa senza
+di loro e lo dice a parole: dove si spostano i crediti e quali sono i nuovi obiettivi. Lo stesso
+scenario si puo' chiedere in anticipo, prima che accada.
+
+**Le giornate gia' giocate** correggono le proiezioni, che sono fatte prima che il campionato
+inizi. Il peso dei dati nuovi cresce con le partite: dopo una giornata su trentotto un fantavoto
+alto e' quasi solo rumore, mentre sapere che un giocatore e' sceso in campo dal primo minuto
+toglie incertezza sulla titolarita', che nel modello e' il fattore piu' pesante. Senza questo
+accorgimento chi segna una doppietta alla prima diventerebbe il miglior giocatore del listone.
+
 **I modificatori** cambiano la funzione obiettivo. Con il modificatore di difesa i difensori
 valgono di piu' e i blocchi di club vengono premiati: il modificatore scatta a soglie sulla somma
 dei voti, e i voti che arrivano dalla stessa partita salgono e scendono insieme, quindi una difesa

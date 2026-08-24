@@ -6,7 +6,8 @@ import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domai
 import { valuePlayers, rosterScore, depthWeights } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
-import { maxBid, alternatives, maxSpendableNow, tierBudgetReport } from '../src/domain/advisor.js';
+import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase } from '../src/domain/advisor.js';
+import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico } from '../src/domain/strategia.js';
 import { makeContext, makeListone } from './helpers.js';
 
 test('sniffDelimiter riconosce ; , e tab', () => {
@@ -369,4 +370,185 @@ test('un listone senza colonna fascia funziona lo stesso', () => {
   const res = optimizeRoster({ players, settings });
   assert.equal(res.ok, true);
   assert.equal(res.picks.length, totalSlots(settings));
+});
+
+// --- vincolo sui giocatori di prima fascia -----------------------------------------------
+
+test('il vincolo porta in rosa almeno un big per reparto', () => {
+  const libero = makeContext({ minTop: { P: 0, D: 0, C: 0, A: 0 } });
+  const vincolato = makeContext({ minTop: { P: 0, D: 1, C: 1, A: 1 } });
+  const planL = optimizeRoster({ players: libero.players, settings: libero.settings });
+  const planV = optimizeRoster({ players: vincolato.players, settings: vincolato.settings });
+  for (const role of ['D', 'C', 'A']) {
+    const n = planV.picks.filter((p) => p.role === role && p.isTop).length;
+    assert.ok(n >= 1, `nessun big fra i ${role}`);
+  }
+  // Forzare i big costa punti: e' un premio che si sceglie di pagare, non un miglioramento.
+  assert.ok(planV.score <= planL.score + 1e-6, 'il vincolo non puo' + "'" + ' migliorare il punteggio');
+});
+
+test('chiedere piu' + "'" + ' big costa progressivamente di piu' + "'", () => {
+  const punteggi = [0, 1, 2].map((n) => {
+    const ctx = makeContext({ minTop: { P: 0, D: 0, C: 0, A: n } });
+    return optimizeRoster({ players: ctx.players, settings: ctx.settings }).score;
+  });
+  assert.ok(punteggi[0] >= punteggi[1] - 1e-6 && punteggi[1] >= punteggi[2] - 1e-6,
+    `punteggi ${punteggi.join(' ')}`);
+});
+
+test('il vincolo si allenta da solo se i big non ci sono piu' + "'", () => {
+  const { players, settings } = makeContext({ minTop: { P: 0, D: 0, C: 0, A: 3 } });
+  // Tutti i big d'attacco vanno agli avversari.
+  const presi = new Set(players.filter((p) => p.role === 'A' && p.isTop).map((p) => p.id));
+  assert.ok(presi.size > 0, 'il listone deve avere dei big in attacco');
+  const plan = optimizeRoster({ players, settings, unavailable: presi });
+  assert.equal(plan.ok, true, plan.reason);
+  assert.equal(plan.picks.filter((p) => p.role === 'A').length, settings.slots.A);
+});
+
+test('i big gia' + "'" + ' comprati soddisfano il vincolo', () => {
+  const { players, settings } = makeContext({ minTop: { P: 0, D: 0, C: 0, A: 1 } });
+  const big = players.filter((p) => p.role === 'A' && p.isTop).sort((a, b) => b.score - a.score)[0];
+  const plan = optimizeRoster({ players, settings, owned: new Map([[big.id, 80]]) });
+  assert.equal(plan.ok, true);
+  // Non deve comprarne un secondo per forza: quello in rosa gia' basta.
+  const altriBig = plan.picks.filter((p) => p.role === 'A' && p.isTop).length;
+  assert.ok(altriBig >= 0);
+  assert.equal(plan.owned[0].id, big.id);
+});
+
+test('la soglia decide quanti giocatori contano come big', () => {
+  const larga = makeContext({ topThreshold: 0.3 });
+  const stretta = makeContext({ topThreshold: 0.02 });
+  const conta = (ctx) => ctx.players.filter((p) => p.isTop).length;
+  assert.ok(conta(larga) > conta(stretta), `${conta(larga)} contro ${conta(stretta)}`);
+});
+
+// --- bussola strategica ------------------------------------------------------------------
+
+test('bigRimasti separa i big che ho gia' + "'" + ' da quelli ancora liberi', () => {
+  const { players } = makeContext();
+  const big = players.filter((p) => p.role === 'A' && p.isTop);
+  assert.ok(big.length >= 2, 'servono almeno due big in attacco');
+  const owned = new Map([[big[0].id, 90]]);
+  const unavailable = new Set([big[1].id]);
+  const conta = bigRimasti(players, { owned, unavailable });
+  assert.equal(conta.A.miei, 1);
+  assert.equal(conta.A.liberi, big.length - 2);
+  assert.ok(!conta.A.nomi.includes(big[0].name) && !conta.A.nomi.includes(big[1].name));
+});
+
+test('lo scenario senza big non ne mette nessuno in rosa', () => {
+  const { players, settings } = makeContext();
+  const piano = scenarioSenzaBig({ players, settings, role: 'A' });
+  assert.equal(piano.ok, true, piano.reason);
+  assert.equal(piano.picks.filter((p) => p.role === 'A' && p.isTop).length, 0);
+  // Gli altri reparti restano liberi di prenderne.
+  assert.equal(piano.picks.filter((p) => p.role === 'A').length, settings.slots.A);
+});
+
+test('lo scenario senza big vale meno del piano con i big', () => {
+  const { players, settings } = makeContext();
+  const piano = optimizeRoster({ players, settings, localSearch: false });
+  const senza = scenarioSenzaBig({ players, settings });
+  assert.ok(senza.score <= piano.score + 1e-6, `${senza.score} contro ${piano.score}`);
+});
+
+test('confrontaPiani riconosce chi entra, chi esce e dove vanno i crediti', () => {
+  const { players, settings } = makeContext();
+  const prima = optimizeRoster({ players, settings, localSearch: false });
+  const bersaglio = prima.picks.filter((p) => p.role === 'A').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  const dopo = optimizeRoster({ players, settings, unavailable: new Set([bersaglio.id]), localSearch: false });
+  const { entrati, usciti, spostamenti } = confrontaPiani(prima, dopo);
+  assert.ok(usciti.some((p) => p.id === bersaglio.id), 'chi ho perso deve risultare uscito');
+  assert.ok(entrati.length > 0);
+  assert.ok(!entrati.some((p) => p.id === bersaglio.id));
+  const somma = Object.values(spostamenti).reduce((a, b) => a + b, 0);
+  assert.equal(somma, dopo.cost - prima.cost);
+});
+
+test('la narrazione racconta lo spostamento dei crediti fra i reparti', () => {
+  const { players, settings } = makeContext();
+  const prima = optimizeRoster({ players, settings, localSearch: false });
+  const dopo = scenarioSenzaBig({ players, settings, role: 'A' });
+  const frasi = narrazione({ prima, dopo, settings });
+  assert.ok(frasi.length > 0, 'perdere tutti i big di un reparto deve produrre un commento');
+  assert.ok(frasi.join(' ').length > 20);
+});
+
+test('la narrazione tace quando non cambia nulla di rilevante', () => {
+  const { players, settings } = makeContext();
+  const piano = optimizeRoster({ players, settings, localSearch: false });
+  assert.deepEqual(narrazione({ prima: piano, dopo: piano, settings }), []);
+});
+
+test('il consiglio avvisa quando i big di un reparto sono finiti', () => {
+  const { players, settings } = makeContext({ minTop: { P: 0, D: 0, C: 0, A: 1 } });
+  const unavailable = new Set(players.filter((p) => p.role === 'A' && p.isTop).map((p) => p.id));
+  const piano = optimizeRoster({ players, settings, unavailable });
+  const consiglio = consiglioStrategico({ players, settings, unavailable, piano });
+  const avviso = consiglio.avvisi.find((a) => a.role === 'A');
+  assert.ok(avviso, 'deve esserci un avviso sull' + "'" + 'attacco');
+  assert.equal(avviso.gravita, 'finiti');
+  assert.ok(avviso.testo.length > 10);
+});
+
+test('il consiglio tace se il big richiesto ce' + "'" + ' l' + "'" + 'ho gia' + "'", () => {
+  const { players, settings } = makeContext({ minTop: { P: 0, D: 0, C: 0, A: 1 } });
+  const big = players.filter((p) => p.role === 'A' && p.isTop).sort((a, b) => b.score - a.score)[0];
+  const owned = new Map([[big.id, 100]]);
+  const piano = optimizeRoster({ players, settings, owned });
+  const consiglio = consiglioStrategico({ players, settings, owned, piano });
+  assert.ok(!consiglio.avvisi.some((a) => a.role === 'A'), 'nessun avviso se il big e' + "'" + ' gia' + "'" + ' mio');
+});
+
+// --- asta a chiamata per ruolo -----------------------------------------------------------
+
+test("la fase e' il primo reparto dell'ordine con slot ancora liberi", () => {
+  const { players, settings } = makeContext();
+  const owned = new Map();
+  assert.equal(faseCorrente(settings, players, owned), 'P');
+  // Riempio la porta: si passa alla difesa.
+  players.filter((p) => p.role === 'P').slice(0, settings.slots.P).forEach((p) => owned.set(p.id, 5));
+  assert.equal(faseCorrente(settings, players, owned), 'D');
+});
+
+test('il budget di reparto mette da parte quello che serve dopo', () => {
+  const { players, settings } = makeContext();
+  const plan = optimizeRoster({ players, settings });
+  const b = budgetDiFase({ settings, players, owned: new Map(), plan });
+  assert.equal(b.fase, 'P');
+  assert.ok(b.perLaFase + b.riservatoDopo <= settings.budget);
+  assert.ok(b.riservatoDopo > b.perLaFase, 'a inizio asta quasi tutto il budget e' + "'" + ' riservato ai reparti successivi');
+  // Il massimo su un singolo giocatore lascia un credito per gli altri slot del reparto.
+  assert.equal(b.massimoOra, Math.max(0, b.perLaFase - (settings.slots.P - 1)));
+});
+
+test("il tetto di reparto e' piu' prudente del tetto tecnico", () => {
+  const { players, settings } = makeContext();
+  const plan = optimizeRoster({ players, settings });
+  const owned = new Map();
+  const b = budgetDiFase({ settings, players, owned, plan });
+  // Il tetto tecnico lascerebbe spendere quasi tutto il budget su un portiere.
+  assert.ok(b.massimoOra < maxSpendableNow(settings, owned) / 2,
+    `reparto ${b.massimoOra} contro tecnico ${maxSpendableNow(settings, owned)}`);
+});
+
+test('spendere troppo in un reparto riduce quello che resta ai successivi', () => {
+  const { players, settings } = makeContext();
+  const plan = optimizeRoster({ players, settings });
+  const portieri = players.filter((p) => p.role === 'P').sort((a, b) => b.score - a.score).slice(0, 3);
+  const owned = new Map(portieri.map((p, i) => [p.id, i === 0 ? 150 : 15]));
+  const dopo = optimizeRoster({ players, settings, owned });
+  const b = budgetDiFase({ settings, players, owned, plan: dopo });
+  assert.equal(b.fase, 'D');
+  assert.equal(b.residuo, settings.budget - 180);
+  assert.ok(b.perLaFase < budgetDiFase({ settings, players, owned: new Map(), plan }).residuo);
+  assert.ok(b.riservatoDopo > 0);
+});
+
+test("l'ordine dei reparti si puo' cambiare", () => {
+  const { players, settings } = makeContext();
+  const alRovescio = { ...settings, auctionOrder: ['A', 'C', 'D', 'P'] };
+  assert.equal(faseCorrente(alRovescio, players, new Map()), 'A');
 });

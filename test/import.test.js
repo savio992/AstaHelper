@@ -294,8 +294,8 @@ test('il tetto per club viene rispettato anche dalla ricerca locale', async () =
   const players = withExpectedPrices(valuePlayers(roster, settings), settings);
   const plan = optimizeRoster({ players, settings });
   const exposure = clubExposure(plan.picks, settings);
-  const roma = exposure.get('ROM');
-  assert.ok(roma.effettivi <= 3.3, `esposizione alla Roma ${roma?.effettivi}`);
+  const roma = exposure.get('ROM') ?? { effettivi: 0 };
+  assert.ok(roma.effettivi <= 3.3, `esposizione alla Roma ${roma.effettivi}`);
 });
 
 // --- prezzo di mercato contro valutazione del creator -----------------------------------

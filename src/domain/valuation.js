@@ -203,6 +203,31 @@ export function valuePlayers(players, settings) {
 }
 
 /**
+ * Marca i giocatori di prima fascia del proprio ruolo.
+ *
+ * Serve al vincolo "almeno un top per reparto": un top non e' semplicemente il piu' caro, e'
+ * chi i creators mettono nella fascia alta. Quando il listone non ha le fasce si ripiega sul
+ * prezzo, prendendo il decimo piu' costoso del ruolo come soglia.
+ */
+export function markTopPlayers(players, settings) {
+  const soglia = Number.isFinite(settings.topThreshold) ? settings.topThreshold : 0.15;
+  const perPrezzo = {};
+  for (const role of ROLES) {
+    const prezzi = players
+      .filter((p) => p.role === role)
+      .map((p) => p.expectedPrice ?? p.price ?? 0)
+      .sort((a, b) => b - a);
+    perPrezzo[role] = prezzi.length ? prezzi[Math.min(prezzi.length - 1, Math.max(0, Math.round(prezzi.length * 0.1) - 1))] : Infinity;
+  }
+  return players.map((p) => ({
+    ...p,
+    isTop: Number.isFinite(p.tierPct)
+      ? p.tierPct <= soglia
+      : (p.expectedPrice ?? p.price ?? 0) >= perPrezzo[p.role],
+  }));
+}
+
+/**
  * Peso del j-esimo giocatore piu' forte di un ruolo (j da 0).
  * I titolari valgono 1, poi si scende: e' cosi' che l'ottimizzatore capisce
  * che non ha senso spendere sul terzo portiere o sull'ottavo difensore.

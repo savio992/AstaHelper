@@ -482,6 +482,14 @@ function defaultSettings() {
     roleBudget: { P: null, D: null, C: null, A: null },
     // Ordine delle fasce per ruolo (dalla migliore alla peggiore), popolato all'import.
     tierOrder: { P: [], D: [], C: [], A: [] },
+    // Ordine dei reparti all'asta. Nelle aste a chiamata per ruolo si parte dai portieri e si
+    // scende fino agli attaccanti: i crediti vanno impegnati prima di sapere cosa costera' il resto.
+    auctionOrder: ['P', 'D', 'C', 'A'],
+    // Minimo di giocatori di prima fascia per reparto. Una rosa fatta solo di occasioni e'
+    // matematicamente efficiente ma fragile: i top sono i giocatori che vincono le giornate.
+    minTop: { P: 0, D: 1, C: 1, A: 1 },
+    // Quanto in alto deve stare la fascia perche' un giocatore conti come top (0 = solo la prima).
+    topThreshold: 0.06,
     // Massimo numero di giocatori dallo stesso club (0 = nessun limite).
     // Serve a non ritrovarsi mezza rosa legata alla stagione di una sola squadra.
     maxPerClub: 4,
@@ -1188,6 +1196,31 @@ function valuePlayers(players, settings) {
 }
 
 /**
+ * Marca i giocatori di prima fascia del proprio ruolo.
+ *
+ * Serve al vincolo "almeno un top per reparto": un top non e' semplicemente il piu' caro, e'
+ * chi i creators mettono nella fascia alta. Quando il listone non ha le fasce si ripiega sul
+ * prezzo, prendendo il decimo piu' costoso del ruolo come soglia.
+ */
+function markTopPlayers(players, settings) {
+  const soglia = Number.isFinite(settings.topThreshold) ? settings.topThreshold : 0.15;
+  const perPrezzo = {};
+  for (const role of ROLES) {
+    const prezzi = players
+      .filter((p) => p.role === role)
+      .map((p) => p.expectedPrice ?? p.price ?? 0)
+      .sort((a, b) => b - a);
+    perPrezzo[role] = prezzi.length ? prezzi[Math.min(prezzi.length - 1, Math.max(0, Math.round(prezzi.length * 0.1) - 1))] : Infinity;
+  }
+  return players.map((p) => ({
+    ...p,
+    isTop: Number.isFinite(p.tierPct)
+      ? p.tierPct <= soglia
+      : (p.expectedPrice ?? p.price ?? 0) >= perPrezzo[p.role],
+  }));
+}
+
+/**
  * Peso del j-esimo giocatore piu' forte di un ruolo (j da 0).
  * I titolari valgono 1, poi si scende: e' cosi' che l'ottimizzatore capisce
  * che non ha senso spendere sul terzo portiere o sull'ottavo difensore.
@@ -1316,7 +1349,7 @@ function tierScore(settings, role, tier) {
   return 100 * Math.pow(TIER_DECAY[role] ?? 0.78, rank);
 }
 
-return { expectedShare, clubSolidity, valuePlayers, depthWeights, synergyBonus, clubExposure, concentrationPenalty, rosterScore, tierScore };
+return { expectedShare, clubSolidity, valuePlayers, markTopPlayers, depthWeights, synergyBonus, clubExposure, concentrationPenalty, rosterScore, tierScore };
 })();
 
 // ===== src/domain/market.js =====
@@ -1557,9 +1590,12 @@ class Trail {
  * i migliori per punteggio, i migliori per rapporto punti/credito e i piu' economici
  * (servono per chiudere gli slot con 1 credito).
  */
-function pruneCandidates(cands, keepTop = 70, keepRatio = 50, keepCheap = 25) {
+function pruneCandidates(cands, keepTop = 70, keepRatio = 50, keepCheap = 25, tieniPrimaFascia = false) {
   if (cands.length <= keepTop + keepRatio + keepCheap) return cands;
   const chosen = new Set();
+  // Con il vincolo sui top attivo, i giocatori di prima fascia non possono essere potati:
+  // se sparissero tutti dai candidati il vincolo diventerebbe insoddisfacibile.
+  if (tieniPrimaFascia) for (const c of cands) if (c.isTop) chosen.add(c);
   const byScore = [...cands].sort((a, b) => b.score - a.score);
   const byRatio = [...cands].sort((a, b) => b.score / b.cost - a.score / a.cost);
   const byCheap = [...cands].sort((a, b) => a.cost - b.cost || b.score - a.score);
@@ -1576,33 +1612,45 @@ function pruneCandidates(cands, keepTop = 70, keepRatio = 50, keepCheap = 25) {
  * di profondita' corretto (titolare, primo cambio, panchinaro...) senza rompere il DP.
  * Ritorna dp[k * (B+1) + b] = punteggio massimo con esattamente k giocatori e costo esatto b.
  */
-function roleKnapsack(cands, slots, B) {
+function roleKnapsack(cands, slots, B, minTop = 0) {
   const W = B + 1;
-  const dp = new Float64Array((slots + 1) * W).fill(NEG);
-  const refs = new Int32Array((slots + 1) * W);
-  const trail = new Trail(Math.min(1 << 20, Math.max(1024, cands.length * (slots + 1) * 8)));
-  dp[0] = 0;
+  const T = Math.max(0, Math.min(minTop, slots));
+  // Terza dimensione: quanti giocatori di prima fascia sono stati presi, saturata a T
+  // (oltre il minimo richiesto non serve distinguere).
+  const at = (k, t) => (k * (T + 1) + t) * W;
+  const size = (slots + 1) * (T + 1) * W;
+  const dp = new Float64Array(size).fill(NEG);
+  const refs = new Int32Array(size);
+  const trail = new Trail(Math.min(1 << 21, Math.max(1024, cands.length * (slots + 1) * (T + 1) * 4)));
+  dp[at(0, 0)] = 0;
 
   for (let i = 0; i < cands.length; i++) {
     const c = cands[i].cost;
     const weighted = cands[i].weighted;
+    const isTop = cands[i].isTop ? 1 : 0;
     if (c > B) continue;
     for (let k = slots; k >= 1; k--) {
-      const rowPrev = (k - 1) * W;
-      const row = k * W;
       const s = weighted[k - 1];
-      for (let b = B; b >= c; b--) {
-        const prev = dp[rowPrev + b - c];
-        if (prev <= NEG / 2) continue;
-        const val = prev + s;
-        if (val > dp[row + b]) {
-          dp[row + b] = val;
-          refs[row + b] = trail.push(i, refs[rowPrev + b - c]);
+      for (let t = T; t >= 0; t--) {
+        // Stati che portano a (k, t) prendendo questo giocatore.
+        const sorgenti = isTop ? (t === T ? (T > 0 ? [T - 1, T] : [T]) : t > 0 ? [t - 1] : []) : [t];
+        for (const tPrev of sorgenti) {
+          const rowPrev = at(k - 1, tPrev);
+          const row = at(k, t);
+          for (let b = B; b >= c; b--) {
+            const prev = dp[rowPrev + b - c];
+            if (prev <= NEG / 2) continue;
+            const val = prev + s;
+            if (val > dp[row + b]) {
+              dp[row + b] = val;
+              refs[row + b] = trail.push(i, refs[rowPrev + b - c]);
+            }
+          }
         }
       }
     }
   }
-  return { dp, refs, trail, W };
+  return { dp, refs, trail, W, T, at };
 }
 
 /**
@@ -1661,6 +1709,19 @@ function optimizeRoster({
 
   const B = Math.max(0, Math.floor(budgetLeft));
 
+  // I top gia' comprati contano: il vincolo riguarda la rosa finita, non i soli acquisti futuri.
+  // E non puo' chiedere piu' top di quanti ne restino disponibili, altrimenti un listone senza
+  // fasce, o un reparto in cui li hanno gia' presi tutti, renderebbe il piano impossibile.
+  const topNeed = {};
+  for (const role of ROLES) {
+    const richiesti = Math.max(0, Math.round(settings.minTop?.[role] ?? 0));
+    const gia = ownedPlayers.filter((p) => p.role === role && p.isTop).length;
+    const disponibili = players.filter(
+      (p) => p.role === role && p.isTop && !owned.has(p.id) && !unavailable.has(p.id)
+    ).length;
+    topNeed[role] = Math.max(0, Math.min(need[role], disponibili, richiesti - gia));
+  }
+
   // Candidati per ruolo
   const roleData = {};
   for (const role of ROLES) {
@@ -1675,10 +1736,11 @@ function optimizeRoster({
       .map((p) => ({
         id: p.id,
         score: p.score || 0,
+        isTop: !!p.isTop,
         cost: Math.max(1, Math.round(priceOverride.get(p.id) ?? p.expectedPrice ?? 1)),
       }))
       .filter((c) => c.cost <= B);
-    if (prune) cands = pruneCandidates(cands);
+    if (prune) cands = pruneCandidates(cands, 70, 50, 25, topNeed[role] > 0);
     cands.sort((a, b) => b.score - a.score);
     // Rango reale nel ruolo = giocatori gia' in rosa piu' forti + candidati migliori gia' scelti.
     // Comprare un giocatore piu' forte retrocede di un posto tutti quelli gia' in rosa piu' deboli:
@@ -1714,7 +1776,7 @@ function optimizeRoster({
   // DP per ruolo
   const solved = {};
   for (const role of ROLES) {
-    solved[role] = need[role] > 0 ? roleKnapsack(roleData[role], need[role], B) : null;
+    solved[role] = need[role] > 0 ? roleKnapsack(roleData[role], need[role], B, topNeed[role]) : null;
   }
 
   // Convoluzione fra i ruoli, rispettando eventuali tetti di spesa per ruolo.
@@ -1732,8 +1794,8 @@ function optimizeRoster({
       cur = next;
       continue;
     }
-    const { dp } = solved[role];
-    const row = need[role] * W;
+    const { dp, at, T } = solved[role];
+    const row = at(need[role], T);
     const cap = settings.roleBudget?.[role];
     const maxRole = cap === null || cap === undefined || cap === '' ? B : Math.min(B, Math.max(0, Math.floor(cap)));
     for (let c = 0; c <= maxRole; c++) {
@@ -1793,8 +1855,8 @@ function optimizeRoster({
     const c = splits[r][b];
     if (c > 0 || need[role] > 0) {
       if (need[role] > 0) {
-        const { refs, trail, W: rw } = solved[role];
-        const ref = refs[need[role] * rw + c];
+        const { refs, trail, at, T } = solved[role];
+        const ref = refs[at(need[role], T) + c];
         for (const idx of trail.collect(ref)) {
           const cand = roleData[role][idx];
           picks.push({ ...byId.get(cand.id), plannedPrice: cand.cost });
@@ -1881,8 +1943,13 @@ function improveWithSynergy({ picks, ownedPlayers, players, settings, owned, una
       let bestScore = evaluate(current);
       const clubCap = Number(settings.maxPerClub) || 0;
       const exposure = clubCap > 0 ? clubExposure([...ownedPlayers, ...current], settings) : null;
+      // Se sto togliendo un top e il reparto e' gia' al minimo, il sostituto deve essere un top.
+      const minTop = Math.max(0, Math.round(settings.minTop?.[out.role] ?? 0));
+      const topInRuolo = [...current, ...ownedPlayers].filter((p) => p.role === out.role && p.isTop).length;
+      const serveTop = out.isTop && topInRuolo <= minTop;
       for (const cand of poolByRole[out.role]) {
         if (inRoster.has(cand.id)) continue;
+        if (serveTop && !cand.isTop) continue;
         const cost = priceOf(cand);
         if (cost > budgetForSlot || cost > roleCapLeft) continue;
         // Non riportare dentro un club gia' al limite: il tetto e' appena stato rispettato.
@@ -1936,6 +2003,9 @@ function enforceClubCap({ picks, ownedPlayers, players, settings, owned, unavail
 
     let replaced = false;
     for (const { p: outPlayer, i } of sacrificable) {
+      const minTop = Math.max(0, Math.round(settings.minTop?.[outPlayer.role] ?? 0));
+      const topInRuolo = [...current, ...ownedPlayers].filter((p) => p.role === outPlayer.role && p.isTop).length;
+      const serveTop = outPlayer.isTop && topInRuolo <= minTop;
       const inRoster = new Set([...current.map((x) => x.id), ...ownedPlayers.map((x) => x.id)]);
       const spendOthers = current.reduce((a, x) => a + x.plannedPrice, 0) - outPlayer.plannedPrice;
       const budgetForSlot = budgetLeft - spendOthers;
@@ -1948,7 +2018,8 @@ function enforceClubCap({ picks, ownedPlayers, players, settings, owned, unavail
             !owned.has(c.id) &&
             !unavailable.has(c.id) &&
             priceOf(c) <= budgetForSlot &&
-            (exposure.get(c.team)?.effettivi ?? 0) < cap
+            (exposure.get(c.team)?.effettivi ?? 0) < cap &&
+            (!serveTop || c.isTop)
         )
         .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
       if (!candidate) continue;
@@ -1982,6 +2053,170 @@ function creditShadowPrice(budgetCurve, at) {
 return { pruneCandidates, optimizeRoster, creditShadowPrice, synergyBonus };
 })();
 
+// ===== src/domain/form.js =====
+const __m_src_domain_form_js = (() => {
+// Rendimento nelle giornate gia' giocate.
+//
+// Le proiezioni dei creators sono fatte prima che il campionato inizi. Appena si gioca,
+// arrivano informazioni vere: chi e' partito titolare, chi e' rimasto fuori, chi sta segnando.
+// Vanno pesate per quello che valgono: dopo una giornata su trentotto un fantavoto alto e'
+// quasi solo rumore, mentre sapere che un giocatore e' sceso in campo dal primo minuto toglie
+// incertezza sulla sua titolarita', che nel modello e' il fattore piu' pesante.
+
+const { normalizeHeader, parseNumber } = __m_src_domain_csv_js;
+
+// Quanto pesa la stagione in corso rispetto alla proiezione, espresso in "giornate equivalenti".
+// Piu' alto il numero, piu' servono partite prima di dare retta ai dati nuovi.
+const PESO_PROIEZIONE_MINUTI = 5;
+const PESO_PROIEZIONE_VOTI = 9;
+
+/** Un giocatore si considera titolare se ha giocato almeno un'ora. */
+const MINUTI_TITOLARE = 60;
+
+function chiave(nome) {
+  return normalizeHeader(nome).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Aggrega le righe di un file di voti per giocatore.
+ * Il file puo' avere una riga per giornata o gia' i totali: in entrambi i casi si sommano
+ * minuti e presenze e si media il fantavoto.
+ */
+function aggregateForm(rows, mapping) {
+  const perGiocatore = new Map();
+  const giornate = new Set();
+
+  for (const row of rows) {
+    const nome = mapping.name ? (row[mapping.name] || '').trim() : '';
+    if (!nome) continue;
+    const k = chiave(nome);
+    if (!perGiocatore.has(k)) {
+      perGiocatore.set(k, {
+        nome,
+        squadra: mapping.team ? (row[mapping.team] || '').trim() : '',
+        presenze: 0,
+        titolarita: 0,
+        minuti: 0,
+        sommaVoti: 0,
+        sommaFantavoti: 0,
+        conVoto: 0,
+      });
+    }
+    const g = perGiocatore.get(k);
+    const giornata = mapping.giornata ? parseNumber(row[mapping.giornata]) : null;
+    if (Number.isFinite(giornata)) giornate.add(giornata);
+
+    const minuti = mapping.minutes ? parseNumber(row[mapping.minutes]) : null;
+    const voto = mapping.mediavoto ? parseNumber(row[mapping.mediavoto]) : null;
+    const fantavoto = mapping.fantamedia ? parseNumber(row[mapping.fantamedia]) : null;
+    const presenze = mapping.matches ? parseNumber(row[mapping.matches]) : null;
+
+    if (Number.isFinite(minuti)) {
+      g.minuti += minuti;
+      if (minuti > 0) g.presenze += Number.isFinite(presenze) ? presenze : 1;
+      if (minuti >= MINUTI_TITOLARE) g.titolarita += 1;
+    } else if (Number.isFinite(presenze)) {
+      g.presenze += presenze;
+    } else if (Number.isFinite(voto) || Number.isFinite(fantavoto)) {
+      g.presenze += 1;
+    }
+
+    if (Number.isFinite(voto)) g.sommaVoti += voto;
+    if (Number.isFinite(fantavoto)) g.sommaFantavoti += fantavoto;
+    if (Number.isFinite(voto) || Number.isFinite(fantavoto)) g.conVoto += 1;
+  }
+
+  const out = new Map();
+  for (const [k, g] of perGiocatore) {
+    out.set(k, {
+      ...g,
+      mediavoto: g.conVoto ? g.sommaVoti / g.conVoto : null,
+      fantamedia: g.conVoto ? g.sommaFantavoti / g.conVoto : null,
+    });
+  }
+  return { form: out, giornate: giornate.size };
+}
+
+/** Sinonimi aggiuntivi per i file di voti, che hanno colonne diverse dai listoni. */
+function formMapping(headers) {
+  const norm = headers.map((h) => ({ header: h, n: normalizeHeader(h) }));
+  const trova = (...sinonimi) => {
+    for (const s of sinonimi) {
+      const hit = norm.find((h) => h.n === s);
+      if (hit) return hit.header;
+    }
+    for (const s of sinonimi) {
+      const hit = norm.find((h) => h.n.startsWith(s + ' ') || h.n.endsWith(' ' + s));
+      if (hit) return hit.header;
+    }
+    return undefined;
+  };
+  return {
+    name: trova('nome', 'giocatore', 'calciatore'),
+    team: trova('squadra', 'team', 'club'),
+    giornata: trova('giornata', 'gv', 'g', 'gior'),
+    minutes: trova('minuti', 'min', 'minuti giocati'),
+    mediavoto: trova('voto', 'v', 'media voto', 'mv'),
+    fantamedia: trova('fantavoto', 'fv', 'fantamedia', 'fm'),
+    matches: trova('presenze', 'pg', 'partite'),
+  };
+}
+
+/**
+ * Fonde il rendimento osservato nelle proiezioni.
+ *
+ * Il peso dei dati nuovi cresce con le giornate giocate: dopo una giornata la proiezione del
+ * creator resta quasi intatta, dopo dieci comanda il campo. E' la sola cosa onesta da fare
+ * con un campione piccolo, e senza questo accorgimento un attaccante che ha segnato una
+ * doppietta alla prima diventerebbe il miglior giocatore del listone.
+ */
+function applyForm(players, form, giornate) {
+  if (!form || !form.size || !giornate) return players;
+
+  return players.map((p) => {
+    const osservato = form.get(chiave(p.name));
+    if (!osservato) return p;
+
+    // Titolarita': la quota di partite iniziate, mescolata con il giudizio del creator.
+    const quotaOsservata = Math.min(1, osservato.titolarita / giornate);
+    const quotaAttesa = Number.isFinite(p.titolarita) ? Math.min(1, p.titolarita / 5) : 0.5;
+    const pesoMin = giornate / (giornate + PESO_PROIEZIONE_MINUTI);
+    const quota = quotaAttesa * (1 - pesoMin) + quotaOsservata * pesoMin;
+
+    // Fantamedia: stessa logica, con un peso piu' prudente perche' i voti oscillano di piu'.
+    let fmvExp = p.fmvExp;
+    if (Number.isFinite(osservato.fantamedia) && osservato.conVoto > 0 && Number.isFinite(p.fmvExp)) {
+      const pesoVoti = osservato.conVoto / (osservato.conVoto + PESO_PROIEZIONE_VOTI);
+      fmvExp = p.fmvExp * (1 - pesoVoti) + osservato.fantamedia * pesoVoti;
+    }
+
+    return {
+      ...p,
+      titolarita: Math.max(0, Math.min(5, quota * 5)),
+      fmvExp: Number.isFinite(fmvExp) ? Math.round(fmvExp * 100) / 100 : p.fmvExp,
+      form: {
+        giornate,
+        presenze: osservato.presenze,
+        daTitolare: osservato.titolarita,
+        minuti: osservato.minuti,
+        fantamedia: osservato.fantamedia,
+        mediavoto: osservato.mediavoto,
+      },
+    };
+  });
+}
+
+/** Quanti giocatori del listone hanno trovato corrispondenza nel file dei voti. */
+function matchCount(players, form) {
+  if (!form) return 0;
+  let n = 0;
+  for (const p of players) if (form.has(chiave(p.name))) n++;
+  return n;
+}
+
+return { aggregateForm, formMapping, applyForm, matchCount };
+})();
+
 // ===== src/store.js =====
 const __m_src_store_js = (() => {
 // Stato dell'applicazione e persistenza locale.
@@ -1989,9 +2224,10 @@ const __m_src_store_js = (() => {
 
 const { defaultSettings, inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, ROLES } = __m_src_domain_model_js;
 const { mergeSources } = __m_src_domain_csv_js;
-const { valuePlayers } = __m_src_domain_valuation_js;
+const { valuePlayers, markTopPlayers } = __m_src_domain_valuation_js;
 const { withExpectedPrices } = __m_src_domain_market_js;
 const { optimizeRoster } = __m_src_domain_optimizer_js;
+const { aggregateForm, applyForm, matchCount } = __m_src_domain_form_js;
 
 const KEY = 'astahelper:v1';
 
@@ -2000,6 +2236,8 @@ const state = {
   // Un elemento per creator importato: { name, players }. Il listone di lavoro e' la loro unione.
   sources: [],
   roster: [], // listone unito, dati grezzi
+  // Rendimento nelle giornate gia' giocate: { entries, giornate, fileName, abbinati }
+  formData: null,
   players: [], // listone con punteggi e prezzi attesi (derivato)
   importMeta: null, // { headers, mapping, rows, warnings, fileName }
   auction: {
@@ -2008,6 +2246,8 @@ const state = {
     log: [], // { id, kind, price, at }
   },
   plan: null,
+  // Il piano precedente, per poter raccontare cosa e' cambiato dopo l'ultima assegnazione.
+  prevPlan: null,
   ui: {
     tab: 'asta',
     query: '',
@@ -2034,6 +2274,7 @@ function save() {
     const payload = {
       settings: state.settings,
       sources: state.sources,
+      formData: state.formData,
       auction: state.auction,
       importMeta: state.importMeta ? { headers: state.importMeta.headers, mapping: state.importMeta.mapping, fileName: state.importMeta.fileName, count: state.roster.length } : null,
       ui: { tab: state.ui.tab },
@@ -2058,6 +2299,7 @@ function load() {
     state.roster = rebuildRoster();
     state.auction = { owned: {}, taken: {}, log: [], ...(data.auction || {}) };
     state.importMeta = data.importMeta || null;
+    state.formData = data.formData || null;
     if (data.ui?.tab) state.ui.tab = data.ui.tab;
     recompute();
     return true;
@@ -2068,10 +2310,12 @@ function load() {
 }
 
 function resetAll() {
+  state.prevPlan = null;
   localStorage.removeItem(KEY);
   state.settings = defaultSettings();
   state.sources = [];
   state.roster = [];
+  state.formData = null;
   state.players = [];
   state.importMeta = null;
   state.auction = { owned: {}, taken: {}, log: [] };
@@ -2086,8 +2330,36 @@ function recompute() {
     state.plan = null;
     return;
   }
-  const valued = valuePlayers(state.roster, state.settings);
-  state.players = withExpectedPrices(valued, state.settings);
+  // Il rendimento delle giornate gia' giocate corregge le proiezioni prima di ogni altro calcolo.
+  const base = state.formData
+    ? applyForm(state.roster, new Map(state.formData.entries), state.formData.giornate)
+    : state.roster;
+  const valued = valuePlayers(base, state.settings);
+  state.players = markTopPlayers(withExpectedPrices(valued, state.settings), state.settings);
+}
+
+/** Carica i voti delle giornate gia' giocate. */
+function setForm({ rows, mapping, fileName, giornate }) {
+  const { form, giornate: dedotte } = aggregateForm(rows, mapping);
+  const n = giornate || dedotte || 1;
+  state.formData = {
+    entries: [...form.entries()],
+    giornate: n,
+    fileName,
+    abbinati: matchCount(state.roster, form),
+  };
+  recompute();
+  rebuildPlan();
+  save();
+  notify();
+}
+
+function clearForm() {
+  state.formData = null;
+  recompute();
+  rebuildPlan();
+  save();
+  notify();
 }
 
 function ownedMap() {
@@ -2108,6 +2380,7 @@ function rebuildPlan(opts = {}) {
     state.plan = null;
     return null;
   }
+  if (opts.ricorda !== false && state.plan?.ok) state.prevPlan = state.plan;
   state.plan = optimizeRoster({
     players: state.players,
     settings: state.settings,
@@ -2206,14 +2479,14 @@ function creditsLeft() {
   return (state.settings.budget || 500) - spentTotal();
 }
 
-return { subscribe, notify, save, load, resetAll, recompute, ownedMap, unavailableSet, playerById, rebuildPlan, addSource, removeSource, assign, release, undo, updateSettings, spentTotal, creditsLeft, state };
+return { subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, playerById, rebuildPlan, addSource, removeSource, assign, release, undo, updateSettings, spentTotal, creditsLeft, state };
 })();
 
 // ===== src/domain/advisor.js =====
 const __m_src_domain_advisor_js = (() => {
 // L'assistente d'asta: quanto posso offrire davvero, e chi prendo se questo giocatore me lo soffiano.
 
-const { ROLES, tierKey, totalSlots } = __m_src_domain_model_js;
+const { ROLES, ROLE_LABEL, tierKey, totalSlots } = __m_src_domain_model_js;
 const { optimizeRoster, creditShadowPrice } = __m_src_domain_optimizer_js;
 
 /** Impostazioni ridotte per i ricalcoli in tempo reale durante l'asta. */
@@ -2236,6 +2509,62 @@ function slotsLeftByRole(settings, players, owned) {
   const out = {};
   for (const role of ROLES) out[role] = Math.max(0, (settings.slots[role] || 0) - used[role]);
   return out;
+}
+
+/**
+ * In che reparto siamo, in un'asta a chiamata per ruolo.
+ * E' il primo reparto dell'ordine che ha ancora slot da riempire.
+ */
+function faseCorrente(settings, players, owned) {
+  const ordine = settings.auctionOrder?.length ? settings.auctionOrder : ROLES;
+  const mancanti = slotsLeftByRole(settings, players, owned);
+  return ordine.find((r) => mancanti[r] > 0) ?? null;
+}
+
+/**
+ * Quanto posso davvero spendere adesso, in un'asta che procede per reparti.
+ *
+ * Il tetto tecnico (un credito per ogni slot rimasto) non basta quando i reparti si comprano
+ * in sequenza: chi spende duecento crediti in porta arriva all'attacco senza niente, e a quel
+ * punto non c'e' piano che tenga. Qui si mette da parte quello che il piano ha destinato ai
+ * reparti che verranno dopo, e si guarda quanto resta per quello in corso.
+ */
+function budgetDiFase({ settings, players, owned, plan, role = null }) {
+  const ordine = settings.auctionOrder?.length ? settings.auctionOrder : ROLES;
+  const fase = role || faseCorrente(settings, players, owned) || ordine[ordine.length - 1];
+  const indice = ordine.indexOf(fase);
+  const mancanti = slotsLeftByRole(settings, players, owned);
+  const speso = [...owned.values()].reduce((a, b) => a + b, 0);
+  const residuo = (settings.budget || 500) - speso;
+
+  // Quanto il piano prevede ancora di spendere nei reparti successivi.
+  let riservatoDopo = 0;
+  for (let i = indice + 1; i < ordine.length; i++) {
+    const r = ordine[i];
+    const dalPiano = (plan?.picks || []).filter((p) => p.role === r).reduce((a, p) => a + p.plannedPrice, 0);
+    // Anche senza piano si tiene almeno un credito per slot.
+    riservatoDopo += Math.max(dalPiano, mancanti[r]);
+  }
+
+  const perLaFase = Math.max(0, residuo - riservatoDopo);
+  const pianificatoFase = (plan?.picks || []).filter((p) => p.role === fase).reduce((a, p) => a + p.plannedPrice, 0);
+  const spesoFase = [...owned.entries()].reduce((a, [id, prezzo]) => {
+    const p = players.find((x) => x.id === id);
+    return a + (p && p.role === fase ? prezzo : 0);
+  }, 0);
+
+  return {
+    fase,
+    etichetta: ROLE_LABEL[fase],
+    slotMancanti: mancanti[fase],
+    residuo,
+    riservatoDopo,
+    perLaFase,
+    pianificatoFase,
+    spesoFase,
+    // Massimo su un singolo giocatore adesso: lascia un credito per gli altri slot del reparto.
+    massimoOra: Math.max(0, perLaFase - Math.max(0, mancanti[fase] - 1)),
+  };
 }
 
 /**
@@ -2403,7 +2732,138 @@ function tierBudgetReport({ plan, settings, players, owned = new Map() }) {
   return list;
 }
 
-return { maxSpendableNow, slotsLeftByRole, maxBid, alternatives, planDiff, tierBudgetReport };
+return { maxSpendableNow, slotsLeftByRole, faseCorrente, budgetDiFase, maxBid, alternatives, planDiff, tierBudgetReport };
+})();
+
+// ===== src/domain/strategia.js =====
+const __m_src_domain_strategia_js = (() => {
+// Quando salta il piano, non basta sapere chi prendere al posto di uno: serve capire
+// che la strada e' cambiata. Se i big di un reparto finiscono tutti, i crediti che avevi
+// messo da parte per loro vanno spostati, e conviene saperlo prima che sia troppo tardi.
+
+const { ROLES, ROLE_LABEL } = __m_src_domain_model_js;
+const { optimizeRoster } = __m_src_domain_optimizer_js;
+
+/** Quanti giocatori di prima fascia restano liberi, reparto per reparto. */
+function bigRimasti(players, { owned = new Map(), unavailable = new Set() } = {}) {
+  const out = {};
+  for (const role of ROLES) {
+    const liberi = players.filter((p) => p.role === role && p.isTop && !owned.has(p.id) && !unavailable.has(p.id));
+    const miei = [...owned.keys()]
+      .map((id) => players.find((p) => p.id === id))
+      .filter((p) => p && p.role === role && p.isTop).length;
+    out[role] = { liberi: liberi.length, miei, nomi: liberi.sort((a, b) => b.score - a.score).slice(0, 3).map((p) => p.name) };
+  }
+  return out;
+}
+
+/**
+ * Il piano che resterebbe se tutti i big ancora liberi finissero agli avversari.
+ * Se `role` e' indicato riguarda solo quel reparto, altrimenti tutti.
+ */
+function scenarioSenzaBig({ players, settings, owned = new Map(), unavailable = new Set(), role = null }) {
+  const persi = new Set(unavailable);
+  for (const p of players) {
+    if (!p.isTop || owned.has(p.id)) continue;
+    if (role && p.role !== role) continue;
+    persi.add(p.id);
+  }
+  return optimizeRoster({ players, settings, owned, unavailable: persi, localSearch: false });
+}
+
+/** Chi entra e chi esce fra due piani, e come si spostano i crediti fra i reparti. */
+function confrontaPiani(prima, dopo) {
+  const a = new Map((prima?.picks || []).map((p) => [p.id, p]));
+  const b = new Map((dopo?.picks || []).map((p) => [p.id, p]));
+  const entrati = [...b.values()].filter((p) => !a.has(p.id)).sort((x, y) => y.plannedPrice - x.plannedPrice);
+  const usciti = [...a.values()].filter((p) => !b.has(p.id)).sort((x, y) => y.plannedPrice - x.plannedPrice);
+  const spostamenti = {};
+  for (const role of ROLES) {
+    spostamenti[role] = (dopo?.spentByRole?.[role] ?? 0) - (prima?.spentByRole?.[role] ?? 0);
+  }
+  return { entrati, usciti, spostamenti };
+}
+
+/**
+ * Traduce il cambio di piano in frasi.
+ * Si citano solo i movimenti che contano davvero: un riempitivo da un credito che ne sostituisce
+ * un altro non e' una notizia, mentre venti crediti che passano dall'attacco al centrocampo si'.
+ */
+function narrazione({ prima, dopo, settings, soglia = null }) {
+  if (!prima?.ok || !dopo?.ok) return [];
+  const { entrati, usciti, spostamenti } = confrontaPiani(prima, dopo);
+  const minimo = soglia ?? Math.max(6, Math.round((settings.budget || 500) * 0.02));
+  const frasi = [];
+
+  const mosse = ROLES.map((role) => ({ role, delta: spostamenti[role] }))
+    .filter((x) => Math.abs(x.delta) >= minimo)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  if (mosse.length) {
+    const su = mosse.filter((m) => m.delta > 0);
+    const giu = mosse.filter((m) => m.delta < 0);
+    if (su.length && giu.length) {
+      frasi.push(
+        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
+          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+      );
+    } else if (su.length) {
+      frasi.push(`Ora c'e' piu' budget per ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+    }
+  }
+
+  const nuoviObiettivi = entrati.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 3);
+  if (nuoviObiettivi.length) {
+    frasi.push(`Nuovi obiettivi: ${nuoviObiettivi.map((p) => `${p.name} (${p.plannedPrice})`).join(', ')}.`);
+  }
+
+  const rinunce = usciti.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 2);
+  if (rinunce.length && !nuoviObiettivi.length) {
+    frasi.push(`Esce dal piano ${rinunce.map((p) => p.name).join(' e ')}.`);
+  }
+
+  return frasi;
+}
+
+/**
+ * Il consiglio strategico complessivo sullo stato attuale dell'asta.
+ * Guarda quanti big restano e cosa succederebbe perdendoli tutti: se il piano regge, non c'e'
+ * niente da dire; se crolla, conviene muoversi adesso invece di restare senza.
+ */
+function consiglioStrategico({ players, settings, owned = new Map(), unavailable = new Set(), piano }) {
+  if (!piano?.ok) return null;
+  const big = bigRimasti(players, { owned, unavailable });
+  const avvisi = [];
+
+  for (const role of ROLES) {
+    const richiesti = Math.max(0, Math.round(settings.minTop?.[role] ?? 0));
+    if (!richiesti) continue;
+    const { liberi, miei, nomi } = big[role];
+    if (miei >= richiesti) continue;
+
+    if (liberi === 0) {
+      const scenario = scenarioSenzaBig({ players, settings, owned, unavailable, role });
+      const frasi = narrazione({ prima: piano, dopo: scenario, settings });
+      avvisi.push({
+        role,
+        gravita: 'finiti',
+        titolo: `I big in ${ROLE_LABEL[role].toLowerCase()} sono finiti.`,
+        testo: frasi.length ? frasi.join(' ') : 'Il piano si e\' gia\' adattato senza di loro.',
+      });
+    } else if (liberi <= richiesti - miei) {
+      avvisi.push({
+        role,
+        gravita: 'ultimi',
+        titolo: `Restano ${liberi} big in ${ROLE_LABEL[role].toLowerCase()}: ${nomi.join(', ')}.`,
+        testo: `Te ne serve ${richiesti - miei}. Se li perdi tutti devi cambiare strada.`,
+      });
+    }
+  }
+
+  return { big, avvisi };
+}
+
+return { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico };
 })();
 
 // ===== src/ui/common.js =====
@@ -2510,8 +2970,9 @@ const __m_src_ui_asta_js = (() => {
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
 const { state, assign, release, undo, ownedMap, unavailableSet, playerById, creditsLeft, rebuildPlan } = __m_src_store_js;
-const { ROLES, totalSlots } = __m_src_domain_model_js;
-const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole } = __m_src_domain_advisor_js;
+const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
+const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase } = __m_src_domain_advisor_js;
+const { consiglioStrategico, scenarioSenzaBig, narrazione } = __m_src_domain_strategia_js;
 const { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } = __m_src_ui_common_js;
 
 // I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
@@ -2524,6 +2985,7 @@ function cacheKey() {
 
 function invalidate() {
   cache = { key: null, bid: null, alts: null };
+  scenario = null;
 }
 
 function ensureAdvice(rerender) {
@@ -2558,7 +3020,8 @@ function hud() {
   const slots = slotsLeftByRole(state.settings, state.players, owned);
   const filled = owned.size;
   const pct = Math.max(0, Math.min(100, (left / budget) * 100));
-  const spendable = maxSpendableNow(state.settings, owned);
+  const fase = budgetDiFase({ settings: state.settings, players: state.players, owned, plan: state.plan });
+  const sforato = fase.spesoFase > fase.pianificatoFase && fase.pianificatoFase > 0;
   return `
   <div class="card">
     <div class="hud">
@@ -2567,12 +3030,22 @@ function hud() {
         <div class="bar"><i style="width:${pct}%" class="${left < 0 ? 'over' : ''}"></i></div>
         <div class="row between small muted" style="margin-top:6px">
           <span>${filled}/${totalSlots(state.settings)} slot</span>
-          <span>max su un giocatore: <b class="mono">${spendable}</b></span>
+          <span>max su un giocatore: <b class="mono">${fase.massimoOra}</b></span>
         </div>
       </div>
     </div>
     <div class="slotbar" style="margin-top:12px">
-      ${ROLES.map((r) => `<div><b class="mono">${slots[r]}</b><span>${r === 'P' ? 'POR' : r === 'D' ? 'DIF' : r === 'C' ? 'CEN' : 'ATT'}</span></div>`).join('')}
+      ${ROLES.map(
+        (r) =>
+          `<div style="${r === fase.fase ? 'outline:2px solid var(--accent);outline-offset:-2px' : ''}"><b class="mono">${slots[r]}</b><span>${
+            r === 'P' ? 'POR' : r === 'D' ? 'DIF' : r === 'C' ? 'CEN' : 'ATT'
+          }</span></div>`
+      ).join('')}
+    </div>
+    <div class="row between small" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+      <span class="muted">si gioca sui <b style="color:var(--text)">${esc(fase.etichetta.toLowerCase())}</b></span>
+      <span class="muted"><b class="mono" style="color:var(--${sforato ? 'danger' : 'text'})">${fase.perLaFase}</b> per il reparto ·
+        <b class="mono">${fase.riservatoDopo}</b> riservati al resto</span>
     </div>
   </div>`;
 }
@@ -2642,6 +3115,7 @@ function detail(p) {
   const planned = state.plan?.picks?.find((x) => x.id === p.id)?.plannedPrice;
   const current = state.ui.bidPrice ?? Math.round(p.expectedPrice ?? 1);
   const spendable = maxSpendableNow(state.settings, owned);
+  const fase = budgetDiFase({ settings: state.settings, players: state.players, owned, plan: state.plan, role: p.role });
 
   const paid = status === 'mine' ? state.auction.owned[p.id] : status === 'other' ? state.auction.taken[p.id] : null;
 
@@ -2683,7 +3157,7 @@ function detail(p) {
     <div class="row between small muted" style="margin-bottom:10px">
       <span>prezzo atteso <b class="mono">${Math.round(p.expectedPrice ?? 0)}</b></span>
       ${planned ? `<span>a piano <b class="mono">${planned}</b></span>` : ''}
-      <span>tetto tecnico <b class="mono">${spendable}</b></span>
+      <span>ti resta per il reparto <b class="mono">${fase.perLaFase}</b></span>
     </div>
 
     <div class="stepper">
@@ -2691,7 +3165,13 @@ function detail(p) {
       <input type="number" inputmode="numeric" class="mono" id="bidprice" value="${current}" min="0" max="${spendable}" data-action="bid-input">
       <button class="btn" data-action="bid-plus">+</button>
     </div>
-    <div style="margin-top:10px">${verdictFor(current, bid)}</div>
+    <div style="margin-top:10px">${
+      current > fase.massimoOra && fase.slotMancanti > 0
+        ? `<div class="verdict stop">A ${current} sfori il reparto: resteresti senza crediti per ${esc(
+            (state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder || ROLES).indexOf(p.role) + 1).map((r) => ROLE_LABEL[r].toLowerCase()).join(' e ')
+          ) || 'il resto'}.</div>`
+        : verdictFor(current, bid)
+    }</div>
 
     <div class="grid2" style="margin-top:12px">
       <button class="btn primary" data-action="take-mine" data-id="${esc(p.id)}">L'ho preso io</button>
@@ -2786,6 +3266,78 @@ function altsCard(p, alts) {
   </div>`;
 }
 
+// Lo scenario "se finiscono i big" si calcola su richiesta: sono ottimizzazioni complete.
+let scenario = null;
+
+/**
+ * La bussola strategica: quanti big restano, cosa e' cambiato dopo l'ultima assegnazione,
+ * e cosa succederebbe restando senza. E' la differenza fra sapere chi prendere al posto di uno
+ * e capire che la strada e' cambiata.
+ */
+function strategiaCard() {
+  const plan = state.plan;
+  if (!plan?.ok) return '';
+  const owned = ownedMap();
+  const unavailable = unavailableSet();
+  const consiglio = consiglioStrategico({ players: state.players, settings: state.settings, owned, unavailable, piano: plan });
+  if (!consiglio) return '';
+
+  const cambiamenti = state.prevPlan
+    ? narrazione({ prima: state.prevPlan, dopo: plan, settings: state.settings })
+    : [];
+
+  const bigRow = ROLES.map((r) => {
+    const b = consiglio.big[r];
+    const richiesti = Math.max(0, Math.round(state.settings.minTop?.[r] ?? 0));
+    const colore = b.miei >= richiesti && richiesti > 0 ? 'accent' : b.liberi === 0 ? 'danger' : b.liberi <= 2 ? 'warn' : 'muted';
+    return `<div><b class="mono" style="color:var(--${colore})">${b.miei}/${b.liberi}</b><span>${r}</span></div>`;
+  }).join('');
+
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:8px">
+      <h2 style="margin:0">Strategia</h2>
+      <span class="tiny muted">big: tuoi / ancora liberi</span>
+    </div>
+    <div class="slotbar">${bigRow}</div>
+
+    ${
+      cambiamenti.length
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+             <div class="tiny muted" style="margin-bottom:4px">dopo l'ultima assegnazione</div>
+             <div class="small">${cambiamenti.map((f) => esc(f)).join(' ')}</div>
+           </div>`
+        : ''
+    }
+
+    ${consiglio.avvisi
+      .map(
+        (a) => `<div class="verdict ${a.gravita === 'finiti' ? 'stop' : 'edge'}" style="margin-top:12px;text-align:left">
+          <div>${esc(a.titolo)}</div>
+          <div class="small" style="font-weight:500;margin-top:4px">${esc(a.testo)}</div>
+        </div>`
+      )
+      .join('')}
+
+    ${
+      scenario
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+             <div class="row between" style="margin-bottom:6px">
+               <b class="small">Se non prendi nessun big in ${esc(ROLE_LABEL[scenario.role].toLowerCase())}</b>
+               <button class="btn ghost tiny" data-action="chiudi-scenario">chiudi</button>
+             </div>
+             <div class="small">${scenario.frasi.map((f) => esc(f)).join(' ') || 'Il piano non cambierebbe granche&#39;.'}</div>
+             <div class="tiny muted" style="margin-top:6px">costo del cambio: ${scenario.costo} punti</div>
+           </div>`
+        : `<div class="segment" style="margin-top:12px">
+             ${ROLES.filter((r) => consiglio.big[r].liberi > 0)
+               .map((r) => `<button data-action="scenario" data-role="${r}">se perdo i big ${r}</button>`)
+               .join('')}
+           </div>`
+    }
+  </div>`;
+}
+
 function targetsCard() {
   const plan = state.plan;
   if (!plan?.ok) return '';
@@ -2875,6 +3427,7 @@ function render(rerender) {
 
     ${selected ? detail(selected) : ''}
     ${!selected && !state.auction.log.length ? readyCard() : ''}
+    ${selected ? '' : strategiaCard()}
     ${selected ? '' : targetsCard()}
 
     <div class="row" style="gap:10px">
@@ -2928,6 +3481,27 @@ function onAction(action, target, ev, rerender) {
       rerender();
       return true;
     }
+    case 'scenario': {
+      const role = target.dataset.role;
+      const dopo = scenarioSenzaBig({
+        players: state.players,
+        settings: state.settings,
+        owned: ownedMap(),
+        unavailable: unavailableSet(),
+        role,
+      });
+      scenario = {
+        role,
+        frasi: narrazione({ prima: state.plan, dopo, settings: state.settings }),
+        costo: Math.max(0, Math.round(state.plan.score - dopo.score)),
+      };
+      rerender();
+      return true;
+    }
+    case 'chiudi-scenario':
+      scenario = null;
+      rerender();
+      return true;
     case 'goto':
       state.ui.tab = target.dataset.tab;
       rerender();
@@ -3422,15 +3996,17 @@ return { unzip, columnToIndex, readXlsx };
 const __m_src_ui_listone_js = (() => {
 // Import dei listoni (xlsx dei creators o CSV) e consultazione dei giocatori.
 
-const { state, addSource, removeSource } = __m_src_store_js;
+const { state, addSource, removeSource, setForm, clearForm } = __m_src_store_js;
 const { parseCsv, sheetsToTable, autoMap, refineMapping, buildPlayers } = __m_src_domain_csv_js;
 const { readXlsx } = __m_src_domain_xlsx_js;
+const { formMapping, aggregateForm, matchCount } = __m_src_domain_form_js;
 const { ROLES } = __m_src_domain_model_js;
 const { esc, matches, playerRow, emptyState, toast } = __m_src_ui_common_js;
 
 // Import in corso: vive solo finche' l'utente conferma la mappatura delle colonne.
 let draft = null;
 let showMapping = false;
+let tipoAtteso = 'listone';
 
 const FIELDS = [
   ['name', 'Nome', true],
@@ -3469,8 +4045,14 @@ async function ingestFile(file) {
       toast('Non riesco a leggere questo file.');
       return;
     }
+    if (tipoAtteso === 'voti') {
+      const mapping = formMapping(table.headers);
+      draft = { ...table, mapping, fileName: name, kind: 'voti' };
+      showMapping = !mapping.name;
+      return;
+    }
     const mapping = refineMapping(table.rows, autoMap(table.headers));
-    draft = { ...table, mapping, fileName: name, source: sourceName(name) };
+    draft = { ...table, mapping, fileName: name, source: sourceName(name), kind: 'listone' };
     showMapping = !mapping.name || !mapping.role;
   } catch (err) {
     console.error(err);
@@ -3511,6 +4093,29 @@ function emptyImport() {
     <div class="row" style="margin:12px 0 6px"><div class="grow" style="height:1px;background:var(--line)"></div><span class="tiny muted">oppure incolla un CSV</span><div class="grow" style="height:1px;background:var(--line)"></div></div>
     <textarea id="pastearea" rows="3" placeholder="Incolla qui il contenuto" style="width:100%;background:var(--surface-2);border:1px solid var(--line);border-radius:11px;padding:11px"></textarea>
     <button class="btn block" style="margin-top:8px" data-action="paste">Importa dal testo</button>
+  </div>`;
+}
+
+function votiCard() {
+  const { form, giornate } = aggregateForm(draft.rows, draft.mapping);
+  const abbinati = matchCount(state.players, form);
+  const n = giornate || 1;
+  return `
+  <div class="card">
+    <div class="row between"><h2 style="margin:0">Voti delle giornate</h2><button class="btn ghost" data-action="cancel-import">Annulla</button></div>
+    <div class="small muted" style="margin:8px 0 12px">${esc(draft.fileName)} · ${draft.rows.length} righe</div>
+    <div class="card" style="background:var(--surface-2);box-shadow:none;margin-bottom:12px">
+      <div class="row between"><b>${form.size} giocatori nel file</b><span class="small muted">${n} giornat${n === 1 ? 'a' : 'e'}</span></div>
+      <div class="tiny muted" style="margin-top:6px">
+        ${abbinati} abbinati al tuo listone${abbinati < form.size ? ` · ${form.size - abbinati} non trovati (nomi scritti diversamente)` : ''}
+      </div>
+    </div>
+    <label class="field"><span>Giornate giocate finora</span>
+      <input type="number" inputmode="numeric" id="giornate" value="${n}" min="1" max="38"></label>
+    <div class="tiny muted" style="margin-bottom:12px">
+      Serve a pesare i dati: dopo una giornata contano poco, dopo dieci comandano loro.
+    </div>
+    <button class="btn primary block" data-action="confirm-voti" ${abbinati ? '' : 'disabled'}>Applica alle valutazioni</button>
   </div>`;
 }
 
@@ -3583,6 +4188,23 @@ function sourcesCard() {
     }
     <button class="btn block" style="margin-top:10px" data-action="pickfile">Aggiungi un altro listone</button>
     <input type="file" id="csvfile" accept=".xlsx,.xlsm,.csv,.tsv,.txt" multiple style="display:none" data-action="file">
+  </div>
+
+  <div class="card">
+    <h2>Giornate gia' giocate</h2>
+    ${
+      state.formData
+        ? `<div class="small">Stai usando i voti di <b>${state.formData.giornate} giornat${state.formData.giornate === 1 ? 'a' : 'e'}</b>
+             (${esc(state.formData.fileName || 'file')}), abbinati a ${state.formData.abbinati} giocatori.</div>
+           <button class="btn danger block" style="margin-top:10px" data-action="clearvoti">Torna alle sole proiezioni</button>`
+        : `<p class="small muted" style="margin-top:0">
+             Se il campionato e' gia' iniziato, carica il file dei voti: chi e' sceso in campo da titolare
+             e chi e' rimasto fuori corregge le proiezioni fatte prima dell'estate. I dati pesano in
+             proporzione alle giornate giocate, quindi dopo una sola giornata cambia poco.
+           </p>
+           <button class="btn block" data-action="pickvoti">Carica i voti</button>`
+    }
+    <input type="file" id="votifile" accept=".xlsx,.xlsm,.csv,.tsv,.txt" style="display:none" data-action="file">
   </div>`;
 }
 
@@ -3628,7 +4250,7 @@ function browseCard() {
 }
 
 function render() {
-  if (draft) return `<div class="view">${draftCard()}</div>`;
+  if (draft) return `<div class="view">${draft.kind === 'voti' ? votiCard() : draftCard()}</div>`;
   if (!state.players.length) {
     return `<div class="view">${emptyImport()}${emptyState('⚽️', 'Si parte dal listone', 'Senza listone non c\'e\' piano: carica il file del tuo creator.')}</div>`;
   }
@@ -3638,8 +4260,26 @@ function render() {
 function onAction(action, target, ev, rerender) {
   switch (action) {
     case 'pickfile':
+      tipoAtteso = 'listone';
       document.getElementById('csvfile')?.click();
       return true;
+    case 'pickvoti':
+      tipoAtteso = 'voti';
+      document.getElementById('votifile')?.click();
+      return true;
+    case 'clearvoti':
+      clearForm();
+      rerender();
+      return true;
+    case 'confirm-voti': {
+      const giornate = Number(document.getElementById('giornate')?.value) || 1;
+      setForm({ rows: draft.rows, mapping: draft.mapping, fileName: draft.fileName, giornate });
+      draft = null;
+      tipoAtteso = 'listone';
+      toast('Valutazioni aggiornate con i voti.');
+      rerender();
+      return true;
+    }
     case 'paste': {
       const text = document.getElementById('pastearea')?.value || '';
       if (!text.trim()) {
@@ -3861,6 +4501,25 @@ function render() {
     </div>
 
     <div class="card">
+      <h2>Big in rosa</h2>
+      <p class="small muted" style="margin-top:0">
+        Quanti giocatori di prima fascia vuoi per reparto. Senza vincolo l'ottimizzatore compra
+        valore e schiva i campioni, perche' costano piu' di quanto rendono: e' corretto sui numeri,
+        ma una rosa senza big non vince le giornate. Qui decidi tu quanto pagare quel premio.
+      </p>
+      <div class="grid4">
+        ${ROLES.map(
+          (r) => `<label class="field" style="margin:0"><span>${r}</span>
+            <input type="number" inputmode="numeric" value="${s.minTop?.[r] ?? 0}" data-action="setmintop" data-key="${r}" min="0" max="${s.slots[r]}"></label>`
+        ).join('')}
+      </div>
+      <label class="field" style="margin-top:4px"><span>Chi conta come big: prime fasce fino al ${Math.round((s.topThreshold ?? 0.06) * 100)}%</span>
+        <input type="range" min="0.02" max="0.25" step="0.01" value="${s.topThreshold ?? 0.06}" data-action="topthreshold" style="width:100%">
+      </label>
+      <div class="tiny muted">Piu' stringi, piu' "big" vuol dire solo i primissimi del reparto.</div>
+    </div>
+
+    <div class="card">
       <h2>Concentrazione per club</h2>
       <p class="small muted" style="margin-top:0">
         Con il modificatore di difesa conviene avere piu' difensori della stessa squadra: prendono voto
@@ -3949,6 +4608,17 @@ function onInput(action, target, rerender) {
       rerender({ soft: true });
       return true;
     }
+    case 'setmintop': {
+      const r = target.dataset.key;
+      const v = Math.min(Math.max(0, Number(target.value) || 0), s.slots[r] || 0);
+      updateSettings({ minTop: { ...s.minTop, [r]: v } });
+      rerender({ soft: true });
+      return true;
+    }
+    case 'topthreshold':
+      updateSettings({ topThreshold: Number(target.value) });
+      rerender({ soft: true });
+      return true;
     case 'setmaxclub': {
       const raw = target.value.trim();
       updateSettings({ maxPerClub: raw === '' ? 0 : Math.max(0, Number(raw) || 0) });

@@ -121,6 +121,25 @@ export function render() {
     </div>
 
     <div class="card">
+      <h2>Big in rosa</h2>
+      <p class="small muted" style="margin-top:0">
+        Quanti giocatori di prima fascia vuoi per reparto. Senza vincolo l'ottimizzatore compra
+        valore e schiva i campioni, perche' costano piu' di quanto rendono: e' corretto sui numeri,
+        ma una rosa senza big non vince le giornate. Qui decidi tu quanto pagare quel premio.
+      </p>
+      <div class="grid4">
+        ${ROLES.map(
+          (r) => `<label class="field" style="margin:0"><span>${r}</span>
+            <input type="number" inputmode="numeric" value="${s.minTop?.[r] ?? 0}" data-action="setmintop" data-key="${r}" min="0" max="${s.slots[r]}"></label>`
+        ).join('')}
+      </div>
+      <label class="field" style="margin-top:4px"><span>Chi conta come big: prime fasce fino al ${Math.round((s.topThreshold ?? 0.06) * 100)}%</span>
+        <input type="range" min="0.02" max="0.25" step="0.01" value="${s.topThreshold ?? 0.06}" data-action="topthreshold" style="width:100%">
+      </label>
+      <div class="tiny muted">Piu' stringi, piu' "big" vuol dire solo i primissimi del reparto.</div>
+    </div>
+
+    <div class="card">
       <h2>Concentrazione per club</h2>
       <p class="small muted" style="margin-top:0">
         Con il modificatore di difesa conviene avere piu' difensori della stessa squadra: prendono voto
@@ -209,6 +228,17 @@ export function onInput(action, target, rerender) {
       rerender({ soft: true });
       return true;
     }
+    case 'setmintop': {
+      const r = target.dataset.key;
+      const v = Math.min(Math.max(0, Number(target.value) || 0), s.slots[r] || 0);
+      updateSettings({ minTop: { ...s.minTop, [r]: v } });
+      rerender({ soft: true });
+      return true;
+    }
+    case 'topthreshold':
+      updateSettings({ topThreshold: Number(target.value) });
+      rerender({ soft: true });
+      return true;
     case 'setmaxclub': {
       const raw = target.value.trim();
       updateSettings({ maxPerClub: raw === '' ? 0 : Math.max(0, Number(raw) || 0) });
