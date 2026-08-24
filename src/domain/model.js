@@ -100,7 +100,8 @@ export function sortTierLabels(labels) {
 export function defaultSettings() {
   return {
     budget: 500,
-    participants: 10,
+    // Lega da otto: modificabile dalla scheda Lega.
+    participants: 8,
     slots: { P: 3, D: 8, C: 8, A: 6 },
     // Quanti giocatori per ruolo schieri di solito (modulo di riferimento, default 3-4-3).
     // Serve a non far spendere crediti su panchinari: in porta ne gioca uno solo.

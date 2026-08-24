@@ -438,7 +438,8 @@ function sortTierLabels(labels) {
 function defaultSettings() {
   return {
     budget: 500,
-    participants: 10,
+    // Lega da otto: modificabile dalla scheda Lega.
+    participants: 8,
     slots: { P: 3, D: 8, C: 8, A: 6 },
     // Quanti giocatori per ruolo schieri di solito (modulo di riferimento, default 3-4-3).
     // Serve a non far spendere crediti su panchinari: in porta ne gioca uno solo.
@@ -1644,10 +1645,12 @@ function optimizeRoster({
     budgetCurve[b] = running;
   }
 
+  // A parita' di punteggio si sceglie la rosa che spende di piu': i crediti che avanzano
+  // a fine asta valgono zero, quindi non ha senso lasciarli sul tavolo.
   let bestB = -1;
   let bestVal = NEG;
   for (let b = 0; b <= B; b++) {
-    if (cur[b] > bestVal) {
+    if (cur[b] >= bestVal && cur[b] > NEG / 2) {
       bestVal = cur[b];
       bestB = b;
     }

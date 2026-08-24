@@ -19,6 +19,28 @@ function mulberry(seed) {
   };
 }
 
+/**
+ * Listone con le proiezioni dei creators: fantamedia attesa, titolarita' e integrita'.
+ * E' il percorso principale del modello; `makeListone` copre invece il ripiego per i
+ * listoni poveri, che hanno solo fasce e quotazioni.
+ */
+export function makeListoneProjected(seed = 7) {
+  const rnd = mulberry(seed);
+  return makeListone(seed).map((p) => {
+    const tierIdx = TIERS.indexOf(p.tier);
+    // I portieri hanno fantamedie tutte vicine, come nei listoni veri.
+    const spread = p.role === 'P' ? 0.5 : p.role === 'D' ? 1.6 : p.role === 'C' ? 2.0 : 2.6;
+    const base = p.role === 'P' ? 4.9 : 5.9;
+    return {
+      ...p,
+      fmvExp: Math.round((base + spread * (1 - tierIdx / (TIERS.length - 1)) + rnd() * 0.2) * 100) / 100,
+      titolarita: Math.max(1, Math.min(5, 5 - Math.floor(tierIdx * 0.8))),
+      integrita: 3 + Math.floor(rnd() * 3),
+      tags: p.role === 'D' && tierIdx <= 1 ? ['modificatore'] : p.role === 'P' && tierIdx === 0 ? ['imbattibilita'] : [],
+    };
+  });
+}
+
 /** Listone sintetico realistico: 3 portieri, 9 difensori, 9 centrocampisti, 6 attaccanti per club. */
 export function makeListone(seed = 42) {
   const rnd = mulberry(seed);
@@ -49,7 +71,7 @@ export function makeListone(seed = 42) {
 }
 
 export function makeContext(overrides = {}, seed = 42) {
-  const raw = makeListone(seed);
+  const raw = overrides.projected ? makeListoneProjected(seed) : makeListone(seed);
   const settings = { ...defaultSettings(), ...overrides };
   for (const role of ROLES) {
     const labels = [...new Set(raw.filter((p) => p.role === role).map((p) => p.tier))];

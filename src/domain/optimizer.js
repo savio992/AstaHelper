@@ -252,10 +252,12 @@ export function optimizeRoster({
     budgetCurve[b] = running;
   }
 
+  // A parita' di punteggio si sceglie la rosa che spende di piu': i crediti che avanzano
+  // a fine asta valgono zero, quindi non ha senso lasciarli sul tavolo.
   let bestB = -1;
   let bestVal = NEG;
   for (let b = 0; b <= B; b++) {
-    if (cur[b] > bestVal) {
+    if (cur[b] >= bestVal && cur[b] > NEG / 2) {
       bestVal = cur[b];
       bestB = b;
     }
