@@ -106,6 +106,8 @@ function detail(p) {
       <button class="btn ghost" data-action="close-detail" aria-label="Chiudi">✕</button>
     </div>
 
+    ${creatorInfo(p)}
+
     ${
       status
         ? `<div style="margin-top:14px"><button class="btn block" data-action="release" data-id="${esc(p.id)}">Annulla assegnazione</button></div>`
@@ -142,6 +144,37 @@ function detail(p) {
 
   ${status === 'other' || !status ? altsCard(p, alts) : ''}
   `;
+}
+
+/** Quello che i creators dicono di lui: giudizi, etichette, disaccordo sul prezzo. */
+function creatorInfo(p) {
+  const bits = [];
+  if (Number.isFinite(p.titolarita)) bits.push(`titolarita' ${'●'.repeat(Math.round(p.titolarita))}${'○'.repeat(5 - Math.round(p.titolarita))}`);
+  if (Number.isFinite(p.integrita)) bits.push(`integrita' ${'●'.repeat(Math.round(p.integrita))}${'○'.repeat(5 - Math.round(p.integrita))}`);
+  if (Number.isFinite(p.expShare)) bits.push(`~${Math.round(p.expShare * 38)} presenze attese`);
+
+  const disagreement =
+    Number.isFinite(p.priceMin) && Number.isFinite(p.priceMax) && p.priceMax > p.priceMin
+      ? `<div class="verdict edge" style="margin-top:10px;text-align:left">
+           I creators non sono d'accordo: da <b>${Math.round(p.priceMin)}</b> a <b>${Math.round(p.priceMax)}</b> crediti.
+           ${p.priceSpread > 0.35 ? 'Divario ampio: se va via al prezzo basso puo' + "'" + ' essere un affare.' : ''}
+         </div>`
+      : '';
+
+  const tiers = p.tiersBySource
+    ? Object.entries(p.tiersBySource).map(([src, tier]) => `<span class="chip">${esc(src)}: ${esc(tier)}</span>`).join(' ')
+    : '';
+
+  if (!bits.length && !p.tags?.length && !disagreement && !p.notes) return '';
+
+  return `
+  <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+    ${bits.length ? `<div class="small muted mono">${bits.join(' · ')}</div>` : ''}
+    ${p.tags?.length ? `<div class="row wrap" style="gap:5px;margin-top:8px">${p.tags.map((t) => `<span class="chip">${esc(t)}</span>`).join('')}</div>` : ''}
+    ${tiers ? `<div class="row wrap" style="gap:5px;margin-top:8px">${tiers}</div>` : ''}
+    ${disagreement}
+    ${p.notes ? `<details style="margin-top:10px"><summary class="small muted">Commento del creator</summary><div class="small" style="margin-top:6px;white-space:pre-wrap">${esc(p.notes.slice(0, 1200))}</div></details>` : ''}
+  </div>`;
 }
 
 function altsCard(p, alts) {
@@ -185,11 +218,28 @@ function targetsCard() {
   for (const p of pending) (byRole[p.role] ||= []).push(p);
   return `
   <div class="card">
-    <h2>Obiettivi ancora liberi</h2>
+    <div class="row between" style="margin-bottom:8px">
+      <h2 style="margin:0">Obiettivi ancora liberi</h2>
+      <span class="tiny muted">${pending.length}</span>
+    </div>
+    <div class="tiny muted" style="margin-bottom:10px">
+      Durante l'asta tocca <b>✕</b> quando uno di questi va a un avversario: un solo tocco, senza prezzo.
+      Gli altri giocatori puoi ignorarli.
+    </div>
     <div class="listwrap">
       <ul class="plist">
         ${ROLES.flatMap((r) => (byRole[r] || []).sort((a, b) => b.plannedPrice - a.plannedPrice))
-          .map((p) => playerRow(p, { price: p.plannedPrice, priceLabel: 'a piano', inPlan: true }))
+          .map(
+            (p) => `<li>
+              ${roleChip(p.role)}
+              <div class="grow" data-action="select" data-id="${esc(p.id)}">
+                <div class="nm">${esc(p.name)}</div>
+                <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+              </div>
+              <div class="pr mono" data-action="select" data-id="${esc(p.id)}">${p.plannedPrice}<small>a piano</small></div>
+              <button class="btn danger" style="min-width:46px;padding:10px" data-action="quick-gone" data-id="${esc(p.id)}" aria-label="Preso da un avversario">✕</button>
+            </li>`
+          )
           .join('')}
       </ul>
     </div>
@@ -297,6 +347,16 @@ export function onAction(action, target, ev, rerender) {
       state.ui.bidPrice = null;
       state.ui.query = '';
       toast(action === 'take-mine' ? `${p?.name} tuo a ${price}.` : `${p?.name} va a un avversario.`);
+      rerender();
+      return true;
+    }
+    case 'quick-gone': {
+      const p = playerById(id);
+      // Il prezzo pagato dagli avversari non entra in nessun calcolo: registriamo la stima
+      // per avere comunque uno storico, senza chiedere niente durante l'asta.
+      assign(id, 'other', Math.round(p?.expectedPrice ?? 0));
+      invalidate();
+      toast(`${p?.name} va via.`);
       rerender();
       return true;
     }

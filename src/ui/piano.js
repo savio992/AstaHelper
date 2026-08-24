@@ -1,8 +1,10 @@
 // Il piano: la miglior rosa possibile con i crediti che restano, e come sono distribuiti.
 
-import { state, rebuildPlan, ownedMap } from '../store.js';
+import { state, rebuildPlan } from '../store.js';
 import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
-import { tierBudgetReport } from '../domain/advisor.js';
+import { tierBudgetReport, maxBid, alternatives } from '../domain/advisor.js';
+import { clubExposure } from '../domain/valuation.js';
+import { ownedMap, unavailableSet } from '../store.js';
 import { esc, roleChip, emptyState, playerRow } from './common.js';
 
 function roleBlock(role, plan) {
@@ -31,6 +33,113 @@ function roleBlock(role, plan) {
           .join('')}
       </ul>
     </div>
+  </div>`;
+}
+
+function exposureCard(plan) {
+  const all = [...plan.owned.map((p) => ({ ...p, plannedPrice: p.paid })), ...plan.picks];
+  const rows = [...clubExposure(all, state.settings).entries()]
+    .map(([team, v]) => ({ team, ...v }))
+    .sort((a, b) => b.effettivi - a.effettivi)
+    .slice(0, 6);
+  if (!rows.length) return '';
+  const cap = Number(state.settings.maxPerClub) || 0;
+  return `
+  <div class="card">
+    <h2>Esposizione per club</h2>
+    <div class="tiny muted" style="margin-bottom:10px">
+      Quanti giocatori di ogni squadra finiresti per schierare davvero. I riempitivi contano per una frazione.
+    </div>
+    <table class="tiers">
+      <thead><tr><th>Club</th><th class="r">In rosa</th><th class="r">Titolari</th></tr></thead>
+      <tbody>
+        ${rows
+          .map(
+            (r) => `<tr>
+              <td>${esc(r.team || '—')}</td>
+              <td class="r">${r.inRosa}</td>
+              <td class="r ${cap && r.effettivi > cap ? '' : ''}"><b>${r.effettivi.toFixed(1)}</b></td>
+            </tr>`
+          )
+          .join('')}
+      </tbody>
+    </table>
+    ${cap ? `<div class="tiny muted" style="margin-top:8px">Tetto impostato: ${cap} titolari per club.</div>` : ''}
+  </div>`;
+}
+
+// La scheda d'asta si calcola su richiesta: sono 25 ottimizzazioni complete.
+let scheda = null;
+let schedaInCorso = false;
+
+function buildScheda(rerender) {
+  schedaInCorso = true;
+  setTimeout(() => {
+    try {
+      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet() };
+      scheda = (state.plan?.picks || [])
+        .slice()
+        .sort((a, b) => b.plannedPrice - a.plannedPrice)
+        .map((p) => ({
+          player: p,
+          bid: maxBid({ ...args, playerId: p.id }).maxBid,
+          alts: alternatives({ ...args, playerId: p.id, limit: 3 }).alternatives,
+        }));
+    } catch (err) {
+      console.error(err);
+      scheda = [];
+    } finally {
+      schedaInCorso = false;
+      rerender();
+    }
+  }, 30);
+}
+
+function schedaCard() {
+  if (schedaInCorso) {
+    return `<div class="card"><h2>Scheda d'asta</h2><div class="small muted"><span class="spinner"></span> Calcolo offerte massime e alternative…</div></div>`;
+  }
+  if (!scheda) {
+    return `
+    <div class="card">
+      <h2>Scheda d'asta</h2>
+      <p class="small muted" style="margin-top:0">
+        Il foglio da tenere sott'occhio: per ogni obiettivo l'offerta massima e le tre alternative
+        migliori se te lo soffiano. Preparalo prima di iniziare.
+      </p>
+      <button class="btn primary block" data-action="scheda">Prepara la scheda</button>
+    </div>`;
+  }
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:10px">
+      <h2 style="margin:0">Scheda d'asta</h2>
+      <button class="btn ghost small" data-action="scheda">Ricalcola</button>
+    </div>
+    ${scheda
+      .map(
+        (row) => `
+      <div style="padding:10px 0;border-bottom:1px solid var(--line)">
+        <div class="row between">
+          <div class="grow">
+            ${roleChip(row.player.role)} <b>${esc(row.player.name)}</b>
+            <span class="small muted">${esc(row.player.team || '')}</span>
+          </div>
+          <div class="mono" style="text-align:right">
+            <b style="font-size:19px;color:var(--accent)">${row.bid}</b>
+            <div class="tiny muted">max</div>
+          </div>
+        </div>
+        ${
+          row.alts.length
+            ? `<div class="tiny muted" style="margin-top:4px">se lo perdi: ${row.alts
+                .map((a) => `${esc(a.player.name)} <b>${a.price}</b>`)
+                .join(' · ')}</div>`
+            : ''
+        }
+      </div>`
+      )
+      .join('')}
   </div>`;
 }
 
@@ -98,8 +207,10 @@ export function render() {
       </div>
     </div>
 
+    ${schedaCard()}
     ${ROLES.map((r) => roleBlock(r, plan)).join('')}
     ${tiersCard(plan)}
+    ${exposureCard(plan)}
 
     <div class="card">
       <div class="small muted">
@@ -113,6 +224,13 @@ export function render() {
 export function onAction(action, target, ev, rerender) {
   if (action === 'replan') {
     rebuildPlan();
+    scheda = null;
+    rerender();
+    return true;
+  }
+  if (action === 'scheda') {
+    scheda = null;
+    buildScheda(rerender);
     rerender();
     return true;
   }

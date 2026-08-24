@@ -118,6 +118,20 @@ export function render() {
       </div>
     </div>
 
+    <div class="card">
+      <h2>Concentrazione per club</h2>
+      <p class="small muted" style="margin-top:0">
+        Con il modificatore di difesa conviene avere piu' difensori della stessa squadra: prendono voto
+        alto nella stessa giornata e la soglia scatta. Ma legare mezza rosa a un solo club significa
+        crollare tutti insieme se quella squadra va male. Il conteggio e' sui <b>titolari</b>: i
+        riempitivi da un credito non pesano.
+      </p>
+      <label class="field" style="margin-bottom:0"><span>Massimo titolari dallo stesso club${s.maxPerClub ? '' : ' — nessun limite'}</span>
+        <input type="number" inputmode="numeric" value="${s.maxPerClub || ''}" placeholder="nessun limite" data-action="setmaxclub" min="0" max="11">
+      </label>
+      <div class="tiny muted" style="margin-top:6px">4 lascia passare il blocco portiere + tre difensori e ferma tutto il resto.</div>
+    </div>
+
     ${tierEditor()}
 
     <div class="card">
@@ -190,6 +204,12 @@ export function onInput(action, target, rerender) {
     case 'setcap': {
       const raw = target.value.trim();
       updateSettings({ roleBudget: { ...s.roleBudget, [target.dataset.key]: raw === '' ? null : Math.max(0, Number(raw) || 0) } });
+      rerender({ soft: true });
+      return true;
+    }
+    case 'setmaxclub': {
+      const raw = target.value.trim();
+      updateSettings({ maxPerClub: raw === '' ? 0 : Math.max(0, Number(raw) || 0) });
       rerender({ soft: true });
       return true;
     }

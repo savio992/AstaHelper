@@ -1,7 +1,8 @@
 // Stato dell'applicazione e persistenza locale.
 // Tutto vive nel browser: nessun server, nessun dato che esce dal telefono.
 
-import { defaultSettings, sortTierLabels, ROLES } from './domain/model.js';
+import { defaultSettings, inferTierOrder, annotateTierPct, ROLES } from './domain/model.js';
+import { mergeSources } from './domain/csv.js';
 import { valuePlayers } from './domain/valuation.js';
 import { withExpectedPrices } from './domain/market.js';
 import { optimizeRoster } from './domain/optimizer.js';
@@ -10,7 +11,9 @@ const KEY = 'astahelper:v1';
 
 export const state = {
   settings: defaultSettings(),
-  roster: [], // listone importato, dati grezzi
+  // Un elemento per creator importato: { name, players }. Il listone di lavoro e' la loro unione.
+  sources: [],
+  roster: [], // listone unito, dati grezzi
   players: [], // listone con punteggi e prezzi attesi (derivato)
   importMeta: null, // { headers, mapping, rows, warnings, fileName }
   auction: {
@@ -44,7 +47,7 @@ export function save() {
   try {
     const payload = {
       settings: state.settings,
-      roster: state.roster,
+      sources: state.sources,
       auction: state.auction,
       importMeta: state.importMeta ? { headers: state.importMeta.headers, mapping: state.importMeta.mapping, fileName: state.importMeta.fileName, count: state.roster.length } : null,
       ui: { tab: state.ui.tab },
@@ -65,7 +68,8 @@ export function load() {
     state.settings.starters = { ...defaultSettings().starters, ...(data.settings?.starters || {}) };
     state.settings.tierOrder = { ...defaultSettings().tierOrder, ...(data.settings?.tierOrder || {}) };
     state.settings.roleBudget = { ...defaultSettings().roleBudget, ...(data.settings?.roleBudget || {}) };
-    state.roster = data.roster || [];
+    state.sources = data.sources || (data.roster ? [{ name: 'listone', players: data.roster }] : []);
+    state.roster = rebuildRoster();
     state.auction = { owned: {}, taken: {}, log: [], ...(data.auction || {}) };
     state.importMeta = data.importMeta || null;
     if (data.ui?.tab) state.ui.tab = data.ui.tab;
@@ -80,6 +84,7 @@ export function load() {
 export function resetAll() {
   localStorage.removeItem(KEY);
   state.settings = defaultSettings();
+  state.sources = [];
   state.roster = [];
   state.players = [];
   state.importMeta = null;
@@ -127,14 +132,31 @@ export function rebuildPlan(opts = {}) {
   return state.plan;
 }
 
-export function setImported({ roster, headers, mapping, warnings, fileName, tierLabels }) {
-  state.roster = roster;
-  state.importMeta = { headers, mapping, warnings, fileName, count: roster.length };
-  // Ordine delle fasce proposto automaticamente, ruolo per ruolo.
-  for (const role of ROLES) {
-    const labels = [...new Set(roster.filter((p) => p.role === role).map((p) => p.tier).filter(Boolean))];
-    state.settings.tierOrder[role] = sortTierLabels(labels);
-  }
+/** Unisce le fonti importate in un unico listone e riordina le fasce. */
+function rebuildRoster() {
+  const lists = state.sources.map((s) => annotateTierPct(s.players));
+  const roster = mergeSources(lists);
+  for (const role of ROLES) state.settings.tierOrder[role] = inferTierOrder(roster, role);
+  return roster;
+}
+
+/** Aggiunge un creator al listone, o ne sostituisce uno con lo stesso nome. */
+export function addSource({ name, players, headers, mapping, warnings, fileName }) {
+  const idx = state.sources.findIndex((s) => s.name === name);
+  const entry = { name, players };
+  if (idx >= 0) state.sources[idx] = entry;
+  else state.sources.push(entry);
+  state.roster = rebuildRoster();
+  state.importMeta = { headers, mapping, warnings, fileName, count: state.roster.length };
+  recompute();
+  rebuildPlan();
+  save();
+  notify();
+}
+
+export function removeSource(name) {
+  state.sources = state.sources.filter((s) => s.name !== name);
+  state.roster = state.sources.length ? rebuildRoster() : [];
   recompute();
   rebuildPlan();
   save();
