@@ -139,25 +139,42 @@ export function expectedPrices(players, settings) {
  */
 export function withExpectedPrices(players, settings) {
   const prices = expectedPrices(players, settings);
-  // Il prezzo consigliato e' tarato su una lega da dieci: va riportato alla lega vera
-  // prima di confrontarlo con il prezzo atteso.
-  let sumPrice = 0;
+  // La valutazione del creator va riportata sulla stessa scala del prezzo atteso prima di
+  // poterli confrontare. Si usa la quota normalizzata per fonte, non il valore grezzo: un
+  // creator generoso e uno prudente danno cifre diverse per lo stesso giocatore, ma la
+  // posizione relativa dentro il proprio listone e' confrontabile.
+  const signal = (p) => (Number.isFinite(p.priceShare) ? p.priceShare : null);
+  let sumSignal = 0;
   let sumExpected = 0;
   for (const p of players) {
-    if (!Number.isFinite(p.price)) continue;
-    sumPrice += p.price;
+    if (signal(p) === null) continue;
+    sumSignal += signal(p);
     sumExpected += prices.get(p.id) ?? 0;
   }
-  const scale = sumPrice > 0 ? sumExpected / sumPrice : 1;
+  const scale = sumSignal > 0 ? sumExpected / sumSignal : 0;
 
   return players.map((p) => {
     const expectedPrice = prices.get(p.id) ?? 1;
-    const consigliato = Number.isFinite(p.price) ? p.price * scale : null;
+    const quota = signal(p);
+    const consigliato = quota === null ? null : Math.max(1, Math.round(quota * scale));
+
+    // La valutazione di ciascun creator, riportata sulla scala della lega: serve a vedere
+    // se il consenso nasconde un disaccordo forte fra le due firme.
+    let consigliatoBySource = null;
+    if (p.bySource && scale > 0) {
+      consigliatoBySource = {};
+      for (const [src, v] of Object.entries(p.bySource)) {
+        if (Number.isFinite(v.priceShare)) consigliatoBySource[src] = Math.max(1, Math.round(v.priceShare * scale));
+      }
+      if (!Object.keys(consigliatoBySource).length) consigliatoBySource = null;
+    }
+
     return {
       ...p,
       expectedPrice,
-      consigliato: consigliato === null ? null : Math.round(consigliato),
-      edge: consigliato === null ? null : Math.round(consigliato - expectedPrice),
+      consigliato,
+      consigliatoBySource,
+      edge: consigliato === null ? null : consigliato - expectedPrice,
     };
   });
 }

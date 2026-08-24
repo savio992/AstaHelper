@@ -105,6 +105,24 @@ export function annotatePmaShare(players) {
   }));
 }
 
+/**
+ * Normalizza anche il prezzo consigliato in quote confrontabili fra creators.
+ *
+ * Stesso problema della PMA, ma per un motivo diverso: la PMA misura lo stesso mercato e i
+ * creators concordano (Lautaro pagato 164 e 156), mentre il prezzo consigliato e' un giudizio
+ * personale e le scale divergono (Lautaro consigliato a 150 e a 195). Mediare i valori grezzi
+ * mescolerebbe un creator prudente con uno generoso; mediare le quote confronta invece quanto
+ * ciascuno dei due lo valuta rispetto a tutti gli altri giocatori del suo listone.
+ */
+export function annotatePriceShare(players) {
+  let total = 0;
+  for (const p of players) if (Number.isFinite(p.price) && p.price > 0) total += p.price;
+  return players.map((p) => ({
+    ...p,
+    priceShare: total > 0 && Number.isFinite(p.price) && p.price > 0 ? p.price / total : null,
+  }));
+}
+
 /** Ordina un elenco di etichette di fascia dalla migliore alla peggiore, con euristica sui nomi. */
 export function sortTierLabels(labels) {
   return [...labels].sort((a, b) => {

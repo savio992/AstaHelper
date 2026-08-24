@@ -209,11 +209,21 @@ function creatorInfo(p) {
   if (Number.isFinite(p.integrita)) bits.push(`integrita' ${'●'.repeat(Math.round(p.integrita))}${'○'.repeat(5 - Math.round(p.integrita))}`);
   if (Number.isFinite(p.expShare)) bits.push(`~${Math.round(p.expShare * 38)} presenze attese`);
 
+  // Quanto costa davvero contro quanto dicono che valga, creator per creator.
+  const fonti = p.consigliatoBySource ? Object.entries(p.consigliatoBySource) : [];
+  const valutazioni = fonti.length
+    ? `<div class="small" style="margin-top:10px">
+         <div class="muted">pagato in media <b class="mono" style="color:var(--text)">${Math.round(p.expectedPrice)}</b> nelle altre aste</div>
+         <div class="muted" style="margin-top:2px">lo valutano: ${fonti
+           .map(([src, v]) => `${esc(src)} <b class="mono" style="color:var(--${v > p.expectedPrice ? 'accent' : v < p.expectedPrice ? 'danger' : 'text'})">${v}</b>`)
+           .join(' · ')}</div>
+       </div>`
+    : '';
+
   const disagreement =
-    Number.isFinite(p.priceMin) && Number.isFinite(p.priceMax) && p.priceMax > p.priceMin
+    fonti.length > 1 && Math.max(...fonti.map((f) => f[1])) > Math.min(...fonti.map((f) => f[1])) * 1.35
       ? `<div class="verdict edge" style="margin-top:10px;text-align:left">
-           I creators non sono d'accordo: da <b>${Math.round(p.priceMin)}</b> a <b>${Math.round(p.priceMax)}</b> crediti.
-           ${p.priceSpread > 0.35 ? 'Divario ampio: se va via al prezzo basso puo' + "'" + ' essere un affare.' : ''}
+           I creators non sono d'accordo su di lui. Se va via vicino alla valutazione piu' bassa, e' un affare.
          </div>`
       : '';
 
@@ -221,13 +231,14 @@ function creatorInfo(p) {
     ? Object.entries(p.tiersBySource).map(([src, tier]) => `<span class="chip">${esc(src)}: ${esc(tier)}</span>`).join(' ')
     : '';
 
-  if (!bits.length && !p.tags?.length && !disagreement && !p.notes) return '';
+  if (!bits.length && !p.tags?.length && !valutazioni && !p.notes) return '';
 
   return `
   <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
     ${bits.length ? `<div class="small muted mono">${bits.join(' · ')}</div>` : ''}
     ${p.tags?.length ? `<div class="row wrap" style="gap:5px;margin-top:8px">${p.tags.map((t) => `<span class="chip">${esc(t)}</span>`).join('')}</div>` : ''}
     ${tiers ? `<div class="row wrap" style="gap:5px;margin-top:8px">${tiers}</div>` : ''}
+    ${valutazioni}
     ${disagreement}
     ${p.notes ? `<details style="margin-top:10px"><summary class="small muted">Commento del creator</summary><div class="small" style="margin-top:6px;white-space:pre-wrap">${esc(p.notes.slice(0, 1200))}</div></details>` : ''}
   </div>`;

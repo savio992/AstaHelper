@@ -1,7 +1,7 @@
 // Stato dell'applicazione e persistenza locale.
 // Tutto vive nel browser: nessun server, nessun dato che esce dal telefono.
 
-import { defaultSettings, inferTierOrder, annotateTierPct, annotatePmaShare, ROLES } from './domain/model.js';
+import { defaultSettings, inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, ROLES } from './domain/model.js';
 import { mergeSources } from './domain/csv.js';
 import { valuePlayers } from './domain/valuation.js';
 import { withExpectedPrices } from './domain/market.js';
@@ -134,7 +134,7 @@ export function rebuildPlan(opts = {}) {
 
 /** Unisce le fonti importate in un unico listone e riordina le fasce. */
 function rebuildRoster() {
-  const lists = state.sources.map((s) => annotatePmaShare(annotateTierPct(s.players)));
+  const lists = state.sources.map((s) => annotatePriceShare(annotatePmaShare(annotateTierPct(s.players))));
   const roster = mergeSources(lists);
   for (const role of ROLES) state.settings.tierOrder[role] = inferTierOrder(roster, role);
   return roster;

@@ -208,7 +208,7 @@ const FIELD_SYNONYMS = {
 const TAG_HEADER = /^nota ?\d*$|^tag ?\d*$|^etichett[ae] ?\d*$/;
 
 // Campi calcolati dopo l'import, normalizzati all'interno di ogni fonte.
-const DERIVED_FIELDS = ['tierPct', 'pmaShare'];
+const DERIVED_FIELDS = ['tierPct', 'pmaShare', 'priceShare'];
 
 const NUMERIC_FIELDS = [
   'price', 'pma', 'quo', 'fmvExp', 'fvm', 'fantamedia', 'mediavoto',
@@ -410,7 +410,16 @@ export function mergeSources(lists) {
       const src = p.sources[0] || `fonte ${valid.indexOf(list) + 1}`;
       if (p.tier) target.tiersBySource[src] = p.tier;
       target.bySource = target.bySource || {};
-      target.bySource[src] = { tier: p.tier, price: p.price, pma: p.pma, fmvExp: p.fmvExp, tierPct: p.tierPct };
+      target.bySource[src] = {
+        tier: p.tier,
+        price: p.price,
+        pma: p.pma,
+        fmvExp: p.fmvExp,
+        tierPct: p.tierPct,
+        // Quote normalizzate: sono le uniche confrontabili fra creators diversi.
+        priceShare: p.priceShare,
+        pmaShare: p.pmaShare,
+      };
       // Campi gia' normalizzati per fonte: si mediano come gli altri ma non stanno
       // fra i valori grezzi importati dal file.
       for (const field of DERIVED_FIELDS) {

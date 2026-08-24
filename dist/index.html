@@ -443,6 +443,24 @@ function annotatePmaShare(players) {
   }));
 }
 
+/**
+ * Normalizza anche il prezzo consigliato in quote confrontabili fra creators.
+ *
+ * Stesso problema della PMA, ma per un motivo diverso: la PMA misura lo stesso mercato e i
+ * creators concordano (Lautaro pagato 164 e 156), mentre il prezzo consigliato e' un giudizio
+ * personale e le scale divergono (Lautaro consigliato a 150 e a 195). Mediare i valori grezzi
+ * mescolerebbe un creator prudente con uno generoso; mediare le quote confronta invece quanto
+ * ciascuno dei due lo valuta rispetto a tutti gli altri giocatori del suo listone.
+ */
+function annotatePriceShare(players) {
+  let total = 0;
+  for (const p of players) if (Number.isFinite(p.price) && p.price > 0) total += p.price;
+  return players.map((p) => ({
+    ...p,
+    priceShare: total > 0 && Number.isFinite(p.price) && p.price > 0 ? p.price / total : null,
+  }));
+}
+
 /** Ordina un elenco di etichette di fascia dalla migliore alla peggiore, con euristica sui nomi. */
 function sortTierLabels(labels) {
   return [...labels].sort((a, b) => {
@@ -497,7 +515,7 @@ function tierRank(settings, role, tier) {
   return idx >= 0 ? idx : order.length;
 }
 
-return { inferTierOrder, annotateTierPct, annotatePmaShare, sortTierLabels, defaultSettings, totalSlots, tierKey, tierRank, ROLES, ROLE_LABEL, ROLE_LABEL_SHORT };
+return { inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, sortTierLabels, defaultSettings, totalSlots, tierKey, tierRank, ROLES, ROLE_LABEL, ROLE_LABEL_SHORT };
 })();
 
 // ===== src/domain/csv.js =====
@@ -712,7 +730,7 @@ const FIELD_SYNONYMS = {
 const TAG_HEADER = /^nota ?\d*$|^tag ?\d*$|^etichett[ae] ?\d*$/;
 
 // Campi calcolati dopo l'import, normalizzati all'interno di ogni fonte.
-const DERIVED_FIELDS = ['tierPct', 'pmaShare'];
+const DERIVED_FIELDS = ['tierPct', 'pmaShare', 'priceShare'];
 
 const NUMERIC_FIELDS = [
   'price', 'pma', 'quo', 'fmvExp', 'fvm', 'fantamedia', 'mediavoto',
@@ -914,7 +932,16 @@ function mergeSources(lists) {
       const src = p.sources[0] || `fonte ${valid.indexOf(list) + 1}`;
       if (p.tier) target.tiersBySource[src] = p.tier;
       target.bySource = target.bySource || {};
-      target.bySource[src] = { tier: p.tier, price: p.price, pma: p.pma, fmvExp: p.fmvExp, tierPct: p.tierPct };
+      target.bySource[src] = {
+        tier: p.tier,
+        price: p.price,
+        pma: p.pma,
+        fmvExp: p.fmvExp,
+        tierPct: p.tierPct,
+        // Quote normalizzate: sono le uniche confrontabili fra creators diversi.
+        priceShare: p.priceShare,
+        pmaShare: p.pmaShare,
+      };
       // Campi gia' normalizzati per fonte: si mediano come gli altri ma non stanno
       // fra i valori grezzi importati dal file.
       for (const field of DERIVED_FIELDS) {
@@ -1447,25 +1474,42 @@ function expectedPrices(players, settings) {
  */
 function withExpectedPrices(players, settings) {
   const prices = expectedPrices(players, settings);
-  // Il prezzo consigliato e' tarato su una lega da dieci: va riportato alla lega vera
-  // prima di confrontarlo con il prezzo atteso.
-  let sumPrice = 0;
+  // La valutazione del creator va riportata sulla stessa scala del prezzo atteso prima di
+  // poterli confrontare. Si usa la quota normalizzata per fonte, non il valore grezzo: un
+  // creator generoso e uno prudente danno cifre diverse per lo stesso giocatore, ma la
+  // posizione relativa dentro il proprio listone e' confrontabile.
+  const signal = (p) => (Number.isFinite(p.priceShare) ? p.priceShare : null);
+  let sumSignal = 0;
   let sumExpected = 0;
   for (const p of players) {
-    if (!Number.isFinite(p.price)) continue;
-    sumPrice += p.price;
+    if (signal(p) === null) continue;
+    sumSignal += signal(p);
     sumExpected += prices.get(p.id) ?? 0;
   }
-  const scale = sumPrice > 0 ? sumExpected / sumPrice : 1;
+  const scale = sumSignal > 0 ? sumExpected / sumSignal : 0;
 
   return players.map((p) => {
     const expectedPrice = prices.get(p.id) ?? 1;
-    const consigliato = Number.isFinite(p.price) ? p.price * scale : null;
+    const quota = signal(p);
+    const consigliato = quota === null ? null : Math.max(1, Math.round(quota * scale));
+
+    // La valutazione di ciascun creator, riportata sulla scala della lega: serve a vedere
+    // se il consenso nasconde un disaccordo forte fra le due firme.
+    let consigliatoBySource = null;
+    if (p.bySource && scale > 0) {
+      consigliatoBySource = {};
+      for (const [src, v] of Object.entries(p.bySource)) {
+        if (Number.isFinite(v.priceShare)) consigliatoBySource[src] = Math.max(1, Math.round(v.priceShare * scale));
+      }
+      if (!Object.keys(consigliatoBySource).length) consigliatoBySource = null;
+    }
+
     return {
       ...p,
       expectedPrice,
-      consigliato: consigliato === null ? null : Math.round(consigliato),
-      edge: consigliato === null ? null : Math.round(consigliato - expectedPrice),
+      consigliato,
+      consigliatoBySource,
+      edge: consigliato === null ? null : consigliato - expectedPrice,
     };
   });
 }
@@ -1955,7 +1999,7 @@ const __m_src_store_js = (() => {
 // Stato dell'applicazione e persistenza locale.
 // Tutto vive nel browser: nessun server, nessun dato che esce dal telefono.
 
-const { defaultSettings, inferTierOrder, annotateTierPct, annotatePmaShare, ROLES } = __m_src_domain_model_js;
+const { defaultSettings, inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, ROLES } = __m_src_domain_model_js;
 const { mergeSources } = __m_src_domain_csv_js;
 const { valuePlayers } = __m_src_domain_valuation_js;
 const { withExpectedPrices } = __m_src_domain_market_js;
@@ -2088,7 +2132,7 @@ function rebuildPlan(opts = {}) {
 
 /** Unisce le fonti importate in un unico listone e riordina le fasce. */
 function rebuildRoster() {
-  const lists = state.sources.map((s) => annotatePmaShare(annotateTierPct(s.players)));
+  const lists = state.sources.map((s) => annotatePriceShare(annotatePmaShare(annotateTierPct(s.players))));
   const roster = mergeSources(lists);
   for (const role of ROLES) state.settings.tierOrder[role] = inferTierOrder(roster, role);
   return roster;
@@ -2686,11 +2730,21 @@ function creatorInfo(p) {
   if (Number.isFinite(p.integrita)) bits.push(`integrita' ${'●'.repeat(Math.round(p.integrita))}${'○'.repeat(5 - Math.round(p.integrita))}`);
   if (Number.isFinite(p.expShare)) bits.push(`~${Math.round(p.expShare * 38)} presenze attese`);
 
+  // Quanto costa davvero contro quanto dicono che valga, creator per creator.
+  const fonti = p.consigliatoBySource ? Object.entries(p.consigliatoBySource) : [];
+  const valutazioni = fonti.length
+    ? `<div class="small" style="margin-top:10px">
+         <div class="muted">pagato in media <b class="mono" style="color:var(--text)">${Math.round(p.expectedPrice)}</b> nelle altre aste</div>
+         <div class="muted" style="margin-top:2px">lo valutano: ${fonti
+           .map(([src, v]) => `${esc(src)} <b class="mono" style="color:var(--${v > p.expectedPrice ? 'accent' : v < p.expectedPrice ? 'danger' : 'text'})">${v}</b>`)
+           .join(' · ')}</div>
+       </div>`
+    : '';
+
   const disagreement =
-    Number.isFinite(p.priceMin) && Number.isFinite(p.priceMax) && p.priceMax > p.priceMin
+    fonti.length > 1 && Math.max(...fonti.map((f) => f[1])) > Math.min(...fonti.map((f) => f[1])) * 1.35
       ? `<div class="verdict edge" style="margin-top:10px;text-align:left">
-           I creators non sono d'accordo: da <b>${Math.round(p.priceMin)}</b> a <b>${Math.round(p.priceMax)}</b> crediti.
-           ${p.priceSpread > 0.35 ? 'Divario ampio: se va via al prezzo basso puo' + "'" + ' essere un affare.' : ''}
+           I creators non sono d'accordo su di lui. Se va via vicino alla valutazione piu' bassa, e' un affare.
          </div>`
       : '';
 
@@ -2698,13 +2752,14 @@ function creatorInfo(p) {
     ? Object.entries(p.tiersBySource).map(([src, tier]) => `<span class="chip">${esc(src)}: ${esc(tier)}</span>`).join(' ')
     : '';
 
-  if (!bits.length && !p.tags?.length && !disagreement && !p.notes) return '';
+  if (!bits.length && !p.tags?.length && !valutazioni && !p.notes) return '';
 
   return `
   <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
     ${bits.length ? `<div class="small muted mono">${bits.join(' · ')}</div>` : ''}
     ${p.tags?.length ? `<div class="row wrap" style="gap:5px;margin-top:8px">${p.tags.map((t) => `<span class="chip">${esc(t)}</span>`).join('')}</div>` : ''}
     ${tiers ? `<div class="row wrap" style="gap:5px;margin-top:8px">${tiers}</div>` : ''}
+    ${valutazioni}
     ${disagreement}
     ${p.notes ? `<details style="margin-top:10px"><summary class="small muted">Commento del creator</summary><div class="small" style="margin-top:6px;white-space:pre-wrap">${esc(p.notes.slice(0, 1200))}</div></details>` : ''}
   </div>`;

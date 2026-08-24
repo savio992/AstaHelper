@@ -47,6 +47,14 @@ La colonna Prezzo, che e' invece la valutazione del creator, serve a un'altra co
 quanto dice che vale e quanto il mercato lo paga segnala le **occasioni** (lo paghi meno di quanto
 vale) e i giocatori **cari** (il mercato lo sopravvaluta).
 
+Anche le valutazioni vanno normalizzate per fonte prima di essere mediate, ma per un motivo
+diverso dalla PMA. La PMA misura lo stesso mercato e i creators concordano: nei due listoni di
+prova Lautaro risulta pagato 164 e 156. Il prezzo consigliato e' invece un giudizio personale e
+le scale divergono: lo stesso Lautaro e' consigliato a 150 da uno e a 195 dall'altro. Mediare i
+valori grezzi mescolerebbe un creator prudente con uno generoso; mediando le quote si confronta
+quanto ciascuno lo valuta rispetto agli altri giocatori del proprio listone. Sulla scheda del
+giocatore le due valutazioni restano visibili separatamente, riportate sulla scala della lega.
+
 **La rosa migliore** e' un problema di zaino multi-vincolo — budget totale piu' slot esatti per
 ruolo — risolto esattamente in programmazione dinamica, non per approssimazione. I giocatori
 vengono pesati per profondita': il primo portiere vale uno, il secondo quasi zero, perche' in
