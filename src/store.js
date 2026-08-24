@@ -7,6 +7,7 @@ import { valuePlayers, markTopPlayers } from './domain/valuation.js';
 import { withExpectedPrices } from './domain/market.js';
 import { optimizeRoster } from './domain/optimizer.js';
 import { aggregateForm, applyForm, matchCount } from './domain/form.js';
+import { statoMercato, applyPrezziLive, avversari } from './domain/mercato.js';
 
 const KEY = 'astahelper:v1';
 
@@ -21,9 +22,13 @@ export const state = {
   importMeta: null, // { headers, mapping, rows, warnings, fileName }
   auction: {
     owned: {}, // id -> prezzo pagato da me
-    taken: {}, // id -> prezzo pagato da altri
-    log: [], // { id, kind, price, at }
+    taken: {}, // id -> { price, by } : prezzo pagato da altri e da quale squadra
+    log: [], // { id, kind, price, by, at }
   },
+  // Il conto del mercato: slot residui, crediti ancora in circolazione, inflazione osservata.
+  mercato: null,
+  // Il tabellone degli avversari, derivato dal registro delle assegnazioni.
+  tabellone: null,
   plan: null,
   // Il piano precedente, per poter raccontare cosa e' cambiato dopo l'ultima assegnazione.
   prevPlan: null,
@@ -74,6 +79,7 @@ export function load() {
     state.settings.starters = { ...defaultSettings().starters, ...(data.settings?.starters || {}) };
     state.settings.tierOrder = { ...defaultSettings().tierOrder, ...(data.settings?.tierOrder || {}) };
     state.settings.roleBudget = { ...defaultSettings().roleBudget, ...(data.settings?.roleBudget || {}) };
+    state.settings.minTop = { ...defaultSettings().minTop, ...(data.settings?.minTop || {}) };
     state.sources = data.sources || (data.roster ? [{ name: 'listone', players: data.roster }] : []);
     state.roster = rebuildRoster();
     state.auction = { owned: {}, taken: {}, log: [], ...(data.auction || {}) };
@@ -98,6 +104,8 @@ export function resetAll() {
   state.players = [];
   state.importMeta = null;
   state.auction = { owned: {}, taken: {}, log: [] };
+  state.mercato = null;
+  state.tabellone = null;
   state.plan = null;
   notify();
 }
@@ -114,7 +122,24 @@ export function recompute() {
     ? applyForm(state.roster, new Map(state.formData.entries), state.formData.giornate)
     : state.roster;
   const valued = valuePlayers(base, state.settings);
-  state.players = markTopPlayers(withExpectedPrices(valued, state.settings), state.settings);
+  const conPrezzi = withExpectedPrices(valued, state.settings);
+
+  // Il mercato corregge le stime statiche del listone con quello che l'asta ha gia' mostrato:
+  // quanti giocatori restano davvero da assegnare e quanti crediti restano per comprarli.
+  state.mercato = statoMercato({
+    settings: state.settings,
+    players: conPrezzi,
+    owned: ownedMap(),
+    taken: takenMap(),
+  });
+  const live = applyPrezziLive(conPrezzi, state.settings, state.mercato);
+  state.players = markTopPlayers(live, state.settings);
+  state.tabellone = avversari({
+    settings: state.settings,
+    players: state.players,
+    owned: ownedMap(),
+    taken: takenMap(),
+  });
 }
 
 /** Carica i voti delle giornate gia' giocate. */
@@ -147,6 +172,16 @@ export function ownedMap() {
 
 export function unavailableSet() {
   return new Set(Object.keys(state.auction.taken));
+}
+
+/** Le assegnazioni agli avversari, con prezzo e squadra quando registrati. */
+export function takenMap() {
+  return new Map(
+    Object.entries(state.auction.taken).map(([id, v]) => [
+      id,
+      v && typeof v === 'object' ? { price: Number(v.price) || 0, by: v.by ?? null } : { price: Number(v) || 0, by: null },
+    ])
+  );
 }
 
 export function playerById(id) {
@@ -203,13 +238,17 @@ export function removeSource(name) {
 
 // --- Azioni d'asta -------------------------------------------------------
 
-export function assign(id, kind, price) {
+export function assign(id, kind, price, by = null) {
   const p = Math.max(0, Math.round(Number(price) || 0));
+  const squadra = Number.isInteger(by) && by > 0 ? by : null;
   delete state.auction.owned[id];
   delete state.auction.taken[id];
   if (kind === 'mine') state.auction.owned[id] = p;
-  else if (kind === 'other') state.auction.taken[id] = p;
-  state.auction.log.push({ id, kind, price: p, at: Date.now() });
+  else if (kind === 'other') state.auction.taken[id] = { price: p, by: squadra };
+  state.auction.log.push({ id, kind, price: p, by: squadra, at: Date.now() });
+  // Ogni assegnazione cambia quanti giocatori e quanti crediti restano: i prezzi attesi
+  // vanno rifatti prima del piano, altrimenti il piano ottimizza su un mercato scaduto.
+  recompute();
   rebuildPlan();
   save();
   notify();
@@ -218,7 +257,8 @@ export function assign(id, kind, price) {
 export function release(id) {
   delete state.auction.owned[id];
   delete state.auction.taken[id];
-  state.auction.log.push({ id, kind: 'release', price: 0, at: Date.now() });
+  state.auction.log.push({ id, kind: 'release', price: 0, by: null, at: Date.now() });
+  recompute();
   rebuildPlan();
   save();
   notify();
@@ -235,8 +275,9 @@ export function undo() {
     delete state.auction.owned[entry.id];
     delete state.auction.taken[entry.id];
     if (entry.kind === 'mine') state.auction.owned[entry.id] = entry.price;
-    else if (entry.kind === 'other') state.auction.taken[entry.id] = entry.price;
+    else if (entry.kind === 'other') state.auction.taken[entry.id] = { price: entry.price, by: entry.by ?? null };
   }
+  recompute();
   rebuildPlan();
   save();
   notify();

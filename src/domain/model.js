@@ -167,6 +167,9 @@ export function defaultSettings() {
     // Massimo numero di giocatori dallo stesso club (0 = nessun limite).
     // Serve a non ritrovarsi mezza rosa legata alla stagione di una sola squadra.
     maxPerClub: 4,
+    // Nomi delle squadre della lega; la prima sono io. Servono a tenere il registro
+    // di chi compra cosa, che e' quello che dice fin dove puo' spingersi un avversario.
+    squadre: [],
   };
 }
 

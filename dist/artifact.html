@@ -493,6 +493,9 @@ function defaultSettings() {
     // Massimo numero di giocatori dallo stesso club (0 = nessun limite).
     // Serve a non ritrovarsi mezza rosa legata alla stagione di una sola squadra.
     maxPerClub: 4,
+    // Nomi delle squadre della lega; la prima sono io. Servono a tenere il registro
+    // di chi compra cosa, che e' quello che dice fin dove puo' spingersi un avversario.
+    squadre: [],
   };
 }
 
@@ -2217,6 +2220,372 @@ function matchCount(players, form) {
 return { aggregateForm, formMapping, applyForm, matchCount };
 })();
 
+// ===== src/domain/mercato.js =====
+const __m_src_domain_mercato_js = (() => {
+// Il conto del mercato: quanti giocatori restano davvero, e quanti crediti restano in giro.
+//
+// "Come fa l'algoritmo a sapere quanti giocatori sono rimasti?" Non lo stima: lo conta.
+// In una lega da N squadre con S slot per ruolo verranno assegnati esattamente N*S giocatori
+// di quel ruolo, ne' uno di piu'. Ogni assegnazione registrata scala il contatore, e quello
+// che resta e' un numero esatto, non una previsione.
+//
+// Lo stesso vale per i soldi: nella stanza ci sono N*budget crediti e quelli spesi non
+// tornano. Da queste due quantita' esatte discende tutto il resto, perche' il mercato deve
+// chiudere: i crediti ancora in circolazione finiranno sui giocatori ancora in vendita, e su
+// nessun altro. Se la stanza strapaga i primi, per i successivi restano meno soldi e i prezzi
+// crollano; e' il meccanismo che a fine asta fa andare via tutti a un credito, e qui viene
+// previsto invece che subito.
+
+const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
+
+// Quanti crediti di mercato osservare prima di credere all'inflazione misurata.
+// Con poche aggiudicazioni il rapporto pagato/atteso e' rumore puro.
+const PRIOR_INFLAZIONE = 40;
+
+// Limiti di sicurezza sul riscalamento: l'identita' contabile e' vera, ma con pochissimi slot
+// residui e molti crediti darebbe cifre che nessuno pagherebbe davvero.
+const LAMBDA_MIN = 0.2;
+const LAMBDA_MAX = 4;
+
+/** Accetta sia il vecchio formato (id -> prezzo) sia il nuovo (id -> {prezzo, di}). */
+function normalizeTaken(taken) {
+  const out = new Map();
+  const entries = taken instanceof Map ? [...taken.entries()] : Object.entries(taken || {});
+  for (const [id, v] of entries) {
+    if (v && typeof v === 'object') out.set(id, { price: Number(v.price) || 0, by: v.by ?? null });
+    else out.set(id, { price: Number(v) || 0, by: null });
+  }
+  return out;
+}
+
+/** I nomi delle squadre della lega. La prima sono sempre io. */
+function nomiSquadre(settings) {
+  const n = Math.max(1, settings.participants || 8);
+  const dati = settings.squadre || [];
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(dati[i] || (i === 0 ? 'Io' : `Squadra ${i + 1}`));
+  return out;
+}
+
+/**
+ * Lo stato del mercato: cosa e' gia' uscito, cosa resta, quanti crediti sono ancora in giro.
+ *
+ * Il conteggio degli slot e' esatto e non richiede di conoscere i prezzi: basta sapere chi e'
+ * stato assegnato. Il conteggio dei crediti richiede i prezzi; per le assegnazioni registrate
+ * senza prezzo si imputa il prezzo atteso e si segnala la copertura, cosi' l'assistente sa
+ * quanto fidarsi dei propri numeri.
+ */
+function statoMercato({ settings, players = [], owned = new Map(), taken = new Map() }) {
+  const squadre = Math.max(1, settings.participants || 8);
+  const budget = Math.max(1, settings.budget || 500);
+  const rosa = totalSlots(settings);
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const presi = normalizeTaken(taken);
+
+  const slotTotali = {};
+  const assegnati = {};
+  const residui = {};
+  const pagatiPerRuolo = {};
+  const attesiPerRuolo = {};
+  for (const role of ROLES) {
+    slotTotali[role] = (settings.slots?.[role] || 0) * squadre;
+    assegnati[role] = 0;
+    pagatiPerRuolo[role] = 0;
+    attesiPerRuolo[role] = 0;
+  }
+
+  const assegnatiIds = new Set();
+  let spesaNota = 0;
+  let spesaImputata = 0;
+  let conPrezzo = 0;
+  let senzaPrezzo = 0;
+
+  const registra = (id, prezzo) => {
+    assegnatiIds.add(id);
+    const p = byId.get(id);
+    const role = p?.role;
+    if (role && role in assegnati) assegnati[role] += 1;
+    const atteso = Math.max(1, Math.round(p?.expectedPrice ?? 1));
+    if (prezzo > 0) {
+      spesaNota += prezzo;
+      conPrezzo += 1;
+      if (role && role in pagatiPerRuolo) {
+        pagatiPerRuolo[role] += prezzo;
+        attesiPerRuolo[role] += atteso;
+      }
+    } else {
+      // Assegnazione registrata al volo senza prezzo: si imputa la stima per non perdere
+      // il conto dei crediti, ma la copertura scende e l'inflazione non ne tiene conto.
+      spesaImputata += atteso;
+      senzaPrezzo += 1;
+    }
+  };
+
+  for (const [id, prezzo] of owned) registra(id, Number(prezzo) || 0);
+  for (const [id, v] of presi) registra(id, v.price);
+
+  let slotAssegnati = 0;
+  let slotResidui = 0;
+  for (const role of ROLES) {
+    residui[role] = Math.max(0, slotTotali[role] - assegnati[role]);
+    slotAssegnati += assegnati[role];
+    slotResidui += residui[role];
+  }
+
+  const creditiTotali = squadre * budget;
+  const spesi = spesaNota + spesaImputata;
+  // Non si puo' scendere sotto un credito per slot ancora da riempire: e' incomprimibile.
+  const creditiResidui = Math.max(slotResidui, creditiTotali - spesi);
+  const discrezionali = Math.max(0, creditiResidui - slotResidui);
+
+  const inflazione = {};
+  for (const role of ROLES) {
+    inflazione[role] = (pagatiPerRuolo[role] + PRIOR_INFLAZIONE) / (attesiPerRuolo[role] + PRIOR_INFLAZIONE);
+  }
+  let totPagati = 0;
+  let totAttesi = 0;
+  for (const role of ROLES) {
+    totPagati += pagatiPerRuolo[role];
+    totAttesi += attesiPerRuolo[role];
+  }
+  const inflazioneGlobale = (totPagati + PRIOR_INFLAZIONE) / (totAttesi + PRIOR_INFLAZIONE);
+  // Il dato grezzo, senza prudenza: si mostra solo quando c'e' abbastanza mercato alle spalle.
+  const osservata = totAttesi > 0 ? totPagati / totAttesi : null;
+
+  const mieiCrediti = budget - [...owned.values()].reduce((a, b) => a + (Number(b) || 0), 0);
+  const mieiSlot = rosa - owned.size;
+
+  return {
+    squadre,
+    budget,
+    rosa,
+    slotTotali,
+    assegnati,
+    residui,
+    slotAssegnati,
+    slotResidui,
+    slotTotaliLega: squadre * rosa,
+    assegnatiIds,
+    creditiTotali,
+    creditiSpesi: spesi,
+    creditiResidui,
+    discrezionali,
+    inflazione,
+    inflazioneGlobale,
+    osservata,
+    aggiudicazioni: conPrezzo + senzaPrezzo,
+    conPrezzo,
+    senzaPrezzo,
+    copertura: conPrezzo + senzaPrezzo > 0 ? conPrezzo / (conPrezzo + senzaPrezzo) : 1,
+    // Abbastanza mercato osservato perche' l'inflazione misurata voglia dire qualcosa.
+    affidabile: totAttesi >= PRIOR_INFLAZIONE,
+    mieiCrediti,
+    mieiSlot,
+    // Il massimo che una singola squadra puo' ancora offrire su un giocatore, nel caso
+    // peggiore in cui non abbia ancora speso nulla.
+    tettoOfferta: Math.max(1, budget - (rosa - 1)),
+  };
+}
+
+/**
+ * I prezzi attesi aggiornati con quello che l'asta ha gia' detto.
+ *
+ * Due correzioni, in quest'ordine. La prima ridistribuisce fra i reparti: se in porta si sta
+ * pagando il 30% sopra le stime, quel reparto vale di piu' di quanto diceva il listone. La
+ * seconda rimette a posto il livello assoluto imponendo che la somma di quello che resta da
+ * vendere faccia esattamente i crediti ancora disponibili: e' il vincolo che il mercato deve
+ * rispettare per forza, ed e' quello che fa emergere da solo il momento delle occasioni.
+ */
+function prezziLive(players, settings, mercato) {
+  const base = (p) => Math.max(1, Math.round(p.expectedPrice ?? 1));
+  const disponibili = players.filter((p) => !mercato.assegnatiIds.has(p.id));
+  const aggiustato = (p) => 1 + (base(p) - 1) * (mercato.inflazione[p.role] ?? 1);
+
+  // Chi verra' davvero venduto: per ogni ruolo i migliori tanti quanti sono gli slot residui.
+  // Il criterio e' il punteggio, lo stesso con cui il modello statico decide chi finisce in
+  // una rosa: usarne un altro qui farebbe muovere i prezzi gia' prima che l'asta cominci.
+  const vendita = [];
+  for (const role of ROLES) {
+    const n = mercato.residui[role] || 0;
+    if (n <= 0) continue;
+    const pool = disponibili
+      .filter((p) => p.role === role)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, n)
+      .map((p) => aggiustato(p));
+    vendita.push(...pool);
+  }
+
+  const somma = vendita.reduce((a, v) => a + Math.max(0, v - 1), 0);
+  const grezzo = somma > 0 ? mercato.discrezionali / somma : 1;
+  const lambda = Math.max(LAMBDA_MIN, Math.min(LAMBDA_MAX, grezzo));
+
+  const prezzi = new Map();
+  for (const p of players) {
+    const live = 1 + Math.max(0, aggiustato(p) - 1) * lambda;
+    prezzi.set(p.id, Math.max(1, Math.min(mercato.tettoOfferta, Math.round(live))));
+  }
+  return { prezzi, lambda: Math.round(lambda * 1000) / 1000, saturo: grezzo !== lambda };
+}
+
+/** Applica i prezzi live al listone, conservando la stima statica in `expectedPriceBase`. */
+function applyPrezziLive(players, settings, mercato) {
+  const { prezzi, lambda } = prezziLive(players, settings, mercato);
+  return players.map((p) => {
+    const live = prezzi.get(p.id) ?? p.expectedPrice ?? 1;
+    return {
+      ...p,
+      expectedPriceBase: p.expectedPriceBase ?? p.expectedPrice,
+      expectedPrice: live,
+      lambdaMercato: lambda,
+      edge: p.consigliato === null || p.consigliato === undefined ? null : p.consigliato - live,
+    };
+  });
+}
+
+/**
+ * Il tabellone degli avversari: quanto ha speso ciascuno, quanti slot gli restano per ruolo,
+ * e soprattutto quanto puo' ancora offrire su un singolo giocatore.
+ *
+ * E' l'informazione piu' decisiva di tutta l'asta. Se il piu' ricco fra quelli che hanno
+ * ancora bisogno di un attaccante puo' arrivare a 40, l'attaccante da 80 e' gia' mio a 41.
+ */
+function avversari({ settings, players = [], owned = new Map(), taken = new Map() }) {
+  const nomi = nomiSquadre(settings);
+  const budget = Math.max(1, settings.budget || 500);
+  const rosa = totalSlots(settings);
+  const byId = new Map(players.map((p) => [p.id, p]));
+
+  const squadre = nomi.map((nome, indice) => ({
+    nome,
+    indice,
+    io: indice === 0,
+    spesi: 0,
+    presi: 0,
+    perRuolo: { P: 0, D: 0, C: 0, A: 0 },
+    rosaPresa: [],
+  }));
+
+  let nonAttribuiti = 0;
+  let creditiNonAttribuiti = 0;
+
+  const aggiungi = (indice, id, prezzo) => {
+    const s = squadre[indice];
+    if (!s) return;
+    const p = byId.get(id);
+    s.spesi += prezzo;
+    s.presi += 1;
+    if (p && p.role in s.perRuolo) s.perRuolo[p.role] += 1;
+    if (p) s.rosaPresa.push({ ...p, pagato: prezzo });
+  };
+
+  for (const [id, prezzo] of owned) aggiungi(0, id, Number(prezzo) || 0);
+  for (const [id, v] of normalizeTaken(taken)) {
+    const p = byId.get(id);
+    const prezzo = v.price > 0 ? v.price : Math.max(1, Math.round(p?.expectedPrice ?? 1));
+    if (Number.isInteger(v.by) && v.by > 0 && v.by < squadre.length) aggiungi(v.by, id, prezzo);
+    else {
+      nonAttribuiti += 1;
+      creditiNonAttribuiti += prezzo;
+    }
+  }
+
+  for (const s of squadre) {
+    s.residuo = budget - s.spesi;
+    s.slotMancanti = Math.max(0, rosa - s.presi);
+    // Deve lasciare un credito per ogni altro slot ancora da riempire.
+    s.massimo = Math.max(0, s.residuo - Math.max(0, s.slotMancanti - 1));
+    s.mancantiPerRuolo = {};
+    for (const role of ROLES) s.mancantiPerRuolo[role] = Math.max(0, (settings.slots?.[role] || 0) - s.perRuolo[role]);
+  }
+
+  return {
+    squadre,
+    nonAttribuiti,
+    creditiNonAttribuiti,
+    // Senza attribuzione i residui degli avversari sono sovrastimati: i numeri diventano
+    // un limite superiore, non una misura. Meglio dirlo che far credere a una precisione falsa.
+    attendibile: nonAttribuiti === 0,
+  };
+}
+
+/**
+ * Chi puo' ancora contendermi un giocatore di questo ruolo, e fino a quanto.
+ * Un avversario che ha gia' riempito il reparto non e' un rivale, per quanti crediti abbia.
+ */
+function concorrenza({ settings, players = [], owned = new Map(), taken = new Map(), role, tabellone = null }) {
+  const board = tabellone || avversari({ settings, players, owned, taken });
+  const rivali = board.squadre
+    .filter((s) => !s.io && s.mancantiPerRuolo[role] > 0 && s.massimo >= 1)
+    .sort((a, b) => b.massimo - a.massimo);
+  return {
+    ruolo: role,
+    etichetta: ROLE_LABEL[role],
+    quanti: rivali.length,
+    massimo: rivali.length ? rivali[0].massimo : 0,
+    ricchi: rivali.slice(0, 3),
+    attendibile: board.attendibile,
+    slotRivali: rivali.reduce((a, s) => a + s.mancantiPerRuolo[role], 0),
+  };
+}
+
+/**
+ * Il verdetto che conta quando parte il rilancio: posso vincerlo, e a quanto.
+ * `mioMassimo` e' l'offerta di convenienza calcolata dall'ottimizzatore.
+ */
+function verdettoConcorrenza({ mioMassimo, conc }) {
+  if (!conc.quanti) {
+    return { esito: 'nessuno', prezzo: 1, testo: 'Nessun avversario ha ancora bisogno di questo ruolo: te lo prendi a 1.' };
+  }
+  if (!conc.attendibile) {
+    return {
+      esito: 'ignoto',
+      prezzo: null,
+      testo: `${conc.quanti} avversari hanno ancora slot liberi. Registra chi compra cosa per sapere fin dove possono spingersi.`,
+    };
+  }
+  if (conc.massimo < mioMassimo) {
+    return {
+      esito: 'tuo',
+      prezzo: conc.massimo + 1,
+      testo: `Nessuno puo' superare ${conc.massimo}: e' tuo a ${conc.massimo + 1}, non offrire di piu'.`,
+    };
+  }
+  const top = conc.ricchi[0];
+  const secondo = conc.ricchi[1];
+  const soli = conc.ricchi.filter((s) => s.massimo >= mioMassimo);
+  return {
+    esito: 'conteso',
+    prezzo: null,
+    testo:
+      soli.length === 1
+        ? `Solo ${top.nome} puo' battere la tua offerta (fino a ${top.massimo}). Gli altri si fermano a ${secondo ? secondo.massimo : 0}.`
+        : `${soli.length} avversari possono superarti, il piu' ricco fino a ${top.massimo}.`,
+  };
+}
+
+/**
+ * Quando chiamarlo, in un'asta in cui si puo' scegliere chi mettere all'incanto.
+ * Un giocatore che voglio si chiama quando la stanza e' povera o sazia; quelli che non voglio
+ * si chiamano finche' gli altri hanno crediti da bruciare.
+ */
+function momentoGiusto({ settings, players, owned, taken, player, tabellone = null }) {
+  const conc = concorrenza({ settings, players, owned, taken, role: player.role, tabellone });
+  const atteso = Math.max(1, Math.round(player.expectedPrice ?? 1));
+  if (!conc.quanti) return { chiama: true, testo: "Chiamalo: nessuno puo' contenderlo." };
+  if (!conc.attendibile) return { chiama: null, testo: null };
+  if (conc.massimo < atteso) {
+    return { chiama: true, testo: `Chiamalo ora: nessun avversario arriva al suo prezzo di mercato (${atteso}).` };
+  }
+  if (conc.quanti >= Math.max(2, Math.round((settings.participants || 8) / 2))) {
+    return { chiama: false, testo: `Aspetta: ${conc.quanti} avversari hanno ancora crediti e slot per questo ruolo.` };
+  }
+  return { chiama: null, testo: null };
+}
+
+return { normalizeTaken, nomiSquadre, statoMercato, prezziLive, applyPrezziLive, avversari, concorrenza, verdettoConcorrenza, momentoGiusto };
+})();
+
 // ===== src/store.js =====
 const __m_src_store_js = (() => {
 // Stato dell'applicazione e persistenza locale.
@@ -2228,6 +2597,7 @@ const { valuePlayers, markTopPlayers } = __m_src_domain_valuation_js;
 const { withExpectedPrices } = __m_src_domain_market_js;
 const { optimizeRoster } = __m_src_domain_optimizer_js;
 const { aggregateForm, applyForm, matchCount } = __m_src_domain_form_js;
+const { statoMercato, applyPrezziLive, avversari } = __m_src_domain_mercato_js;
 
 const KEY = 'astahelper:v1';
 
@@ -2242,9 +2612,13 @@ const state = {
   importMeta: null, // { headers, mapping, rows, warnings, fileName }
   auction: {
     owned: {}, // id -> prezzo pagato da me
-    taken: {}, // id -> prezzo pagato da altri
-    log: [], // { id, kind, price, at }
+    taken: {}, // id -> { price, by } : prezzo pagato da altri e da quale squadra
+    log: [], // { id, kind, price, by, at }
   },
+  // Il conto del mercato: slot residui, crediti ancora in circolazione, inflazione osservata.
+  mercato: null,
+  // Il tabellone degli avversari, derivato dal registro delle assegnazioni.
+  tabellone: null,
   plan: null,
   // Il piano precedente, per poter raccontare cosa e' cambiato dopo l'ultima assegnazione.
   prevPlan: null,
@@ -2295,6 +2669,7 @@ function load() {
     state.settings.starters = { ...defaultSettings().starters, ...(data.settings?.starters || {}) };
     state.settings.tierOrder = { ...defaultSettings().tierOrder, ...(data.settings?.tierOrder || {}) };
     state.settings.roleBudget = { ...defaultSettings().roleBudget, ...(data.settings?.roleBudget || {}) };
+    state.settings.minTop = { ...defaultSettings().minTop, ...(data.settings?.minTop || {}) };
     state.sources = data.sources || (data.roster ? [{ name: 'listone', players: data.roster }] : []);
     state.roster = rebuildRoster();
     state.auction = { owned: {}, taken: {}, log: [], ...(data.auction || {}) };
@@ -2319,6 +2694,8 @@ function resetAll() {
   state.players = [];
   state.importMeta = null;
   state.auction = { owned: {}, taken: {}, log: [] };
+  state.mercato = null;
+  state.tabellone = null;
   state.plan = null;
   notify();
 }
@@ -2335,7 +2712,24 @@ function recompute() {
     ? applyForm(state.roster, new Map(state.formData.entries), state.formData.giornate)
     : state.roster;
   const valued = valuePlayers(base, state.settings);
-  state.players = markTopPlayers(withExpectedPrices(valued, state.settings), state.settings);
+  const conPrezzi = withExpectedPrices(valued, state.settings);
+
+  // Il mercato corregge le stime statiche del listone con quello che l'asta ha gia' mostrato:
+  // quanti giocatori restano davvero da assegnare e quanti crediti restano per comprarli.
+  state.mercato = statoMercato({
+    settings: state.settings,
+    players: conPrezzi,
+    owned: ownedMap(),
+    taken: takenMap(),
+  });
+  const live = applyPrezziLive(conPrezzi, state.settings, state.mercato);
+  state.players = markTopPlayers(live, state.settings);
+  state.tabellone = avversari({
+    settings: state.settings,
+    players: state.players,
+    owned: ownedMap(),
+    taken: takenMap(),
+  });
 }
 
 /** Carica i voti delle giornate gia' giocate. */
@@ -2368,6 +2762,16 @@ function ownedMap() {
 
 function unavailableSet() {
   return new Set(Object.keys(state.auction.taken));
+}
+
+/** Le assegnazioni agli avversari, con prezzo e squadra quando registrati. */
+function takenMap() {
+  return new Map(
+    Object.entries(state.auction.taken).map(([id, v]) => [
+      id,
+      v && typeof v === 'object' ? { price: Number(v.price) || 0, by: v.by ?? null } : { price: Number(v) || 0, by: null },
+    ])
+  );
 }
 
 function playerById(id) {
@@ -2424,13 +2828,17 @@ function removeSource(name) {
 
 // --- Azioni d'asta -------------------------------------------------------
 
-function assign(id, kind, price) {
+function assign(id, kind, price, by = null) {
   const p = Math.max(0, Math.round(Number(price) || 0));
+  const squadra = Number.isInteger(by) && by > 0 ? by : null;
   delete state.auction.owned[id];
   delete state.auction.taken[id];
   if (kind === 'mine') state.auction.owned[id] = p;
-  else if (kind === 'other') state.auction.taken[id] = p;
-  state.auction.log.push({ id, kind, price: p, at: Date.now() });
+  else if (kind === 'other') state.auction.taken[id] = { price: p, by: squadra };
+  state.auction.log.push({ id, kind, price: p, by: squadra, at: Date.now() });
+  // Ogni assegnazione cambia quanti giocatori e quanti crediti restano: i prezzi attesi
+  // vanno rifatti prima del piano, altrimenti il piano ottimizza su un mercato scaduto.
+  recompute();
   rebuildPlan();
   save();
   notify();
@@ -2439,7 +2847,8 @@ function assign(id, kind, price) {
 function release(id) {
   delete state.auction.owned[id];
   delete state.auction.taken[id];
-  state.auction.log.push({ id, kind: 'release', price: 0, at: Date.now() });
+  state.auction.log.push({ id, kind: 'release', price: 0, by: null, at: Date.now() });
+  recompute();
   rebuildPlan();
   save();
   notify();
@@ -2456,8 +2865,9 @@ function undo() {
     delete state.auction.owned[entry.id];
     delete state.auction.taken[entry.id];
     if (entry.kind === 'mine') state.auction.owned[entry.id] = entry.price;
-    else if (entry.kind === 'other') state.auction.taken[entry.id] = entry.price;
+    else if (entry.kind === 'other') state.auction.taken[entry.id] = { price: entry.price, by: entry.by ?? null };
   }
+  recompute();
   rebuildPlan();
   save();
   notify();
@@ -2479,7 +2889,7 @@ function creditsLeft() {
   return (state.settings.budget || 500) - spentTotal();
 }
 
-return { subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, playerById, rebuildPlan, addSource, removeSource, assign, release, undo, updateSettings, spentTotal, creditsLeft, state };
+return { subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, takenMap, playerById, rebuildPlan, addSource, removeSource, assign, release, undo, updateSettings, spentTotal, creditsLeft, state };
 })();
 
 // ===== src/domain/advisor.js =====
@@ -2732,7 +3142,109 @@ function tierBudgetReport({ plan, settings, players, owned = new Map() }) {
   return list;
 }
 
-return { maxSpendableNow, slotsLeftByRole, faseCorrente, budgetDiFase, maxBid, alternatives, planDiff, tierBudgetReport };
+/**
+ * Il piano d'azione del reparto in corso.
+ *
+ * Non basta sapere chi voglio: durante la chiamata serve gia' deciso fin dove arrivo e cosa
+ * faccio se salta, perche' quei dieci secondi non bastano a ricalcolare niente. Qui il ramo e'
+ * pronto prima: obiettivo, tetto, primo ripiego, secondo ripiego. E in fondo lo scenario nero,
+ * quello in cui saltano tutti gli obiettivi del reparto, con la destinazione dei crediti.
+ */
+function pianoDiReparto({ players, settings, owned = new Map(), unavailable = new Set(), plan, role = null, rami = 2 }) {
+  const fase = role || faseCorrente(settings, players, owned);
+  if (!fase) return null;
+  const budget = budgetDiFase({ settings, players, owned, plan, role: fase });
+  const args = { players, settings, owned, unavailable };
+
+  const scelti = (plan?.picks || [])
+    .filter((p) => p.role === fase)
+    .sort((a, b) => b.plannedPrice - a.plannedPrice)
+    .slice(0, 4);
+  // Un altro obiettivo dello stesso reparto non e' un ripiego: lo sto gia' cercando comunque.
+  const altriObiettivi = new Set(scelti.map((p) => p.id));
+
+  const obiettivi = scelti.map((p) => {
+    const { maxBid: tetto } = maxBid({ ...args, playerId: p.id });
+    const { alternatives: alt } = alternatives({ ...args, playerId: p.id, limit: rami + altriObiettivi.size });
+    return {
+      player: p,
+      prezzoPiano: p.plannedPrice,
+      massimo: tetto,
+      // Il piano lo compra al prezzo di mercato, ma il pareggio dice di meno: significa che
+      // il primo che capita fa quasi lo stesso, e su di lui non vale la pena rilanciare.
+      sostituibile: tetto < p.plannedPrice,
+      ripieghi: alt
+        .filter((a) => !altriObiettivi.has(a.player.id))
+        .slice(0, rami)
+        .map((a) => ({ player: a.player, price: a.price, delta: a.deltaVsTarget })),
+    };
+  });
+
+  // Scenario nero: saltano tutti gli obiettivi del reparto.
+  let senzaNessuno = null;
+  if (obiettivi.length) {
+    const persi = new Set(unavailable);
+    for (const o of obiettivi) persi.add(o.player.id);
+    const dopo = optimizeRoster({ players, settings, owned, unavailable: persi, ...FAST });
+    if (dopo.ok) {
+      const nuovi = dopo.picks.filter((p) => p.role === fase).sort((a, b) => b.plannedPrice - a.plannedPrice).slice(0, 3);
+      const spesaPrima = (plan?.picks || []).filter((p) => p.role === fase).reduce((a, p) => a + p.plannedPrice, 0);
+      const spesaDopo = dopo.picks.filter((p) => p.role === fase).reduce((a, p) => a + p.plannedPrice, 0);
+      senzaNessuno = {
+        picks: nuovi,
+        spesaPrima,
+        spesaDopo,
+        liberati: spesaPrima - spesaDopo,
+        costo: plan?.ok ? Math.round((plan.score - dopo.score) * 10) / 10 : null,
+        // Dove finiscono i crediti risparmiati.
+        destinazione: ROLES.filter((r) => r !== fase)
+          .map((r) => ({
+            role: r,
+            delta:
+              dopo.picks.filter((p) => p.role === r).reduce((a, p) => a + p.plannedPrice, 0) -
+              (plan?.picks || []).filter((p) => p.role === r).reduce((a, p) => a + p.plannedPrice, 0),
+          }))
+          .filter((d) => d.delta > 2)
+          .sort((a, b) => b.delta - a.delta),
+      };
+    }
+  }
+
+  return { fase, etichetta: ROLE_LABEL[fase], budget, obiettivi, senzaNessuno };
+}
+
+/**
+ * L'abbinamento dei portieri, il consiglio che i creators ripetono a ogni guida.
+ *
+ * In Classic se ne schiera uno solo ma se ne possiedono tre: il secondo non serve a giocare,
+ * serve a non restare mai senza. Prenderlo nella stessa squadra del titolare significa che
+ * qualunque cosa succeda in quella porta il voto arriva, e con l'imbattibilita' arriva anche
+ * il clean sheet della stessa difesa su cui si e' investito.
+ */
+function abbinamentoPortiere({ players, settings, plan, owned = new Map(), unavailable = new Set() }) {
+  if (!plan?.ok) return null;
+  const miei = [...plan.owned.filter((p) => p.role === 'P'), ...plan.picks.filter((p) => p.role === 'P')];
+  if (!miei.length) return null;
+  const titolare = miei.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+  if (!titolare.team) return null;
+  const gia = miei.some((p) => p.id !== titolare.id && p.team === titolare.team);
+  if (gia) return { titolare, coppia: null, fatto: true };
+
+  const candidati = players
+    .filter(
+      (p) =>
+        p.role === 'P' &&
+        p.team === titolare.team &&
+        p.id !== titolare.id &&
+        !owned.has(p.id) &&
+        !unavailable.has(p.id)
+    )
+    .sort((a, b) => (b.score || 0) - (a.score || 0));
+  if (!candidati.length) return { titolare, coppia: null, fatto: false };
+  return { titolare, coppia: candidati[0], fatto: false };
+}
+
+return { maxSpendableNow, slotsLeftByRole, faseCorrente, budgetDiFase, maxBid, alternatives, planDiff, tierBudgetReport, pianoDiReparto, abbinamentoPortiere };
 })();
 
 // ===== src/domain/strategia.js =====
@@ -2969,9 +3481,10 @@ return { esc, n, roleChip, toast, matches, playerRow, edgeBadge, altVerdict, emp
 const __m_src_ui_asta_js = (() => {
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
-const { state, assign, release, undo, ownedMap, unavailableSet, playerById, creditsLeft, rebuildPlan } = __m_src_store_js;
-const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
-const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase } = __m_src_domain_advisor_js;
+const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan } = __m_src_store_js;
+const { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } = __m_src_domain_model_js;
+const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere } = __m_src_domain_advisor_js;
+const { concorrenza, verdettoConcorrenza, nomiSquadre } = __m_src_domain_mercato_js;
 const { consiglioStrategico, scenarioSenzaBig, narrazione } = __m_src_domain_strategia_js;
 const { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } = __m_src_ui_common_js;
 
@@ -2986,6 +3499,7 @@ function cacheKey() {
 function invalidate() {
   cache = { key: null, bid: null, alts: null };
   scenario = null;
+  reparto = null;
 }
 
 function ensureAdvice(rerender) {
@@ -3047,6 +3561,114 @@ function hud() {
       <span class="muted"><b class="mono" style="color:var(--${sforato ? 'danger' : 'text'})">${fase.perLaFase}</b> per il reparto ·
         <b class="mono">${fase.riservatoDopo}</b> riservati al resto</span>
     </div>
+  </div>`;
+}
+
+/**
+ * Il conto del mercato.
+ *
+ * Risponde alla domanda che regge tutto il resto: quanti giocatori restano davvero e quanti
+ * crediti ci sono ancora in giro per comprarli. Gli slot sono un conteggio esatto, i crediti
+ * dipendono da quanti prezzi ho registrato: la copertura si dichiara, cosi' so quanto fidarmi.
+ */
+function mercatoCard() {
+  const m = state.mercato;
+  if (!m || !m.slotAssegnati) return '';
+  const inf = m.inflazioneGlobale;
+  const lambda = state.players[0]?.lambdaMercato ?? 1;
+  const salita = lambda > 1.08;
+  const discesa = lambda < 0.92;
+
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:10px">
+      <h2 style="margin:0">Il mercato</h2>
+      <span class="tiny muted">${m.slotAssegnati} di ${m.slotTotaliLega} assegnati</span>
+    </div>
+
+    <div class="slotbar">
+      ${ROLES.map(
+        (r) => `<div><b class="mono">${m.residui[r]}</b><span>${ROLE_LABEL_SHORT[r].toUpperCase()} liberi</span></div>`
+      ).join('')}
+    </div>
+
+    <div class="row between small" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+      <span class="muted">crediti ancora in circolazione</span>
+      <span class="mono"><b>${m.creditiResidui}</b> <span class="muted">di ${m.creditiTotali}</span></span>
+    </div>
+    <div class="row between small" style="margin-top:6px">
+      <span class="muted">di cui davvero contendibili</span>
+      <span class="mono"><b>${m.discrezionali}</b> <span class="muted">· ${m.slotResidui} slot da riempire</span></span>
+    </div>
+
+    ${
+      m.affidabile
+        ? `<div class="verdict ${salita ? 'stop' : discesa ? 'go' : 'edge'}" style="margin-top:12px;text-align:left">
+             <div>${
+               salita
+                 ? 'I prezzi stanno salendo.'
+                 : discesa
+                   ? 'Il mercato si sta svuotando: da qui in avanti si compra meglio.'
+                   : 'Il mercato sta pagando quello che diceva il listone.'
+             }</div>
+             <div class="small" style="font-weight:500;margin-top:4px">
+               Finora si e' pagato il ${Math.round((inf - 1) * 100) >= 0 ? '+' : ''}${Math.round((inf - 1) * 100)}% rispetto alle stime.
+               Le stime dei giocatori ancora liberi sono state corrette di conseguenza${discesa ? ' verso il basso' : salita ? ' verso l&#39;alto' : ''}.
+             </div>
+           </div>`
+        : `<div class="tiny muted" style="margin-top:12px">Ancora poche aggiudicazioni per misurare l&#39;inflazione dell&#39;asta.</div>`
+    }
+
+    ${
+      m.copertura < 0.999
+        ? `<div class="tiny muted" style="margin-top:8px">
+             ${m.senzaPrezzo} aggiudicazioni registrate senza prezzo: per quelle uso la stima.
+             Registrare la cifra vera rende esatto il conto dei crediti.
+           </div>`
+        : ''
+    }
+  </div>`;
+}
+
+/**
+ * Il tabellone degli avversari: quanto puo' ancora offrire ciascuno su un singolo giocatore.
+ * E' il numero piu' decisivo dell'asta, perche' un giocatore costa quanto il secondo miglior
+ * offerente puo' pagare, non quanto vale.
+ */
+function tabelloneCard() {
+  const board = state.tabellone;
+  if (!board) return '';
+  const attivi = board.squadre.filter((s) => s.presi > 0);
+  if (!attivi.length) return '';
+  const righe = board.squadre
+    .slice()
+    .sort((a, b) => b.massimo - a.massimo)
+    .map(
+      (s) => `<tr${s.io ? ' style="font-weight:700"' : ''}>
+        <td>${esc(s.nome)}</td>
+        <td class="r">${s.presi}/${state.mercato?.rosa ?? 25}</td>
+        <td class="r">${s.residuo}</td>
+        <td class="r"><b>${s.massimo}</b></td>
+      </tr>`
+    )
+    .join('');
+  return `
+  <div class="card">
+    <details${board.attendibile ? '' : ' open'}>
+      <summary><b>Tabellone avversari</b> <span class="tiny muted">— fin dove possono spingersi</span></summary>
+      <table class="tiers" style="margin-top:10px">
+        <thead><tr><th>Squadra</th><th class="r">Rosa</th><th class="r">Crediti</th><th class="r">Max</th></tr></thead>
+        <tbody>${righe}</tbody>
+      </table>
+      ${
+        board.attendibile
+          ? '<div class="tiny muted" style="margin-top:8px">Numeri esatti: ogni acquisto e&#39; attribuito.</div>'
+          : `<div class="tiny muted" style="margin-top:8px">
+               ${board.nonAttribuiti} acquisti non attribuiti a nessuno: questi massimi sono un limite superiore.
+               Quando segni un giocatore come preso, tocca anche la squadra che se l&#39;e&#39; aggiudicato.
+             </div>`
+      }
+    </details>
   </div>`;
 }
 
@@ -3149,7 +3771,8 @@ function detail(p) {
           ? `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid}</div>
              <div class="lbl">fin qui conviene</div>
              ${ripiego(alts)}
-             ${bid.reason ? `<div class="small muted" style="margin-top:6px">${esc(bid.reason)}</div>` : ''}`
+             ${bid.reason ? `<div class="small muted" style="margin-top:6px">${esc(bid.reason)}</div>` : ''}
+             ${concorrenzaBox(p, bid)}`
           : `<div class="n mono"><span class="spinner"></span></div><div class="lbl">calcolo in corso</div>`
       }
     </div>
@@ -3173,15 +3796,54 @@ function detail(p) {
         : verdictFor(current, bid)
     }</div>
 
-    <div class="grid2" style="margin-top:12px">
-      <button class="btn primary" data-action="take-mine" data-id="${esc(p.id)}">L'ho preso io</button>
-      <button class="btn danger" data-action="take-other" data-id="${esc(p.id)}">Preso da altri</button>
-    </div>`
+    ${
+      state.ui.chiediSquadra === p.id
+        ? `<div style="margin-top:12px">
+             <div class="small muted" style="margin-bottom:8px">A chi e' andato? Serve a sapere fin dove possono spingersi gli altri.</div>
+             <div class="row wrap" style="gap:6px">
+               ${nomiSquadre(state.settings)
+                 .map((nome, i) =>
+                   i === 0
+                     ? ''
+                     : `<button class="btn" style="flex:1 1 30%;min-width:88px" data-action="assign-to" data-id="${esc(p.id)}" data-idx="${i}">${esc(nome)}</button>`
+                 )
+                 .join('')}
+               <button class="btn ghost" style="flex:1 1 100%" data-action="assign-to" data-id="${esc(p.id)}" data-idx="">non lo so</button>
+             </div>
+           </div>`
+        : `<div class="grid2" style="margin-top:12px">
+             <button class="btn primary" data-action="take-mine" data-id="${esc(p.id)}">L'ho preso io</button>
+             <button class="btn danger" data-action="take-other" data-id="${esc(p.id)}">Preso da altri</button>
+           </div>`
+    }`
     }
   </div>
 
   ${status === 'other' || !status ? altsCard(p, alts) : ''}
   `;
+}
+
+/**
+ * Chi puo' ancora contendermelo, e fino a quanto.
+ * Un giocatore non costa quello che vale: costa un credito piu' di quanto puo' pagare il
+ * secondo miglior offerente. Se quel numero e' sotto la mia offerta massima, l'asta e' gia'
+ * decisa e ogni credito speso oltre quella soglia e' buttato.
+ */
+function concorrenzaBox(p, bid) {
+  if (!bid || bid.maxBid <= 0) return '';
+  const conc = concorrenza({
+    settings: state.settings,
+    players: state.players,
+    owned: ownedMap(),
+    taken: takenMap(),
+    role: p.role,
+    tabellone: state.tabellone,
+  });
+  const v = verdettoConcorrenza({ mioMassimo: bid.maxBid, conc });
+  const classe = v.esito === 'tuo' || v.esito === 'nessuno' ? 'go' : v.esito === 'conteso' ? 'edge' : '';
+  return `<div class="verdict ${classe}" style="margin-top:10px;text-align:left">
+    <div class="small" style="font-weight:600">${esc(v.testo)}</div>
+  </div>`;
 }
 
 /** Un numero da solo non basta: si dice a chi si ripiega, con nome e prezzo. */
@@ -3229,7 +3891,14 @@ function creatorInfo(p) {
     ${tiers ? `<div class="row wrap" style="gap:5px;margin-top:8px">${tiers}</div>` : ''}
     ${valutazioni}
     ${disagreement}
-    ${p.notes ? `<details style="margin-top:10px"><summary class="small muted">Commento del creator</summary><div class="small" style="margin-top:6px;white-space:pre-wrap">${esc(p.notes.slice(0, 1200))}</div></details>` : ''}
+    ${
+      p.notes
+        ? `<details style="margin-top:10px" ${p.notes.length < 320 ? 'open' : ''}>
+             <summary class="small muted">Cosa dicono i creators di lui</summary>
+             <div class="small" style="margin-top:6px;white-space:pre-wrap;line-height:1.55">${esc(p.notes)}</div>
+           </details>`
+        : ''
+    }
   </div>`;
 }
 
@@ -3338,6 +4007,135 @@ function strategiaCard() {
   </div>`;
 }
 
+// Il piano del reparto costa una decina di ottimizzazioni complete: si prepara su richiesta
+// e vale finche' non cambia nulla.
+let reparto = null;
+let repartoInCorso = false;
+
+function buildReparto(rerender) {
+  repartoInCorso = true;
+  setTimeout(() => {
+    try {
+      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet() };
+      const piano = pianoDiReparto({ ...args, plan: state.plan });
+      reparto = piano
+        ? {
+            ...piano,
+            chiave: cacheKey(),
+            portiere: piano.fase === 'P' ? abbinamentoPortiere({ ...args, plan: state.plan }) : null,
+          }
+        : null;
+    } catch (err) {
+      console.error(err);
+      reparto = null;
+    } finally {
+      repartoInCorso = false;
+      rerender();
+    }
+  }, 30);
+}
+
+/**
+ * Il piano d'azione del reparto in corso.
+ *
+ * Durante la chiamata non c'e' tempo di ricalcolare niente: il ramo deve essere gia' deciso.
+ * Per ogni obiettivo il tetto oltre il quale si lascia perdere e i due ripieghi in ordine, e
+ * in fondo lo scenario in cui saltano tutti, con la destinazione dei crediti che si liberano.
+ */
+function repartoCard() {
+  if (!state.plan?.ok) return '';
+  if (repartoInCorso) {
+    return `<div class="card"><h2>Piano del reparto</h2><div class="small muted"><span class="spinner"></span> Preparo obiettivi, tetti e ripieghi…</div></div>`;
+  }
+  if (!reparto || reparto.chiave !== cacheKey()) {
+    const fase = budgetDiFase({ settings: state.settings, players: state.players, owned: ownedMap(), plan: state.plan });
+    return `
+    <div class="card">
+      <h2>Piano del reparto</h2>
+      <p class="small muted" style="margin-top:0">
+        Si gioca sui <b>${esc(fase.etichetta.toLowerCase())}</b>. Preparo obiettivi, tetto massimo su ciascuno,
+        ripieghi in ordine e cosa fare se saltano tutti.
+      </p>
+      <button class="btn primary block" data-action="reparto">Prepara il piano dei ${esc(fase.etichetta.toLowerCase())}</button>
+    </div>`;
+  }
+
+  const r = reparto;
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:4px">
+      <h2 style="margin:0">Piano · ${esc(r.etichetta)}</h2>
+      <button class="btn ghost small" data-action="reparto">Rifai</button>
+    </div>
+    <div class="tiny muted" style="margin-bottom:12px">
+      ${r.budget.perLaFase} crediti per il reparto · ${r.budget.slotMancanti} slot da riempire ·
+      ${r.budget.riservatoDopo} riservati ai reparti dopo
+    </div>
+
+    ${r.obiettivi
+      .map(
+        (o, i) => `
+      <div style="padding:10px 0;${i ? 'border-top:1px solid var(--line)' : ''}">
+        <div class="row between">
+          <div class="grow" data-action="select" data-id="${esc(o.player.id)}">
+            <div><b>${i + 1}. ${esc(o.player.name)}</b> ${edgeBadge(o.player)}</div>
+            <div class="tiny muted">${esc(o.player.team || '—')}${o.player.tier ? ' · ' + esc(o.player.tier) : ''} · a piano ${o.prezzoPiano}</div>
+          </div>
+          <div class="mono" style="text-align:right">
+            <b style="font-size:19px;color:var(--${o.sostituibile ? 'muted' : 'accent'})">${o.massimo}</b>
+            <div class="tiny muted">non oltre</div>
+          </div>
+        </div>
+        ${o.sostituibile ? `<div class="tiny muted" style="margin-top:4px">Sostituibile: sopra ${o.massimo} conviene chiunque altro, non insistere.</div>` : ''}
+        ${
+          o.ripieghi.length
+            ? `<div class="tiny muted" style="margin-top:6px">se salta → ${o.ripieghi
+                .map((x) => `<b style="color:var(--text)">${esc(x.player.name)}</b> ${x.price}`)
+                .join(' , poi ')}</div>`
+            : ''
+        }
+      </div>`
+      )
+      .join('')}
+
+    ${
+      r.portiere && !r.portiere.fatto && r.portiere.coppia
+        ? `<div class="verdict edge" style="margin-top:12px;text-align:left">
+             <div>Abbinamento: prendi anche ${esc(r.portiere.coppia.name)}.</div>
+             <div class="small" style="font-weight:500;margin-top:4px">
+               E' il secondo portiere ${esc(r.portiere.titolare.team || '')}, la stessa porta di ${esc(r.portiere.titolare.name)}.
+               In Classic ne schieri uno solo: averli entrambi significa non restare mai senza voto,
+               e con l'imbattibilita' il clean sheet arriva comunque da quella difesa.
+             </div>
+           </div>`
+        : r.portiere && r.portiere.fatto
+          ? `<div class="tiny muted" style="margin-top:12px">Abbinamento portieri a posto: hai due porte della stessa squadra.</div>`
+          : ''
+    }
+
+    ${
+      r.senzaNessuno
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+             <div class="tiny muted" style="margin-bottom:4px">se li perdi tutti</div>
+             <div class="small">
+               Vai su <b>${r.senzaNessuno.picks.map((x) => esc(x.name) + ' (' + x.plannedPrice + ')').join(', ')}</b>
+               ${
+                 r.senzaNessuno.liberati > 5
+                   ? `e sposti ${r.senzaNessuno.liberati} crediti ${
+                       r.senzaNessuno.destinazione.length
+                         ? 'su ' + r.senzaNessuno.destinazione.map((d) => `${ROLE_LABEL[d.role].toLowerCase()} (+${d.delta})`).join(' e ')
+                         : 'sugli altri reparti'
+                     }`
+                   : ''
+               }.
+             </div>
+             <div class="tiny muted" style="margin-top:6px">costo del cambio di piano: ${r.senzaNessuno.costo} punti</div>
+           </div>`
+        : ''
+    }
+  </div>`;
+}
+
 function targetsCard() {
   const plan = state.plan;
   if (!plan?.ok) return '';
@@ -3427,8 +4225,11 @@ function render(rerender) {
 
     ${selected ? detail(selected) : ''}
     ${!selected && !state.auction.log.length ? readyCard() : ''}
+    ${selected ? '' : repartoCard()}
+    ${selected ? '' : mercatoCard()}
     ${selected ? '' : strategiaCard()}
     ${selected ? '' : targetsCard()}
+    ${selected ? '' : tabelloneCard()}
 
     <div class="row" style="gap:10px">
       <button class="btn grow" data-action="undo" ${state.auction.log.length ? '' : 'disabled'}>↩︎ Annulla ultima</button>
@@ -3442,11 +4243,13 @@ function onAction(action, target, ev, rerender) {
     case 'select':
       state.ui.selectedId = id;
       state.ui.bidPrice = null;
+      state.ui.chiediSquadra = null;
       rerender();
       return true;
     case 'close-detail':
       state.ui.selectedId = null;
       state.ui.bidPrice = null;
+      state.ui.chiediSquadra = null;
       rerender();
       return true;
     case 'rolefilter':
@@ -3461,26 +4264,51 @@ function onAction(action, target, ev, rerender) {
       rerender();
       return true;
     }
-    case 'take-mine':
-    case 'take-other': {
+    case 'take-mine': {
       const price = Number(document.getElementById('bidprice')?.value) || 0;
       const p = playerById(id);
-      if (action === 'take-mine') {
-        const spendable = maxSpendableNow(state.settings, ownedMap());
-        if (price > spendable) {
-          toast(`Non puoi spendere ${price}: il tetto e' ${spendable}.`);
-          return true;
-        }
+      const spendable = maxSpendableNow(state.settings, ownedMap());
+      if (price > spendable) {
+        toast(`Non puoi spendere ${price}: il tetto e' ${spendable}.`);
+        return true;
       }
-      assign(id, action === 'take-mine' ? 'mine' : 'other', price);
+      assign(id, 'mine', price);
       invalidate();
       state.ui.selectedId = null;
       state.ui.bidPrice = null;
       state.ui.query = '';
-      toast(action === 'take-mine' ? `${p?.name} tuo a ${price}.` : `${p?.name} va a un avversario.`);
+      toast(`${p?.name} tuo a ${price}.`);
       rerender();
       return true;
     }
+    case 'take-other': {
+      // Il prezzo lo prendo adesso, perche' il campo sparisce quando chiedo la squadra.
+      state.ui.prezzoAltri = Number(document.getElementById('bidprice')?.value) || 0;
+      state.ui.chiediSquadra = id;
+      rerender();
+      return true;
+    }
+    case 'assign-to': {
+      const idx = target.dataset.idx === '' ? null : Number(target.dataset.idx);
+      const p = playerById(id);
+      const prezzo = state.ui.prezzoAltri ?? 0;
+      assign(id, 'other', prezzo, idx);
+      invalidate();
+      state.ui.chiediSquadra = null;
+      state.ui.prezzoAltri = null;
+      state.ui.selectedId = null;
+      state.ui.bidPrice = null;
+      state.ui.query = '';
+      const nome = idx ? nomiSquadre(state.settings)[idx] : 'un avversario';
+      toast(`${p?.name} a ${nome}${prezzo ? ' per ' + prezzo : ''}.`);
+      rerender();
+      return true;
+    }
+    case 'reparto':
+      reparto = null;
+      buildReparto(rerender);
+      rerender();
+      return true;
     case 'scenario': {
       const role = target.dataset.role;
       const dopo = scenarioSenzaBig({
@@ -3508,9 +4336,10 @@ function onAction(action, target, ev, rerender) {
       return true;
     case 'quick-gone': {
       const p = playerById(id);
-      // Il prezzo pagato dagli avversari non entra in nessun calcolo: registriamo la stima
-      // per avere comunque uno storico, senza chiedere niente durante l'asta.
-      assign(id, 'other', Math.round(p?.expectedPrice ?? 0));
+      // La corsia veloce: un tocco, nessuna domanda. Il prezzo resta ignoto e il conto dei
+      // crediti lo imputa dalla stima, dichiarando la copertura. Serve a non perdere un
+      // rilancio per stare a digitare: gli slot residui restano comunque esatti.
+      assign(id, 'other', 0, null);
       invalidate();
       toast(`${p?.name} va via.`);
       rerender();
@@ -4382,6 +5211,7 @@ const __m_src_ui_setup_js = (() => {
 
 const { state, updateSettings, resetAll, rebuildPlan } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
+const { nomiSquadre } = __m_src_domain_mercato_js;
 const { esc, roleChip, toast } = __m_src_ui_common_js;
 
 function tierEditor() {
@@ -4430,6 +5260,23 @@ function render() {
           <input type="number" inputmode="numeric" value="${s.participants}" data-action="set" data-key="participants" min="2" max="30"></label>
       </div>
       <div class="small muted">Con ${s.participants} squadre girano <b>${s.budget * s.participants}</b> crediti in totale: e' da qui che nasce la stima dei prezzi d'asta.</div>
+    </div>
+
+    <div class="card">
+      <h2>Chi c'e' in lega</h2>
+      <p class="small muted" style="margin-top:0">
+        I nomi degli avversari. Quando durante l'asta segni a chi e' andato un giocatore,
+        l'app sa quanto gli e' rimasto: e chi ha finito i crediti o riempito il reparto
+        non puo' piu' contenderti nessuno.
+      </p>
+      <div class="grid2">
+        ${nomiSquadre(s)
+          .map(
+            (nome, i) => `<label class="field" style="margin:0"><span>${i === 0 ? 'Io' : `Squadra ${i + 1}`}</span>
+              <input type="text" value="${esc(nome)}" data-action="setsquadra" data-i="${i}" maxlength="18"></label>`
+          )
+          .join('')}
+      </div>
     </div>
 
     <div class="card">
@@ -4619,6 +5466,14 @@ function onInput(action, target, rerender) {
       updateSettings({ topThreshold: Number(target.value) });
       rerender({ soft: true });
       return true;
+    case 'setsquadra': {
+      const i = Number(target.dataset.i);
+      const squadre = nomiSquadre(s);
+      squadre[i] = target.value.trim() || (i === 0 ? 'Io' : `Squadra ${i + 1}`);
+      updateSettings({ squadre });
+      rerender({ soft: true });
+      return true;
+    }
     case 'setmaxclub': {
       const raw = target.value.trim();
       updateSettings({ maxPerClub: raw === '' ? 0 : Math.max(0, Number(raw) || 0) });

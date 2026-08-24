@@ -2,6 +2,7 @@
 
 import { state, updateSettings, resetAll, rebuildPlan } from '../store.js';
 import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
+import { nomiSquadre } from '../domain/mercato.js';
 import { esc, roleChip, toast } from './common.js';
 
 function tierEditor() {
@@ -50,6 +51,23 @@ export function render() {
           <input type="number" inputmode="numeric" value="${s.participants}" data-action="set" data-key="participants" min="2" max="30"></label>
       </div>
       <div class="small muted">Con ${s.participants} squadre girano <b>${s.budget * s.participants}</b> crediti in totale: e' da qui che nasce la stima dei prezzi d'asta.</div>
+    </div>
+
+    <div class="card">
+      <h2>Chi c'e' in lega</h2>
+      <p class="small muted" style="margin-top:0">
+        I nomi degli avversari. Quando durante l'asta segni a chi e' andato un giocatore,
+        l'app sa quanto gli e' rimasto: e chi ha finito i crediti o riempito il reparto
+        non puo' piu' contenderti nessuno.
+      </p>
+      <div class="grid2">
+        ${nomiSquadre(s)
+          .map(
+            (nome, i) => `<label class="field" style="margin:0"><span>${i === 0 ? 'Io' : `Squadra ${i + 1}`}</span>
+              <input type="text" value="${esc(nome)}" data-action="setsquadra" data-i="${i}" maxlength="18"></label>`
+          )
+          .join('')}
+      </div>
     </div>
 
     <div class="card">
@@ -239,6 +257,14 @@ export function onInput(action, target, rerender) {
       updateSettings({ topThreshold: Number(target.value) });
       rerender({ soft: true });
       return true;
+    case 'setsquadra': {
+      const i = Number(target.dataset.i);
+      const squadre = nomiSquadre(s);
+      squadre[i] = target.value.trim() || (i === 0 ? 'Io' : `Squadra ${i + 1}`);
+      updateSettings({ squadre });
+      rerender({ soft: true });
+      return true;
+    }
     case 'setmaxclub': {
       const raw = target.value.trim();
       updateSettings({ maxPerClub: raw === '' ? 0 : Math.max(0, Number(raw) || 0) });

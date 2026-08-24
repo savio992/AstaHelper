@@ -245,3 +245,105 @@ export function tierBudgetReport({ plan, settings, players, owned = new Map() })
   });
   return list;
 }
+
+/**
+ * Il piano d'azione del reparto in corso.
+ *
+ * Non basta sapere chi voglio: durante la chiamata serve gia' deciso fin dove arrivo e cosa
+ * faccio se salta, perche' quei dieci secondi non bastano a ricalcolare niente. Qui il ramo e'
+ * pronto prima: obiettivo, tetto, primo ripiego, secondo ripiego. E in fondo lo scenario nero,
+ * quello in cui saltano tutti gli obiettivi del reparto, con la destinazione dei crediti.
+ */
+export function pianoDiReparto({ players, settings, owned = new Map(), unavailable = new Set(), plan, role = null, rami = 2 }) {
+  const fase = role || faseCorrente(settings, players, owned);
+  if (!fase) return null;
+  const budget = budgetDiFase({ settings, players, owned, plan, role: fase });
+  const args = { players, settings, owned, unavailable };
+
+  const scelti = (plan?.picks || [])
+    .filter((p) => p.role === fase)
+    .sort((a, b) => b.plannedPrice - a.plannedPrice)
+    .slice(0, 4);
+  // Un altro obiettivo dello stesso reparto non e' un ripiego: lo sto gia' cercando comunque.
+  const altriObiettivi = new Set(scelti.map((p) => p.id));
+
+  const obiettivi = scelti.map((p) => {
+    const { maxBid: tetto } = maxBid({ ...args, playerId: p.id });
+    const { alternatives: alt } = alternatives({ ...args, playerId: p.id, limit: rami + altriObiettivi.size });
+    return {
+      player: p,
+      prezzoPiano: p.plannedPrice,
+      massimo: tetto,
+      // Il piano lo compra al prezzo di mercato, ma il pareggio dice di meno: significa che
+      // il primo che capita fa quasi lo stesso, e su di lui non vale la pena rilanciare.
+      sostituibile: tetto < p.plannedPrice,
+      ripieghi: alt
+        .filter((a) => !altriObiettivi.has(a.player.id))
+        .slice(0, rami)
+        .map((a) => ({ player: a.player, price: a.price, delta: a.deltaVsTarget })),
+    };
+  });
+
+  // Scenario nero: saltano tutti gli obiettivi del reparto.
+  let senzaNessuno = null;
+  if (obiettivi.length) {
+    const persi = new Set(unavailable);
+    for (const o of obiettivi) persi.add(o.player.id);
+    const dopo = optimizeRoster({ players, settings, owned, unavailable: persi, ...FAST });
+    if (dopo.ok) {
+      const nuovi = dopo.picks.filter((p) => p.role === fase).sort((a, b) => b.plannedPrice - a.plannedPrice).slice(0, 3);
+      const spesaPrima = (plan?.picks || []).filter((p) => p.role === fase).reduce((a, p) => a + p.plannedPrice, 0);
+      const spesaDopo = dopo.picks.filter((p) => p.role === fase).reduce((a, p) => a + p.plannedPrice, 0);
+      senzaNessuno = {
+        picks: nuovi,
+        spesaPrima,
+        spesaDopo,
+        liberati: spesaPrima - spesaDopo,
+        costo: plan?.ok ? Math.round((plan.score - dopo.score) * 10) / 10 : null,
+        // Dove finiscono i crediti risparmiati.
+        destinazione: ROLES.filter((r) => r !== fase)
+          .map((r) => ({
+            role: r,
+            delta:
+              dopo.picks.filter((p) => p.role === r).reduce((a, p) => a + p.plannedPrice, 0) -
+              (plan?.picks || []).filter((p) => p.role === r).reduce((a, p) => a + p.plannedPrice, 0),
+          }))
+          .filter((d) => d.delta > 2)
+          .sort((a, b) => b.delta - a.delta),
+      };
+    }
+  }
+
+  return { fase, etichetta: ROLE_LABEL[fase], budget, obiettivi, senzaNessuno };
+}
+
+/**
+ * L'abbinamento dei portieri, il consiglio che i creators ripetono a ogni guida.
+ *
+ * In Classic se ne schiera uno solo ma se ne possiedono tre: il secondo non serve a giocare,
+ * serve a non restare mai senza. Prenderlo nella stessa squadra del titolare significa che
+ * qualunque cosa succeda in quella porta il voto arriva, e con l'imbattibilita' arriva anche
+ * il clean sheet della stessa difesa su cui si e' investito.
+ */
+export function abbinamentoPortiere({ players, settings, plan, owned = new Map(), unavailable = new Set() }) {
+  if (!plan?.ok) return null;
+  const miei = [...plan.owned.filter((p) => p.role === 'P'), ...plan.picks.filter((p) => p.role === 'P')];
+  if (!miei.length) return null;
+  const titolare = miei.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+  if (!titolare.team) return null;
+  const gia = miei.some((p) => p.id !== titolare.id && p.team === titolare.team);
+  if (gia) return { titolare, coppia: null, fatto: true };
+
+  const candidati = players
+    .filter(
+      (p) =>
+        p.role === 'P' &&
+        p.team === titolare.team &&
+        p.id !== titolare.id &&
+        !owned.has(p.id) &&
+        !unavailable.has(p.id)
+    )
+    .sort((a, b) => (b.score || 0) - (a.score || 0));
+  if (!candidati.length) return { titolare, coppia: null, fatto: false };
+  return { titolare, coppia: candidati[0], fatto: false };
+}

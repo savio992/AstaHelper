@@ -1,8 +1,9 @@
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
-import { state, assign, release, undo, ownedMap, unavailableSet, playerById, creditsLeft, rebuildPlan } from '../store.js';
-import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
-import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase } from '../domain/advisor.js';
+import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan } from '../store.js';
+import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } from '../domain/model.js';
+import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere } from '../domain/advisor.js';
+import { concorrenza, verdettoConcorrenza, nomiSquadre } from '../domain/mercato.js';
 import { consiglioStrategico, scenarioSenzaBig, narrazione } from '../domain/strategia.js';
 import { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } from './common.js';
 
@@ -17,6 +18,7 @@ function cacheKey() {
 export function invalidate() {
   cache = { key: null, bid: null, alts: null };
   scenario = null;
+  reparto = null;
 }
 
 function ensureAdvice(rerender) {
@@ -78,6 +80,114 @@ function hud() {
       <span class="muted"><b class="mono" style="color:var(--${sforato ? 'danger' : 'text'})">${fase.perLaFase}</b> per il reparto ·
         <b class="mono">${fase.riservatoDopo}</b> riservati al resto</span>
     </div>
+  </div>`;
+}
+
+/**
+ * Il conto del mercato.
+ *
+ * Risponde alla domanda che regge tutto il resto: quanti giocatori restano davvero e quanti
+ * crediti ci sono ancora in giro per comprarli. Gli slot sono un conteggio esatto, i crediti
+ * dipendono da quanti prezzi ho registrato: la copertura si dichiara, cosi' so quanto fidarmi.
+ */
+function mercatoCard() {
+  const m = state.mercato;
+  if (!m || !m.slotAssegnati) return '';
+  const inf = m.inflazioneGlobale;
+  const lambda = state.players[0]?.lambdaMercato ?? 1;
+  const salita = lambda > 1.08;
+  const discesa = lambda < 0.92;
+
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:10px">
+      <h2 style="margin:0">Il mercato</h2>
+      <span class="tiny muted">${m.slotAssegnati} di ${m.slotTotaliLega} assegnati</span>
+    </div>
+
+    <div class="slotbar">
+      ${ROLES.map(
+        (r) => `<div><b class="mono">${m.residui[r]}</b><span>${ROLE_LABEL_SHORT[r].toUpperCase()} liberi</span></div>`
+      ).join('')}
+    </div>
+
+    <div class="row between small" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+      <span class="muted">crediti ancora in circolazione</span>
+      <span class="mono"><b>${m.creditiResidui}</b> <span class="muted">di ${m.creditiTotali}</span></span>
+    </div>
+    <div class="row between small" style="margin-top:6px">
+      <span class="muted">di cui davvero contendibili</span>
+      <span class="mono"><b>${m.discrezionali}</b> <span class="muted">· ${m.slotResidui} slot da riempire</span></span>
+    </div>
+
+    ${
+      m.affidabile
+        ? `<div class="verdict ${salita ? 'stop' : discesa ? 'go' : 'edge'}" style="margin-top:12px;text-align:left">
+             <div>${
+               salita
+                 ? 'I prezzi stanno salendo.'
+                 : discesa
+                   ? 'Il mercato si sta svuotando: da qui in avanti si compra meglio.'
+                   : 'Il mercato sta pagando quello che diceva il listone.'
+             }</div>
+             <div class="small" style="font-weight:500;margin-top:4px">
+               Finora si e' pagato il ${Math.round((inf - 1) * 100) >= 0 ? '+' : ''}${Math.round((inf - 1) * 100)}% rispetto alle stime.
+               Le stime dei giocatori ancora liberi sono state corrette di conseguenza${discesa ? ' verso il basso' : salita ? ' verso l&#39;alto' : ''}.
+             </div>
+           </div>`
+        : `<div class="tiny muted" style="margin-top:12px">Ancora poche aggiudicazioni per misurare l&#39;inflazione dell&#39;asta.</div>`
+    }
+
+    ${
+      m.copertura < 0.999
+        ? `<div class="tiny muted" style="margin-top:8px">
+             ${m.senzaPrezzo} aggiudicazioni registrate senza prezzo: per quelle uso la stima.
+             Registrare la cifra vera rende esatto il conto dei crediti.
+           </div>`
+        : ''
+    }
+  </div>`;
+}
+
+/**
+ * Il tabellone degli avversari: quanto puo' ancora offrire ciascuno su un singolo giocatore.
+ * E' il numero piu' decisivo dell'asta, perche' un giocatore costa quanto il secondo miglior
+ * offerente puo' pagare, non quanto vale.
+ */
+function tabelloneCard() {
+  const board = state.tabellone;
+  if (!board) return '';
+  const attivi = board.squadre.filter((s) => s.presi > 0);
+  if (!attivi.length) return '';
+  const righe = board.squadre
+    .slice()
+    .sort((a, b) => b.massimo - a.massimo)
+    .map(
+      (s) => `<tr${s.io ? ' style="font-weight:700"' : ''}>
+        <td>${esc(s.nome)}</td>
+        <td class="r">${s.presi}/${state.mercato?.rosa ?? 25}</td>
+        <td class="r">${s.residuo}</td>
+        <td class="r"><b>${s.massimo}</b></td>
+      </tr>`
+    )
+    .join('');
+  return `
+  <div class="card">
+    <details${board.attendibile ? '' : ' open'}>
+      <summary><b>Tabellone avversari</b> <span class="tiny muted">— fin dove possono spingersi</span></summary>
+      <table class="tiers" style="margin-top:10px">
+        <thead><tr><th>Squadra</th><th class="r">Rosa</th><th class="r">Crediti</th><th class="r">Max</th></tr></thead>
+        <tbody>${righe}</tbody>
+      </table>
+      ${
+        board.attendibile
+          ? '<div class="tiny muted" style="margin-top:8px">Numeri esatti: ogni acquisto e&#39; attribuito.</div>'
+          : `<div class="tiny muted" style="margin-top:8px">
+               ${board.nonAttribuiti} acquisti non attribuiti a nessuno: questi massimi sono un limite superiore.
+               Quando segni un giocatore come preso, tocca anche la squadra che se l&#39;e&#39; aggiudicato.
+             </div>`
+      }
+    </details>
   </div>`;
 }
 
@@ -180,7 +290,8 @@ function detail(p) {
           ? `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid}</div>
              <div class="lbl">fin qui conviene</div>
              ${ripiego(alts)}
-             ${bid.reason ? `<div class="small muted" style="margin-top:6px">${esc(bid.reason)}</div>` : ''}`
+             ${bid.reason ? `<div class="small muted" style="margin-top:6px">${esc(bid.reason)}</div>` : ''}
+             ${concorrenzaBox(p, bid)}`
           : `<div class="n mono"><span class="spinner"></span></div><div class="lbl">calcolo in corso</div>`
       }
     </div>
@@ -204,15 +315,54 @@ function detail(p) {
         : verdictFor(current, bid)
     }</div>
 
-    <div class="grid2" style="margin-top:12px">
-      <button class="btn primary" data-action="take-mine" data-id="${esc(p.id)}">L'ho preso io</button>
-      <button class="btn danger" data-action="take-other" data-id="${esc(p.id)}">Preso da altri</button>
-    </div>`
+    ${
+      state.ui.chiediSquadra === p.id
+        ? `<div style="margin-top:12px">
+             <div class="small muted" style="margin-bottom:8px">A chi e' andato? Serve a sapere fin dove possono spingersi gli altri.</div>
+             <div class="row wrap" style="gap:6px">
+               ${nomiSquadre(state.settings)
+                 .map((nome, i) =>
+                   i === 0
+                     ? ''
+                     : `<button class="btn" style="flex:1 1 30%;min-width:88px" data-action="assign-to" data-id="${esc(p.id)}" data-idx="${i}">${esc(nome)}</button>`
+                 )
+                 .join('')}
+               <button class="btn ghost" style="flex:1 1 100%" data-action="assign-to" data-id="${esc(p.id)}" data-idx="">non lo so</button>
+             </div>
+           </div>`
+        : `<div class="grid2" style="margin-top:12px">
+             <button class="btn primary" data-action="take-mine" data-id="${esc(p.id)}">L'ho preso io</button>
+             <button class="btn danger" data-action="take-other" data-id="${esc(p.id)}">Preso da altri</button>
+           </div>`
+    }`
     }
   </div>
 
   ${status === 'other' || !status ? altsCard(p, alts) : ''}
   `;
+}
+
+/**
+ * Chi puo' ancora contendermelo, e fino a quanto.
+ * Un giocatore non costa quello che vale: costa un credito piu' di quanto puo' pagare il
+ * secondo miglior offerente. Se quel numero e' sotto la mia offerta massima, l'asta e' gia'
+ * decisa e ogni credito speso oltre quella soglia e' buttato.
+ */
+function concorrenzaBox(p, bid) {
+  if (!bid || bid.maxBid <= 0) return '';
+  const conc = concorrenza({
+    settings: state.settings,
+    players: state.players,
+    owned: ownedMap(),
+    taken: takenMap(),
+    role: p.role,
+    tabellone: state.tabellone,
+  });
+  const v = verdettoConcorrenza({ mioMassimo: bid.maxBid, conc });
+  const classe = v.esito === 'tuo' || v.esito === 'nessuno' ? 'go' : v.esito === 'conteso' ? 'edge' : '';
+  return `<div class="verdict ${classe}" style="margin-top:10px;text-align:left">
+    <div class="small" style="font-weight:600">${esc(v.testo)}</div>
+  </div>`;
 }
 
 /** Un numero da solo non basta: si dice a chi si ripiega, con nome e prezzo. */
@@ -260,7 +410,14 @@ function creatorInfo(p) {
     ${tiers ? `<div class="row wrap" style="gap:5px;margin-top:8px">${tiers}</div>` : ''}
     ${valutazioni}
     ${disagreement}
-    ${p.notes ? `<details style="margin-top:10px"><summary class="small muted">Commento del creator</summary><div class="small" style="margin-top:6px;white-space:pre-wrap">${esc(p.notes.slice(0, 1200))}</div></details>` : ''}
+    ${
+      p.notes
+        ? `<details style="margin-top:10px" ${p.notes.length < 320 ? 'open' : ''}>
+             <summary class="small muted">Cosa dicono i creators di lui</summary>
+             <div class="small" style="margin-top:6px;white-space:pre-wrap;line-height:1.55">${esc(p.notes)}</div>
+           </details>`
+        : ''
+    }
   </div>`;
 }
 
@@ -369,6 +526,135 @@ function strategiaCard() {
   </div>`;
 }
 
+// Il piano del reparto costa una decina di ottimizzazioni complete: si prepara su richiesta
+// e vale finche' non cambia nulla.
+let reparto = null;
+let repartoInCorso = false;
+
+function buildReparto(rerender) {
+  repartoInCorso = true;
+  setTimeout(() => {
+    try {
+      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet() };
+      const piano = pianoDiReparto({ ...args, plan: state.plan });
+      reparto = piano
+        ? {
+            ...piano,
+            chiave: cacheKey(),
+            portiere: piano.fase === 'P' ? abbinamentoPortiere({ ...args, plan: state.plan }) : null,
+          }
+        : null;
+    } catch (err) {
+      console.error(err);
+      reparto = null;
+    } finally {
+      repartoInCorso = false;
+      rerender();
+    }
+  }, 30);
+}
+
+/**
+ * Il piano d'azione del reparto in corso.
+ *
+ * Durante la chiamata non c'e' tempo di ricalcolare niente: il ramo deve essere gia' deciso.
+ * Per ogni obiettivo il tetto oltre il quale si lascia perdere e i due ripieghi in ordine, e
+ * in fondo lo scenario in cui saltano tutti, con la destinazione dei crediti che si liberano.
+ */
+function repartoCard() {
+  if (!state.plan?.ok) return '';
+  if (repartoInCorso) {
+    return `<div class="card"><h2>Piano del reparto</h2><div class="small muted"><span class="spinner"></span> Preparo obiettivi, tetti e ripieghi…</div></div>`;
+  }
+  if (!reparto || reparto.chiave !== cacheKey()) {
+    const fase = budgetDiFase({ settings: state.settings, players: state.players, owned: ownedMap(), plan: state.plan });
+    return `
+    <div class="card">
+      <h2>Piano del reparto</h2>
+      <p class="small muted" style="margin-top:0">
+        Si gioca sui <b>${esc(fase.etichetta.toLowerCase())}</b>. Preparo obiettivi, tetto massimo su ciascuno,
+        ripieghi in ordine e cosa fare se saltano tutti.
+      </p>
+      <button class="btn primary block" data-action="reparto">Prepara il piano dei ${esc(fase.etichetta.toLowerCase())}</button>
+    </div>`;
+  }
+
+  const r = reparto;
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:4px">
+      <h2 style="margin:0">Piano · ${esc(r.etichetta)}</h2>
+      <button class="btn ghost small" data-action="reparto">Rifai</button>
+    </div>
+    <div class="tiny muted" style="margin-bottom:12px">
+      ${r.budget.perLaFase} crediti per il reparto · ${r.budget.slotMancanti} slot da riempire ·
+      ${r.budget.riservatoDopo} riservati ai reparti dopo
+    </div>
+
+    ${r.obiettivi
+      .map(
+        (o, i) => `
+      <div style="padding:10px 0;${i ? 'border-top:1px solid var(--line)' : ''}">
+        <div class="row between">
+          <div class="grow" data-action="select" data-id="${esc(o.player.id)}">
+            <div><b>${i + 1}. ${esc(o.player.name)}</b> ${edgeBadge(o.player)}</div>
+            <div class="tiny muted">${esc(o.player.team || '—')}${o.player.tier ? ' · ' + esc(o.player.tier) : ''} · a piano ${o.prezzoPiano}</div>
+          </div>
+          <div class="mono" style="text-align:right">
+            <b style="font-size:19px;color:var(--${o.sostituibile ? 'muted' : 'accent'})">${o.massimo}</b>
+            <div class="tiny muted">non oltre</div>
+          </div>
+        </div>
+        ${o.sostituibile ? `<div class="tiny muted" style="margin-top:4px">Sostituibile: sopra ${o.massimo} conviene chiunque altro, non insistere.</div>` : ''}
+        ${
+          o.ripieghi.length
+            ? `<div class="tiny muted" style="margin-top:6px">se salta → ${o.ripieghi
+                .map((x) => `<b style="color:var(--text)">${esc(x.player.name)}</b> ${x.price}`)
+                .join(' , poi ')}</div>`
+            : ''
+        }
+      </div>`
+      )
+      .join('')}
+
+    ${
+      r.portiere && !r.portiere.fatto && r.portiere.coppia
+        ? `<div class="verdict edge" style="margin-top:12px;text-align:left">
+             <div>Abbinamento: prendi anche ${esc(r.portiere.coppia.name)}.</div>
+             <div class="small" style="font-weight:500;margin-top:4px">
+               E' il secondo portiere ${esc(r.portiere.titolare.team || '')}, la stessa porta di ${esc(r.portiere.titolare.name)}.
+               In Classic ne schieri uno solo: averli entrambi significa non restare mai senza voto,
+               e con l'imbattibilita' il clean sheet arriva comunque da quella difesa.
+             </div>
+           </div>`
+        : r.portiere && r.portiere.fatto
+          ? `<div class="tiny muted" style="margin-top:12px">Abbinamento portieri a posto: hai due porte della stessa squadra.</div>`
+          : ''
+    }
+
+    ${
+      r.senzaNessuno
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+             <div class="tiny muted" style="margin-bottom:4px">se li perdi tutti</div>
+             <div class="small">
+               Vai su <b>${r.senzaNessuno.picks.map((x) => esc(x.name) + ' (' + x.plannedPrice + ')').join(', ')}</b>
+               ${
+                 r.senzaNessuno.liberati > 5
+                   ? `e sposti ${r.senzaNessuno.liberati} crediti ${
+                       r.senzaNessuno.destinazione.length
+                         ? 'su ' + r.senzaNessuno.destinazione.map((d) => `${ROLE_LABEL[d.role].toLowerCase()} (+${d.delta})`).join(' e ')
+                         : 'sugli altri reparti'
+                     }`
+                   : ''
+               }.
+             </div>
+             <div class="tiny muted" style="margin-top:6px">costo del cambio di piano: ${r.senzaNessuno.costo} punti</div>
+           </div>`
+        : ''
+    }
+  </div>`;
+}
+
 function targetsCard() {
   const plan = state.plan;
   if (!plan?.ok) return '';
@@ -458,8 +744,11 @@ export function render(rerender) {
 
     ${selected ? detail(selected) : ''}
     ${!selected && !state.auction.log.length ? readyCard() : ''}
+    ${selected ? '' : repartoCard()}
+    ${selected ? '' : mercatoCard()}
     ${selected ? '' : strategiaCard()}
     ${selected ? '' : targetsCard()}
+    ${selected ? '' : tabelloneCard()}
 
     <div class="row" style="gap:10px">
       <button class="btn grow" data-action="undo" ${state.auction.log.length ? '' : 'disabled'}>↩︎ Annulla ultima</button>
@@ -473,11 +762,13 @@ export function onAction(action, target, ev, rerender) {
     case 'select':
       state.ui.selectedId = id;
       state.ui.bidPrice = null;
+      state.ui.chiediSquadra = null;
       rerender();
       return true;
     case 'close-detail':
       state.ui.selectedId = null;
       state.ui.bidPrice = null;
+      state.ui.chiediSquadra = null;
       rerender();
       return true;
     case 'rolefilter':
@@ -492,26 +783,51 @@ export function onAction(action, target, ev, rerender) {
       rerender();
       return true;
     }
-    case 'take-mine':
-    case 'take-other': {
+    case 'take-mine': {
       const price = Number(document.getElementById('bidprice')?.value) || 0;
       const p = playerById(id);
-      if (action === 'take-mine') {
-        const spendable = maxSpendableNow(state.settings, ownedMap());
-        if (price > spendable) {
-          toast(`Non puoi spendere ${price}: il tetto e' ${spendable}.`);
-          return true;
-        }
+      const spendable = maxSpendableNow(state.settings, ownedMap());
+      if (price > spendable) {
+        toast(`Non puoi spendere ${price}: il tetto e' ${spendable}.`);
+        return true;
       }
-      assign(id, action === 'take-mine' ? 'mine' : 'other', price);
+      assign(id, 'mine', price);
       invalidate();
       state.ui.selectedId = null;
       state.ui.bidPrice = null;
       state.ui.query = '';
-      toast(action === 'take-mine' ? `${p?.name} tuo a ${price}.` : `${p?.name} va a un avversario.`);
+      toast(`${p?.name} tuo a ${price}.`);
       rerender();
       return true;
     }
+    case 'take-other': {
+      // Il prezzo lo prendo adesso, perche' il campo sparisce quando chiedo la squadra.
+      state.ui.prezzoAltri = Number(document.getElementById('bidprice')?.value) || 0;
+      state.ui.chiediSquadra = id;
+      rerender();
+      return true;
+    }
+    case 'assign-to': {
+      const idx = target.dataset.idx === '' ? null : Number(target.dataset.idx);
+      const p = playerById(id);
+      const prezzo = state.ui.prezzoAltri ?? 0;
+      assign(id, 'other', prezzo, idx);
+      invalidate();
+      state.ui.chiediSquadra = null;
+      state.ui.prezzoAltri = null;
+      state.ui.selectedId = null;
+      state.ui.bidPrice = null;
+      state.ui.query = '';
+      const nome = idx ? nomiSquadre(state.settings)[idx] : 'un avversario';
+      toast(`${p?.name} a ${nome}${prezzo ? ' per ' + prezzo : ''}.`);
+      rerender();
+      return true;
+    }
+    case 'reparto':
+      reparto = null;
+      buildReparto(rerender);
+      rerender();
+      return true;
     case 'scenario': {
       const role = target.dataset.role;
       const dopo = scenarioSenzaBig({
@@ -539,9 +855,10 @@ export function onAction(action, target, ev, rerender) {
       return true;
     case 'quick-gone': {
       const p = playerById(id);
-      // Il prezzo pagato dagli avversari non entra in nessun calcolo: registriamo la stima
-      // per avere comunque uno storico, senza chiedere niente durante l'asta.
-      assign(id, 'other', Math.round(p?.expectedPrice ?? 0));
+      // La corsia veloce: un tocco, nessuna domanda. Il prezzo resta ignoto e il conto dei
+      // crediti lo imputa dalla stima, dichiarando la copertura. Serve a non perdere un
+      // rilancio per stare a digitare: gli slot residui restano comunque esatti.
+      assign(id, 'other', 0, null);
       invalidate();
       toast(`${p?.name} va via.`);
       rerender();

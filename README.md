@@ -21,15 +21,19 @@ account. Tutti i dati restano sul dispositivo.
 
 **Durante l'asta**
 
-Resta sulla scheda **Asta**. Devi toccare solo due cose:
+Resta sulla scheda **Asta**. All'inizio di ogni reparto tocca **Prepara il piano**: ottieni
+obiettivi in ordine, tetto massimo su ciascuno, ripieghi gia' decisi e cosa fare se saltano tutti.
+Poi, mentre si chiama:
 
 - quando chiamano un tuo obiettivo, cercalo (bastano tre lettere) e guarda il numerone
   dell'**offerta massima**: e' il prezzo oltre il quale conviene lasciarlo andare;
-- quando un tuo obiettivo va a un altro, un solo tocco su **✕** nella lista obiettivi, senza
-  inserire il prezzo.
+- quando un giocatore va a un avversario, registralo. Ci sono due velocita', e **entrambe vanno
+  bene**: un solo tocco su **✕** nella lista obiettivi (nessuna domanda, nessun prezzo), oppure
+  la scheda del giocatore con prezzo e nome di chi se l'e' preso.
 
-Tutti gli altri giocatori puoi ignorarli: il piano cambia solo quando sparisce qualcuno che ti
-interessava. Sono circa cinquanta tocchi in quattro ore.
+La differenza fra le due velocita' e' quanto l'app puo' dirti dopo, ed e' spiegata qui sotto.
+Gli altri giocatori puoi ignorarli: il piano cambia solo quando sparisce qualcuno che ti
+interessava.
 
 ## Come ragiona
 
@@ -82,6 +86,39 @@ spendere duecento crediti in porta e arrivare all'attacco senza niente. L'app me
 quello che il piano ha destinato ai reparti successivi e mostra quanto resta davvero per quello
 in corso.
 
+**Quanti giocatori restano** non e' una stima: e' un conteggio. In una lega da otto squadre con
+tre portieri a testa verranno assegnati esattamente ventiquattro portieri, ne' uno di piu'. Ogni
+assegnazione registrata scala il contatore, e questo funziona anche con la corsia veloce, perche'
+per contare gli slot il prezzo non serve.
+
+**Quanti crediti restano** e' la stessa contabilita' applicata ai soldi, e da li' viene la cosa
+piu' utile di tutte. Nella stanza ci sono quattromila crediti; quelli spesi non tornano; e quelli
+che restano finiranno per forza sui giocatori ancora in vendita, su nessun altro. Quindi la somma
+dei prezzi di chi resta deve fare i crediti ancora in circolazione, meno il credito incomprimibile
+che ogni squadra deve tenere per ciascuno slot da riempire. Se la stanza strapaga i primi, per i
+successivi resta meno e i prezzi scendono: e' il meccanismo che a fine asta manda via tutti a un
+credito, e l'app lo prevede invece di subirlo. Sui listoni di prova, dopo una fase portieri pagata
+l'ottanta per cento sopra le stime, Lautaro passa da 145 a 132 crediti attesi; in uno scenario in
+cui la stanza brucia tutto su portieri e attaccanti, Dimarco crolla da 74 a 16.
+
+Per le aggiudicazioni registrate con la corsia veloce il prezzo viene imputato dalla stima, e
+l'app dichiara la propria copertura invece di far credere a una precisione che non ha.
+
+**Fin dove puo' spingersi un avversario** e' il numero che decide davvero l'asta, perche' un
+giocatore non costa quello che vale: costa un credito piu' di quanto puo' pagare il secondo
+miglior offerente. Se registri anche a chi e' andato ogni giocatore, l'app tiene il tabellone di
+tutti: crediti residui, slot mancanti per ruolo e massimo su un singolo colpo. Chi ha riempito il
+reparto smette di essere un rivale per quanti crediti abbia. Nella simulazione l'offerta massima
+di convenienza su Dimarco e' 395, ma nessun avversario puo' superare 85: il verdetto e'
+*"e' tuo a 86, non offrire di piu'"*, e sono trecento crediti risparmiati. Senza attribuzione i
+numeri diventano un limite superiore, ed e' dichiarato.
+
+**L'abbinamento dei portieri** e' il consiglio che i creators ripetono a ogni guida, e qui e' un
+vincolo del piano. In Classic se ne schiera uno solo ma se ne possiedono tre: il secondo non serve
+a giocare, serve a non restare mai senza voto. Preso nella stessa squadra del titolare, qualunque
+cosa succeda in quella porta il voto arriva, e con l'imbattibilita' il clean sheet arriva comunque
+dalla stessa difesa su cui si e' investito.
+
 **Quando salta il piano** non basta sapere chi prendere al posto di un giocatore: serve capire
 che la strada e' cambiata. Se i big di un reparto finiscono tutti, l'app ricalcola la rosa senza
 di loro e lo dice a parole: dove si spostano i crediti e quali sono i nuovi obiettivi. Lo stesso
@@ -105,7 +142,9 @@ effettivi, non sui giocatori in rosa: quattro riempitivi da un credito non sono 
 ## Formati riconosciuti
 
 - `.xlsx` dei creators (template Fantalab): un foglio per ruolo, colonne `Fascia`, `Ruolo`,
-  `Team`, `Nome`, `Prezzo`, `PMA`, `FMV Exp.`, `Titolarita'`, `Integrita'`, `Nota 1..5`.
+  `Team`, `Nome`, `Prezzo`, `PMA`, `FMV Exp.`, `Titolarita'`, `Integrita'`, `Nota 1..5`,
+  `Commento`. Le note brevi (`rigorista`, `modificatore`, `imbattibilita'`, `rischio infortuni`)
+  entrano nel punteggio; il commento lungo resta leggibile sulla scheda del giocatore.
 - CSV con qualunque separatore, virgolette e righe di intestazione decorative.
 - Ruoli sia Classic (`P/D/C/A`) sia Mantra (`Por`, `Dc`, `W`, `Pc`...), riportati al Classic.
 - Le colonne vengono riconosciute da sole; se qualcosa sfugge si corregge a mano nell'anteprima.
@@ -115,7 +154,7 @@ effettivi, non sui giocatori in rosa: quattro riempitivi da un credito non sono 
 ## Sviluppo
 
 ```sh
-npm test        # 43 test di dominio con il test runner di Node
+npm test        # 85 test di dominio con il test runner di Node
 npm run build   # genera dist/index.html, un unico file autosufficiente
 npm run smoke   # avvia l'app in Chromium headless e verifica il flusso completo
 npm run check   # tutto
