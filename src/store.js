@@ -5,7 +5,7 @@ import { defaultSettings, inferTierOrder, annotateTierPct, annotatePmaShare, ann
 import { mergeSources } from './domain/csv.js';
 import { valuePlayers, markTopPlayers } from './domain/valuation.js';
 import { withExpectedPrices } from './domain/market.js';
-import { optimizeRoster } from './domain/optimizer.js';
+import { optimizeRoster, CONFIG_SOLUTORE } from './domain/optimizer.js';
 import { aggregateForm, applyForm, matchCount } from './domain/form.js';
 import { statoMercato, applyPrezziLive, avversari } from './domain/mercato.js';
 
@@ -297,9 +297,10 @@ export function rebuildPlan(opts = {}) {
     owned: ownedMap(),
     unavailable: unavailableSet(),
     obbligati: obbligatiSet(),
-    // Il piano che si guarda vale qualche decimo di secondo in piu': senza ripartenze il
-    // solutore resta bloccato su una scelta cara che sbarra la strada a un blocco migliore.
-    ripartenze: 4,
+    // La stessa configurazione dei consigli, e non una scelta a parte: se il piano fosse
+    // calcolato meglio dell'offerta massima, l'assistente consiglierebbe di pagare un
+    // giocatore che il piano non vuole.
+    ...CONFIG_SOLUTORE,
     ...opts,
   });
   return state.plan;
@@ -329,7 +330,7 @@ export function pianoPrimaDellUltimaMossa() {
     settings: state.settings,
     owned: new Map(Object.entries(owned).map(([id, v]) => [id, Number(v)])),
     unavailable: new Set(Object.keys(taken)),
-    ripartenze: 4,
+    ...CONFIG_SOLUTORE,
   });
 }
 

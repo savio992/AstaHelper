@@ -680,7 +680,7 @@ test('a un\'occasione non si attacca una spiegazione da bocciatura', () => {
   const { players, settings } = makeContext({ projected: true }, 11);
   const p = players.find((x) => x.role === 'A' && (x.expectedPrice ?? 0) > 5);
   const sp = spiegaOfferta({ players, settings, playerId: p.id, offerta: Math.round(p.expectedPrice * 2) });
-  assert.match(sp.frasi[0], /occasione/);
+  assert.match(sp.frasi[0], /ne varrebbe/);
   assert.equal(sp.frasi.length, 1, 'niente motivi di scarto su un affare');
 });
 
@@ -792,4 +792,45 @@ test('la spiegazione distingue il caso in cui non cambia nulla d\'altro', () => 
   const qualsiasi = prima.picks[0];
   const sp = spiegaModifica({ prima, dopo, players, settings, id: qualsiasi.id, azione: 'libera' });
   assert.match(sp.frasi.join(' '), /Non cambia il valore/);
+});
+
+test('piano e consigli usano lo stesso solutore, sempre', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  // L'invariante che due volte e' saltata: se il piano fosse calcolato meglio dei consigli,
+  // l'assistente direbbe di pagare un giocatore che il piano non vuole.
+  const piano = optimizeRoster({ players, settings, ...CONFIG_ASTA });
+  const target = piano.picks.filter((p) => p.role === 'P').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  const res = maxBid({ players, settings, playerId: target.id });
+  const planB = optimizeRoster({ players, settings, unavailable: new Set([target.id]), ...CONFIG_ASTA });
+  const conLui = optimizeRoster({
+    players,
+    settings,
+    owned: new Map([[target.id, res.maxBid]]),
+    ...CONFIG_ASTA,
+  });
+  assert.ok(conLui.score >= planB.score - 1e-6, 'al tetto dichiarato deve ancora convenire');
+
+  // E un giocatore che il piano compra al suo prezzo non puo' avere un pareggio piu' basso.
+  assert.ok(res.maxBid >= target.plannedPrice, `${target.name}: pareggio ${res.maxBid} sotto il prezzo a piano ${target.plannedPrice}`);
+});
+
+test('un giocatore fuori dal piano non puo\' avere un pareggio assurdo', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const piano = optimizeRoster({ players, settings, ...CONFIG_ASTA });
+  const dentro = new Set(piano.picks.map((p) => p.id));
+  const fuori = players
+    .filter((p) => p.role === 'P' && !dentro.has(p.id) && (p.expectedPrice ?? 0) > 5)
+    .sort((a, b) => (b.expectedPrice ?? 0) - (a.expectedPrice ?? 0))[0];
+  if (!fuori) return;
+  const res = maxBid({ players, settings, playerId: fuori.id });
+  // Se il piano non lo compra al prezzo di mercato, non puo' convenire molto piu' di quello:
+  // era il sintomo dei solutori disallineati.
+  const planB = optimizeRoster({ players, settings, unavailable: new Set([fuori.id]), ...CONFIG_ASTA });
+  const alPrezzo = optimizeRoster({ players, settings, owned: new Map([[fuori.id, Math.round(fuori.expectedPrice)]]), ...CONFIG_ASTA });
+  if (alPrezzo.score < planB.score) {
+    assert.ok(
+      res.maxBid < Math.round(fuori.expectedPrice),
+      `${fuori.name}: il piano non lo vuole a ${Math.round(fuori.expectedPrice)} ma il pareggio dice ${res.maxBid}`
+    );
+  }
 });

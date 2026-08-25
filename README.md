@@ -116,6 +116,25 @@ da titolare in quel reparto e' gia' occupato:
 Vale anche al contrario: quando vale piu' di quanto costa lo dice, senza attaccarci le
 motivazioni di una bocciatura.
 
+**Una sola configurazione del solutore.** Due volte in questo progetto il piano mostrato e
+l'offerta massima hanno usato solutori di forza diversa, e ogni volta il risultato e' stato lo
+stesso: il piano diceva di non comprare un giocatore e l'assistente diceva di pagarlo tre volte
+il suo prezzo, perche' il termine di paragone era una rosa peggiore di quella vera. La prima
+volta era la ricerca locale, la seconda le ripartenze, aggiunte al piano e dimenticate nei
+consigli. Adesso la configurazione sta in una costante sola, importata da entrambi, e c'e' un
+controllo che verifica l'invariante: al tetto dichiarato deve ancora convenire, e un giocatore
+che il piano compra al suo prezzo non puo' avere un pareggio piu' basso.
+
+Una ripartenza sola basta — sui listoni veri porta la rosa da 1905 a 1949 punti e la seconda non
+aggiunge nulla — e la ricerca del pareggio parte da un intervallo stretto attorno al prezzo di
+mercato invece che da tutto il budget: sono la meta' delle risoluzioni, senza perdere precisione.
+
+**Il tetto che si legge e' quello su cui si agisce.** Il punto di pareggio non sa che l'asta va
+per reparti: puo' dire centoquarantasei mentre il piano ha gia' riservato quasi tutto ai ruoli
+successivi. Il numero grande e' quindi il piu' stringente fra i due, e quando a fermare e' il
+reparto lo dice: *"il pareggio sarebbe a 146, ma il piano riserva 489 crediti agli altri
+reparti"*.
+
 **Il solutore durante l'asta** e' lo stesso che calcola il piano. Sembra ovvio e non lo era: per
 risparmiare tempo l'offerta massima veniva calcolata saltando la ricerca locale, e su un listone
 vero l'errore arrivava al cinquanta per cento in entrambe le direzioni — diceva di lasciar perdere

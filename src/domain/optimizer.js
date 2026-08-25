@@ -123,6 +123,21 @@ function roleKnapsack(cands, slots, B, minTop = 0) {
  *
  * Ritorna { ok, picks, owned, cost, score, spentByRole, leftover, budgetCurve }
  */
+/**
+ * L'unica configurazione del solutore, usata dal piano e da ogni consiglio.
+ *
+ * Deve stare in un posto solo. Due volte in questo progetto il piano mostrato e l'offerta
+ * massima hanno usato solutori di forza diversa, e ogni volta il risultato e' stato lo stesso:
+ * il piano diceva di non comprare un giocatore e l'assistente diceva di pagarlo tre volte il
+ * suo prezzo, perche' il termine di paragone era una rosa peggiore di quella vera. La prima
+ * volta era la ricerca locale, la seconda le ripartenze. Con una costante sola non puo'
+ * succedere una terza.
+ *
+ * Una ripartenza sola basta: sui listoni veri porta la rosa da 1905 a 1949 punti, e la seconda
+ * non aggiunge niente mentre raddoppia il tempo di ogni consiglio.
+ */
+export const CONFIG_SOLUTORE = { prune: false, localSearch: true, ripartenze: 1 };
+
 export function optimizeRoster({
   players,
   settings,

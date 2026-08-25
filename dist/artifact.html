@@ -1673,6 +1673,21 @@ function roleKnapsack(cands, slots, B, minTop = 0) {
  *
  * Ritorna { ok, picks, owned, cost, score, spentByRole, leftover, budgetCurve }
  */
+/**
+ * L'unica configurazione del solutore, usata dal piano e da ogni consiglio.
+ *
+ * Deve stare in un posto solo. Due volte in questo progetto il piano mostrato e l'offerta
+ * massima hanno usato solutori di forza diversa, e ogni volta il risultato e' stato lo stesso:
+ * il piano diceva di non comprare un giocatore e l'assistente diceva di pagarlo tre volte il
+ * suo prezzo, perche' il termine di paragone era una rosa peggiore di quella vera. La prima
+ * volta era la ricerca locale, la seconda le ripartenze. Con una costante sola non puo'
+ * succedere una terza.
+ *
+ * Una ripartenza sola basta: sui listoni veri porta la rosa da 1905 a 1949 punti, e la seconda
+ * non aggiunge niente mentre raddoppia il tempo di ogni consiglio.
+ */
+const CONFIG_SOLUTORE = { prune: false, localSearch: true, ripartenze: 1 };
+
 function optimizeRoster({
   players,
   settings,
@@ -2119,7 +2134,7 @@ function creditShadowPrice(budgetCurve, at) {
 
 
 
-return { pruneCandidates, optimizeRoster, creditShadowPrice, synergyBonus };
+return { pruneCandidates, optimizeRoster, creditShadowPrice, CONFIG_SOLUTORE, synergyBonus };
 })();
 
 // ===== src/domain/form.js =====
@@ -2707,7 +2722,7 @@ const { defaultSettings, inferTierOrder, annotateTierPct, annotatePmaShare, anno
 const { mergeSources } = __m_src_domain_csv_js;
 const { valuePlayers, markTopPlayers } = __m_src_domain_valuation_js;
 const { withExpectedPrices } = __m_src_domain_market_js;
-const { optimizeRoster } = __m_src_domain_optimizer_js;
+const { optimizeRoster, CONFIG_SOLUTORE } = __m_src_domain_optimizer_js;
 const { aggregateForm, applyForm, matchCount } = __m_src_domain_form_js;
 const { statoMercato, applyPrezziLive, avversari } = __m_src_domain_mercato_js;
 
@@ -2999,9 +3014,10 @@ function rebuildPlan(opts = {}) {
     owned: ownedMap(),
     unavailable: unavailableSet(),
     obbligati: obbligatiSet(),
-    // Il piano che si guarda vale qualche decimo di secondo in piu': senza ripartenze il
-    // solutore resta bloccato su una scelta cara che sbarra la strada a un blocco migliore.
-    ripartenze: 4,
+    // La stessa configurazione dei consigli, e non una scelta a parte: se il piano fosse
+    // calcolato meglio dell'offerta massima, l'assistente consiglierebbe di pagare un
+    // giocatore che il piano non vuole.
+    ...CONFIG_SOLUTORE,
     ...opts,
   });
   return state.plan;
@@ -3031,7 +3047,7 @@ function pianoPrimaDellUltimaMossa() {
     settings: state.settings,
     owned: new Map(Object.entries(owned).map(([id, v]) => [id, Number(v)])),
     unavailable: new Set(Object.keys(taken)),
-    ripartenze: 4,
+    ...CONFIG_SOLUTORE,
   });
 }
 
@@ -3165,7 +3181,7 @@ const __m_src_domain_advisor_js = (() => {
 
 const { ROLES, ROLE_LABEL, tierKey, totalSlots } = __m_src_domain_model_js;
 const { expectedShare } = __m_src_domain_valuation_js;
-const { optimizeRoster, creditShadowPrice } = __m_src_domain_optimizer_js;
+const { optimizeRoster, creditShadowPrice, CONFIG_SOLUTORE } = __m_src_domain_optimizer_js;
 
 /**
  * Impostazioni per i ricalcoli in tempo reale durante l'asta.
@@ -3180,7 +3196,7 @@ const { optimizeRoster, creditShadowPrice } = __m_src_domain_optimizer_js;
  * ributta dentro la ricerca locale: senza, si sta fra i 66 e gli 86 millisecondi contro
  * gli 82-153 di prima.
  */
-const CONFIG_ASTA = { prune: false, localSearch: true };
+const CONFIG_ASTA = CONFIG_SOLUTORE;
 const FAST = CONFIG_ASTA;
 
 /** Tetto tecnico: devo lasciare almeno 1 credito per ogni slot ancora da riempire. */
@@ -3288,10 +3304,21 @@ function maxBid({ players, settings, owned = new Map(), unavailable = new Set(),
   }
 
   // Ricerca binaria del punto di pareggio: il prezzo piu' alto che conviene ancora.
+  //
+  // Partire da tutto il budget spendibile costa una decina di risoluzioni complete, e quasi
+  // sempre inutilmente: il pareggio sta a ridosso del prezzo di mercato. Si parte da un
+  // intervallo stretto attorno a quello e lo si allarga solo se serve davvero, cosi' il caso
+  // normale costa la meta' e quello raro non perde niente in precisione.
+  const target = players.find((x) => x.id === playerId);
+  const mercato = Math.max(1, Math.round(target?.expectedPrice ?? 1));
   let lo = 1;
-  let hi = hard;
-  if (scoreAt(hi) >= planB.score) {
-    return { maxBid: hi, planB, hard, breakEven: hi, reason: 'Conviene fino al tetto tecnico.' };
+  let hi = Math.min(hard, Math.max(mercato * 2, mercato + 30));
+  while (hi < hard && scoreAt(hi) >= planB.score) {
+    lo = hi;
+    hi = Math.min(hard, hi * 2);
+  }
+  if (hi >= hard && scoreAt(hard) >= planB.score) {
+    return { maxBid: hard, planB, hard, breakEven: hard, reason: 'Conviene fino al tetto tecnico.' };
   }
   while (lo < hi - 1) {
     const mid = Math.floor((lo + hi) / 2);
@@ -3314,7 +3341,7 @@ function alternatives({
   obbligati = new Set(),
   playerId,
   limit = 5,
-  shortlist = 14,
+  shortlist = 10,
 }) {
   const byId = new Map(players.map((p) => [p.id, p]));
   const target = byId.get(playerId);
@@ -3670,7 +3697,10 @@ function spiegaOfferta({ players, settings, owned = new Map(), unavailable = new
   } else if (offerta < atteso * 0.65) {
     frasi.push(`Il mercato lo paga ${atteso}, per la tua rosa ne vale ${offerta}.`);
   } else if (offerta > atteso * 1.15) {
-    frasi.push(`Il mercato lo paga ${atteso} e per te ne vale ${offerta}: e' un'occasione.`);
+    // La pastiglia in alto confronta la valutazione dei creators col prezzo di mercato; questa
+    // riga confronta il prezzo di mercato con quanto serve alla tua rosa. Sono due cose diverse
+    // e chiamarle entrambe "occasione" le faceva sembrare in contraddizione.
+    frasi.push(`Il mercato lo paga ${atteso}, ma alla tua rosa serve al punto che ne varrebbe ${offerta}.`);
     return { frasi, atteso, offerta, presenze, equivalente: equivalenti[0] || null, panchina };
   } else {
     return { frasi: [], atteso, offerta, presenze, equivalente: equivalenti[0] || null, panchina };
@@ -4392,12 +4422,28 @@ function detail(p) {
     <div class="maxbid">
       ${
         bid
-          ? `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid <= 0 ? '—' : bid.maxBid}</div>
-             <div class="lbl">${bid.maxBid <= 0 ? 'non fa per te' : 'fin qui conviene'}</div>
+          ? (() => {
+              // Il numerone deve essere quello su cui si agisce davvero. Il pareggio non sa
+              // che l'asta va per reparti: se il piano ha gia' riservato i crediti ai ruoli
+              // successivi, mostrare il pareggio da solo invita a sfondare il budget.
+              const tettoFase = fase.slotMancanti > 0 ? fase.massimoOra : Infinity;
+              const operativo = Math.max(0, Math.min(bid.maxBid, tettoFase));
+              const frenaIlReparto = bid.maxBid > tettoFase;
+              return `<div class="n mono ${operativo <= 0 ? 'zero' : ''}">${operativo <= 0 ? '—' : operativo}</div>
+             <div class="lbl">${operativo <= 0 ? 'non fa per te' : frenaIlReparto ? 'oltre sfori il reparto' : 'fin qui conviene'}</div>
+             ${
+               frenaIlReparto
+                 ? `<div class="small" style="margin-top:8px;color:var(--warn)">
+                      Il pareggio sarebbe a ${bid.maxBid}, ma il piano riserva ${fase.riservatoDopo} crediti agli altri reparti.
+                      Per andare oltre devi rinunciare a qualcosa dopo.
+                    </div>`
+                 : ''
+             }
              ${ripiego(alts, bid)}
              ${bid.reason ? `<div class="small muted" style="margin-top:6px">${esc(bid.reason)}</div>` : ''}
              ${perche(p, bid)}
-             ${concorrenzaBox(p, bid)}`
+             ${concorrenzaBox(p, bid)}`;
+            })()
           : `<div class="n mono"><span class="spinner"></span></div><div class="lbl">calcolo in corso</div>`
       }
     </div>

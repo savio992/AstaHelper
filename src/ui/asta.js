@@ -299,12 +299,28 @@ function detail(p) {
     <div class="maxbid">
       ${
         bid
-          ? `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid <= 0 ? '—' : bid.maxBid}</div>
-             <div class="lbl">${bid.maxBid <= 0 ? 'non fa per te' : 'fin qui conviene'}</div>
+          ? (() => {
+              // Il numerone deve essere quello su cui si agisce davvero. Il pareggio non sa
+              // che l'asta va per reparti: se il piano ha gia' riservato i crediti ai ruoli
+              // successivi, mostrare il pareggio da solo invita a sfondare il budget.
+              const tettoFase = fase.slotMancanti > 0 ? fase.massimoOra : Infinity;
+              const operativo = Math.max(0, Math.min(bid.maxBid, tettoFase));
+              const frenaIlReparto = bid.maxBid > tettoFase;
+              return `<div class="n mono ${operativo <= 0 ? 'zero' : ''}">${operativo <= 0 ? '—' : operativo}</div>
+             <div class="lbl">${operativo <= 0 ? 'non fa per te' : frenaIlReparto ? 'oltre sfori il reparto' : 'fin qui conviene'}</div>
+             ${
+               frenaIlReparto
+                 ? `<div class="small" style="margin-top:8px;color:var(--warn)">
+                      Il pareggio sarebbe a ${bid.maxBid}, ma il piano riserva ${fase.riservatoDopo} crediti agli altri reparti.
+                      Per andare oltre devi rinunciare a qualcosa dopo.
+                    </div>`
+                 : ''
+             }
              ${ripiego(alts, bid)}
              ${bid.reason ? `<div class="small muted" style="margin-top:6px">${esc(bid.reason)}</div>` : ''}
              ${perche(p, bid)}
-             ${concorrenzaBox(p, bid)}`
+             ${concorrenzaBox(p, bid)}`;
+            })()
           : `<div class="n mono"><span class="spinner"></span></div><div class="lbl">calcolo in corso</div>`
       }
     </div>

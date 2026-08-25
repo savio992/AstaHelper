@@ -2,7 +2,7 @@
 
 import { ROLES, ROLE_LABEL, tierKey, totalSlots } from './model.js';
 import { expectedShare } from './valuation.js';
-import { optimizeRoster, creditShadowPrice } from './optimizer.js';
+import { optimizeRoster, creditShadowPrice, CONFIG_SOLUTORE } from './optimizer.js';
 
 /**
  * Impostazioni per i ricalcoli in tempo reale durante l'asta.
@@ -17,7 +17,7 @@ import { optimizeRoster, creditShadowPrice } from './optimizer.js';
  * ributta dentro la ricerca locale: senza, si sta fra i 66 e gli 86 millisecondi contro
  * gli 82-153 di prima.
  */
-export const CONFIG_ASTA = { prune: false, localSearch: true };
+export const CONFIG_ASTA = CONFIG_SOLUTORE;
 const FAST = CONFIG_ASTA;
 
 /** Tetto tecnico: devo lasciare almeno 1 credito per ogni slot ancora da riempire. */
@@ -125,10 +125,21 @@ export function maxBid({ players, settings, owned = new Map(), unavailable = new
   }
 
   // Ricerca binaria del punto di pareggio: il prezzo piu' alto che conviene ancora.
+  //
+  // Partire da tutto il budget spendibile costa una decina di risoluzioni complete, e quasi
+  // sempre inutilmente: il pareggio sta a ridosso del prezzo di mercato. Si parte da un
+  // intervallo stretto attorno a quello e lo si allarga solo se serve davvero, cosi' il caso
+  // normale costa la meta' e quello raro non perde niente in precisione.
+  const target = players.find((x) => x.id === playerId);
+  const mercato = Math.max(1, Math.round(target?.expectedPrice ?? 1));
   let lo = 1;
-  let hi = hard;
-  if (scoreAt(hi) >= planB.score) {
-    return { maxBid: hi, planB, hard, breakEven: hi, reason: 'Conviene fino al tetto tecnico.' };
+  let hi = Math.min(hard, Math.max(mercato * 2, mercato + 30));
+  while (hi < hard && scoreAt(hi) >= planB.score) {
+    lo = hi;
+    hi = Math.min(hard, hi * 2);
+  }
+  if (hi >= hard && scoreAt(hard) >= planB.score) {
+    return { maxBid: hard, planB, hard, breakEven: hard, reason: 'Conviene fino al tetto tecnico.' };
   }
   while (lo < hi - 1) {
     const mid = Math.floor((lo + hi) / 2);
@@ -151,7 +162,7 @@ export function alternatives({
   obbligati = new Set(),
   playerId,
   limit = 5,
-  shortlist = 14,
+  shortlist = 10,
 }) {
   const byId = new Map(players.map((p) => [p.id, p]));
   const target = byId.get(playerId);
@@ -507,7 +518,10 @@ export function spiegaOfferta({ players, settings, owned = new Map(), unavailabl
   } else if (offerta < atteso * 0.65) {
     frasi.push(`Il mercato lo paga ${atteso}, per la tua rosa ne vale ${offerta}.`);
   } else if (offerta > atteso * 1.15) {
-    frasi.push(`Il mercato lo paga ${atteso} e per te ne vale ${offerta}: e' un'occasione.`);
+    // La pastiglia in alto confronta la valutazione dei creators col prezzo di mercato; questa
+    // riga confronta il prezzo di mercato con quanto serve alla tua rosa. Sono due cose diverse
+    // e chiamarle entrambe "occasione" le faceva sembrare in contraddizione.
+    frasi.push(`Il mercato lo paga ${atteso}, ma alla tua rosa serve al punto che ne varrebbe ${offerta}.`);
     return { frasi, atteso, offerta, presenze, equivalente: equivalenti[0] || null, panchina };
   } else {
     return { frasi: [], atteso, offerta, presenze, equivalente: equivalenti[0] || null, panchina };
