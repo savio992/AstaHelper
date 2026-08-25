@@ -2,12 +2,12 @@
 
 import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan } from '../store.js';
 import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } from '../domain/model.js';
-import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere } from '../domain/advisor.js';
+import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita } from '../domain/advisor.js';
 import { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } from '../domain/mercato.js';
 import { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } from './common.js';
 
 // I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
-let cache = { key: null, bid: null, alts: null };
+let cache = { key: null, bid: null, alts: null, perdita: null };
 let pending = false;
 
 function cacheKey() {
@@ -15,7 +15,7 @@ function cacheKey() {
 }
 
 export function invalidate() {
-  cache = { key: null, bid: null, alts: null };
+  cache = { key: null, bid: null, alts: null, perdita: null };
   reparto = null;
 }
 
@@ -33,10 +33,15 @@ function ensureAdvice(rerender) {
         unavailable: unavailableSet(),
         playerId: state.ui.selectedId,
       };
-      cache = { key, bid: maxBid(args), alts: alternatives({ ...args, limit: 5 }) };
+      cache = {
+        key,
+        bid: maxBid(args),
+        alts: alternatives({ ...args, limit: 8 }),
+        perdita: spiegaPerdita({ ...args, piano: state.plan }),
+      };
     } catch (err) {
       console.error(err);
-      cache = { key, bid: null, alts: null };
+      cache = { key, bid: null, alts: null, perdita: null };
     } finally {
       pending = false;
       rerender();
@@ -272,7 +277,7 @@ function detail(p) {
     }
   </div>
 
-  ${status === 'other' || !status ? altsCard(p, alts) : ''}
+  ${status === 'other' || !status ? perditaCard(p, cache.key === cacheKey() ? cache.perdita : null, alts) : ''}
   `;
 }
 
@@ -355,36 +360,108 @@ function creatorInfo(p) {
   </div>`;
 }
 
-function altsCard(p, alts) {
-  if (!alts) {
+/**
+ * Cosa succede davvero se lo perdo.
+ *
+ * Un elenco di sostituti non basta e sa ingannare: perdere un attaccante da centosessanta
+ * crediti non significa comprarne un altro da centosessanta ne' ripiegare su uno da venti,
+ * significa che quei crediti si ridistribuiscono e il piano puo' rifare il reparto intero
+ * portandosi dietro gli altri. Qui si vede prima il ragionamento e poi, semmai, i nomi.
+ */
+function perditaCard(p, sp, alts) {
+  if (!sp) {
     return `<div class="card"><h2>Se lo perdo</h2><div class="small muted"><span class="spinner"></span> Ricalcolo la rosa senza di lui…</div></div>`;
   }
-  if (!alts.alternatives.length) {
-    return `<div class="card"><h2>Se lo perdo</h2><div class="small muted">Nessuna alternativa sostenibile con i crediti rimasti.</div></div>`;
+  if (sp.impossibile) {
+    return `<div class="card"><h2>Se lo perdo</h2><div class="verdict stop" style="text-align:left">${esc(sp.frasi[0])}</div></div>`;
   }
+
+  const dopoRuolo = sp.dopo.picks
+    .filter((x) => x.role === p.role)
+    .sort((a, b) => b.plannedPrice - a.plannedPrice);
+  const spostati = sp.spostamenti.filter((x) => x.role !== p.role);
+
   return `
   <div class="card">
     <h2>Se lo perdo</h2>
-    <div class="small muted" style="margin-bottom:10px">
-      Rosa ricalcolata senza di lui, confrontata con l'averlo preso al suo prezzo atteso.
+
+    <div class="small" style="margin-bottom:12px;line-height:1.6">${sp.frasi.map((f) => esc(f)).join(' ')}</div>
+
+    <div style="padding-top:12px;border-top:1px solid var(--line)">
+      <div class="tiny muted" style="margin-bottom:6px">${esc(ROLE_LABEL[p.role].toLowerCase())} senza di lui</div>
+      <div class="row wrap" style="gap:6px">
+        ${dopoRuolo
+          .map(
+            (x) =>
+              `<span class="chip ${sp.entrati.some((e) => e.id === x.id) ? 'plan' : ''}" data-action="select" data-id="${esc(x.id)}">${esc(
+                x.name
+              )} <b class="mono">${x.plannedPrice}</b></span>`
+          )
+          .join('')}
+      </div>
+      <div class="tiny muted" style="margin-top:6px">in evidenza chi entra al posto suo</div>
     </div>
-    ${alts.alternatives
-      .map((a) => {
-        const v = altVerdict(a.deltaVsTarget, p.score);
-        return `
-      <div class="alt" data-action="select" data-id="${esc(a.player.id)}">
-        ${roleChip(a.player.role)}
-        <div class="grow">
-          <div class="nm">${esc(a.player.name)} ${edgeBadge(a.player)}</div>
-          <div class="sub small muted">${esc(a.player.team || '—')}${a.player.tier ? ' · ' + esc(a.player.tier) : ''}</div>
-        </div>
-        <div style="text-align:right">
-          <div class="mono" style="font-weight:800">${a.price}<span class="tiny muted"> cr</span></div>
-          <div class="tiny ${v.classe === 'pos' ? '' : v.classe === 'neg' ? '' : ''}" style="color:var(--${v.classe === 'pos' ? 'accent' : v.classe === 'neg' ? 'danger' : 'muted'})">${v.parola}</div>
-        </div>
-      </div>`;
-      })
-      .join('')}
+
+    ${
+      spostati.length
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+             <div class="tiny muted" style="margin-bottom:6px">dove finiscono i crediti</div>
+             ${spostati
+               .map(
+                 (x) => `<div class="row between small">
+                   <span>${roleChip(x.role)} ${esc(ROLE_LABEL[x.role])}</span>
+                   <span class="mono" style="color:var(--${x.delta > 0 ? 'accent' : 'muted'})">${x.delta > 0 ? '+' : ''}${x.delta}</span>
+                 </div>`
+               )
+               .join('')}
+             ${
+               sp.entrati.filter((e) => e.role !== p.role).length
+                 ? `<div class="tiny muted" style="margin-top:6px">entrano ${sp.entrati
+                     .filter((e) => e.role !== p.role)
+                     .map((e) => `${esc(e.name)} (${e.plannedPrice})`)
+                     .join(', ')}</div>`
+                 : ''
+             }
+           </div>`
+        : ''
+    }
+
+    ${
+      sp.alternative.length
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+             <div class="tiny muted" style="margin-bottom:8px">se invece vuoi restare su questo reparto</div>
+             ${sp.alternative
+               .map((a) => {
+                 const v = altVerdict(a.deltaVsTarget, p.score);
+                 return `
+               <div class="alt" data-action="select" data-id="${esc(a.player.id)}">
+                 ${roleChip(a.player.role)}
+                 <div class="grow">
+                   <div class="nm">${esc(a.player.name)} ${edgeBadge(a.player)}</div>
+                   <div class="sub small muted">${esc(a.player.team || '—')}${a.player.tier ? ' · ' + esc(a.player.tier) : ''}</div>
+                 </div>
+                 <div style="text-align:right">
+                   <div class="mono" style="font-weight:800">${a.price}<span class="tiny muted"> cr</span></div>
+                   <div class="tiny" style="color:var(--${v.classe === 'pos' ? 'accent' : v.classe === 'neg' ? 'danger' : 'muted'})">${v.parola}</div>
+                 </div>
+               </div>`;
+               })
+               .join('')}
+           </div>`
+        : ''
+    }
+
+    ${
+      sp.giaTuoi.length
+        ? `<details style="margin-top:12px">
+             <summary class="tiny muted">Questi li prendi comunque (${sp.giaTuoi.length})</summary>
+             <div class="tiny muted" style="margin-top:6px;line-height:1.7">
+               ${sp.giaTuoi.map((a) => `${esc(a.player.name)} ${a.price}`).join(' · ')}
+               <div style="margin-top:4px">Erano gia' nel piano anche senza di lui: non sono sostituti, sono la tua rosa in ogni caso.</div>
+             </div>
+           </details>`
+        : ''
+    }
   </div>`;
 }
 

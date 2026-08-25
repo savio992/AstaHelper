@@ -200,6 +200,9 @@ export function rebuildPlan(opts = {}) {
     settings: state.settings,
     owned: ownedMap(),
     unavailable: unavailableSet(),
+    // Il piano che si guarda vale qualche decimo di secondo in piu': senza ripartenze il
+    // solutore resta bloccato su una scelta cara che sbarra la strada a un blocco migliore.
+    ripartenze: 4,
     ...opts,
   });
   return state.plan;

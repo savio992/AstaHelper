@@ -3,8 +3,21 @@
 import { ROLES, ROLE_LABEL, tierKey, totalSlots } from './model.js';
 import { optimizeRoster, creditShadowPrice } from './optimizer.js';
 
-/** Impostazioni ridotte per i ricalcoli in tempo reale durante l'asta. */
-const FAST = { prune: true, localSearch: false };
+/**
+ * Impostazioni per i ricalcoli in tempo reale durante l'asta.
+ *
+ * Qui c'era una scorciatoia che costava carissimo: saltando la ricerca locale il solutore si
+ * fermava a una rosa peggiore del 3,4% e l'offerta massima ne usciva sbagliata fino al 50%, in
+ * entrambe le direzioni — su un listone vero diceva di lasciar perdere un giocatore che valeva
+ * ottantatre crediti e di arrivare a centottantotto per uno che ne valeva centoventitre'.
+ *
+ * La ricerca locale e' indispensabile. Il pruning invece non cambia mai il risultato e a
+ * conti fatti rallenta, perche' il tempo che risparmia nella programmazione dinamica lo
+ * ributta dentro la ricerca locale: senza, si sta fra i 66 e gli 86 millisecondi contro
+ * gli 82-153 di prima.
+ */
+export const CONFIG_ASTA = { prune: false, localSearch: true };
+const FAST = CONFIG_ASTA;
 
 /** Tetto tecnico: devo lasciare almeno 1 credito per ogni slot ancora da riempire. */
 export function maxSpendableNow(settings, owned) {
@@ -167,18 +180,28 @@ export function alternatives({
     .sort((a, b) => b.net - a.net)
     .slice(0, shortlist);
 
+  const inPlanB = planB.ok ? new Set(planB.picks.map((x) => x.id)) : new Set();
+
   const results = [];
   for (const { p } of pool) {
     const price = Math.max(1, Math.round(p.expectedPrice ?? 1));
     if (price > budgetNow) continue;
-    const o = new Map(owned);
-    o.set(p.id, price);
-    const plan = optimizeRoster({ players, settings, owned: o, unavailable: withoutSet, ...FAST });
+    // Chi e' gia' scelto dal piano B al suo prezzo atteso da' esattamente il piano B: forzarlo
+    // dentro non cambia una virgola. Risolvere di nuovo costerebbe un'ottimizzazione intera per
+    // riottenere lo stesso identico risultato, ed erano la maggioranza dei candidati.
+    const plan = inPlanB.has(p.id)
+      ? planB
+      : optimizeRoster({ players, settings, owned: new Map([...owned, [p.id, price]]), unavailable: withoutSet, ...FAST });
     if (!plan.ok) continue;
     results.push({
       player: p,
       price,
       score: plan.score,
+      // Se e' gia' fra gli obiettivi della rosa senza il giocatore perso, non e' un'alternativa:
+      // quello lo prendi comunque, e proporlo come sostituto fa credere a uno scambio che non
+      // esiste. Perdere un attaccante da centosessanta e sentirsi rispondere "prendi quello da
+      // ventiquattro" e' esattamente questo caso: quello da ventiquattro era gia' in rosa.
+      giaNelPiano: inPlanB.has(p.id),
       // Quanto perdo (o guadagno) rispetto ad avere il giocatore che sto perdendo al suo prezzo atteso.
       deltaVsTarget: planWith.ok ? Math.round((plan.score - planWith.score) * 10) / 10 : null,
       // Quanto guadagno rispetto a non fare nulla e ridistribuire i crediti.
@@ -346,4 +369,83 @@ export function abbinamentoPortiere({ players, settings, plan, owned = new Map()
     .sort((a, b) => (b.score || 0) - (a.score || 0));
   if (!candidati.length) return { titolare, coppia: null, fatto: false };
   return { titolare, coppia: candidati[0], fatto: false };
+}
+
+
+/**
+ * Cosa succede davvero quando perdi un giocatore.
+ *
+ * Elencare dei sostituti non basta e a volte inganna: la risposta giusta quasi mai e' "compra
+ * quest'altro al posto suo", e' "la rosa si riorganizza cosi'". Perdere un attaccante da
+ * centosessanta crediti non significa comprare un altro attaccante da centosessanta ne' ripiegare
+ * su uno da venti: significa che quei crediti si ridistribuiscono, e il piano puo' rifare
+ * l'attacco intero e portarsi dietro difesa e centrocampo.
+ */
+export function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), playerId, piano = null, limite = 4 }) {
+  const perso = players.find((p) => p.id === playerId);
+  if (!perso) return null;
+
+  const prima = piano?.ok ? piano : optimizeRoster({ players, settings, owned, unavailable, ...FAST });
+  const senza = new Set(unavailable);
+  senza.add(playerId);
+  const dopo = optimizeRoster({ players, settings, owned, unavailable: senza, ...FAST });
+  if (!dopo.ok) {
+    return { perso, dopo, impossibile: true, frasi: ['Senza di lui non si chiude una rosa valida: e\' incedibile.'] };
+  }
+
+  const idsPrima = new Set(prima.picks.map((p) => p.id));
+  const idsDopo = new Set(dopo.picks.map((p) => p.id));
+  const entrati = dopo.picks.filter((p) => !idsPrima.has(p.id));
+  const usciti = prima.picks.filter((p) => !idsDopo.has(p.id) && p.id !== playerId);
+
+  const spostamenti = ROLES.map((r) => ({
+    role: r,
+    delta: (dopo.spentByRole[r] || 0) - (prima.spentByRole[r] || 0),
+  })).filter((x) => Math.abs(x.delta) >= 3);
+
+  // Chi prende il suo posto nel reparto: il piu' caro fra chi entra nello stesso ruolo.
+  const sostituto = entrati
+    .filter((p) => p.role === perso.role)
+    .sort((a, b) => b.plannedPrice - a.plannedPrice)[0] || null;
+
+  const prezzoPiano = prima.picks.find((p) => p.id === playerId)?.plannedPrice ?? perso.expectedPrice ?? 0;
+  const costo = Math.max(0, Math.round((prima.score - dopo.score) * 10) / 10);
+  const { alternatives: tutte } = alternatives({ players, settings, owned, unavailable, playerId, limit: 12 });
+
+  const frasi = [];
+  if (sostituto) {
+    frasi.push(`Al suo posto entra ${sostituto.name} a ${sostituto.plannedPrice}.`);
+  } else {
+    frasi.push(`Nessuno lo sostituisce uno a uno: il reparto si rifa' con quello che resta.`);
+  }
+  const liberati = prezzoPiano - (sostituto?.plannedPrice ?? 0);
+  const altrove = spostamenti.filter((x) => x.role !== perso.role && x.delta > 0);
+  if (liberati > 5 && altrove.length) {
+    frasi.push(
+      `I ${liberati} crediti che si liberano vanno su ${altrove
+        .map((x) => `${ROLE_LABEL[x.role].toLowerCase()} (+${x.delta})`)
+        .join(' e ')}.`
+    );
+  }
+  if (entrati.length >= 3) {
+    frasi.push(`Non e' un cambio secco: si riorganizzano ${entrati.length} scelte su quattro reparti.`);
+  }
+  frasi.push(costo > 0 ? `Ti costa ${costo} punti attesi.` : `Non ti costa niente: il piano vale quanto prima.`);
+
+  return {
+    perso,
+    prezzoPiano,
+    prima,
+    dopo,
+    costo,
+    entrati,
+    usciti,
+    spostamenti,
+    sostituto,
+    riorganizzazione: entrati.length >= 3,
+    // Le vere alternative: chi non era gia' destinato a entrare comunque.
+    alternative: tutte.filter((a) => !a.giaNelPiano).slice(0, limite),
+    giaTuoi: tutte.filter((a) => a.giaNelPiano).slice(0, limite),
+    frasi,
+  };
 }

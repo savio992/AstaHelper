@@ -6,7 +6,7 @@ import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domai
 import { valuePlayers, rosterScore, depthWeights } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
-import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase } from '../src/domain/advisor.js';
+import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, CONFIG_ASTA } from '../src/domain/advisor.js';
 import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico } from '../src/domain/strategia.js';
 import { makeContext, makeListone } from './helpers.js';
 
@@ -208,12 +208,14 @@ test('a parita' + "'" + ' di punteggio il piano spende di piu' + "'", () => {
 
 test('maxBid e' + "'" + ' il vero punto di pareggio: sopra conviene il piano B, sotto no', () => {
   const { players, settings } = makeContext();
-  const plan = optimizeRoster({ players, settings, localSearch: false });
+  // La verifica deve usare lo stesso solutore con cui la decisione e' presa, altrimenti misura
+  // il pareggio con un metro diverso da quello che l'ha calcolato.
+  const plan = optimizeRoster({ players, settings, ...CONFIG_ASTA });
   const target = plan.picks.filter((p) => p.role === 'C').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
   const res = maxBid({ players, settings, playerId: target.id });
   assert.ok(res.maxBid > 0);
-  const planB = optimizeRoster({ players, settings, unavailable: new Set([target.id]), localSearch: false });
-  const at = (q) => optimizeRoster({ players, settings, owned: new Map([[target.id, q]]), localSearch: false }).score;
+  const planB = optimizeRoster({ players, settings, unavailable: new Set([target.id]), ...CONFIG_ASTA });
+  const at = (q) => optimizeRoster({ players, settings, owned: new Map([[target.id, q]]), ...CONFIG_ASTA }).score;
   assert.ok(at(res.maxBid) >= planB.score - 1e-6, 'al max bid deve ancora convenire');
   if (res.maxBid < res.hard) {
     assert.ok(at(res.maxBid + 1) < planB.score, 'un credito sopra non deve piu' + "'" + ' convenire');
@@ -551,4 +553,49 @@ test("l'ordine dei reparti si puo' cambiare", () => {
   const { players, settings } = makeContext();
   const alRovescio = { ...settings, auctionOrder: ['A', 'C', 'D', 'P'] };
   assert.equal(faseCorrente(alRovescio, players, new Map()), 'A');
+});
+
+test('le ripartenze recuperano i blocchi che la programmazione dinamica non vede', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const base = optimizeRoster({ players, settings });
+  const conRipartenze = optimizeRoster({ players, settings, ripartenze: 4 });
+  // Non possono peggiorare: si tiene la migliore fra la base e le ripartenze.
+  assert.ok(conRipartenze.score >= base.score - 1e-9);
+  assert.equal(conRipartenze.ok, true);
+});
+
+test('escludere un giocatore non puo\' migliorare il piano con le ripartenze', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const piano = optimizeRoster({ players, settings, ripartenze: 4 });
+  // Il caso che il difetto produceva: togliere la scelta piu' cara faceva salire il punteggio.
+  const caro = piano.picks.slice().sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  const senza = optimizeRoster({ players, settings, unavailable: new Set([caro.id]), ripartenze: 4 });
+  assert.ok(
+    senza.score <= piano.score + 1e-9,
+    `togliere ${caro.name} porta a ${senza.score}, sopra il piano ${piano.score}`
+  );
+});
+
+test('la spiegazione di una perdita racconta la riorganizzazione, non solo un sostituto', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const piano = optimizeRoster({ players, settings, ...CONFIG_ASTA });
+  const caro = piano.picks.filter((p) => p.role === 'A').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  const sp = spiegaPerdita({ players, settings, playerId: caro.id, piano });
+  assert.ok(sp);
+  assert.equal(sp.perso.id, caro.id);
+  assert.ok(sp.costo >= 0, 'perdere un obiettivo non puo\' migliorare la rosa');
+  assert.ok(sp.frasi.length >= 2);
+  // Le vere alternative non possono essere giocatori che avresti comunque.
+  const idsDopo = new Set(sp.dopo.picks.map((p) => p.id));
+  assert.ok(sp.alternative.every((a) => !idsDopo.has(a.player.id)));
+});
+
+test('chi era gia\' nel piano non viene spacciato per alternativa', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const piano = optimizeRoster({ players, settings, ...CONFIG_ASTA });
+  const caro = piano.picks.filter((p) => p.role === 'A').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  const { alternatives: alt } = alternatives({ players, settings, playerId: caro.id, limit: 8 });
+  const planB = optimizeRoster({ players, settings, unavailable: new Set([caro.id]), ...CONFIG_ASTA });
+  const idsB = new Set(planB.picks.map((p) => p.id));
+  for (const a of alt) assert.equal(a.giaNelPiano, idsB.has(a.player.id));
 });

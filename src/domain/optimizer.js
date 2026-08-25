@@ -131,6 +131,7 @@ export function optimizeRoster({
   priceOverride = new Map(),
   prune = true,
   localSearch = true,
+  ripartenze = 0,
 } = {}) {
   const byId = new Map(players.map((p) => [p.id, p]));
   const ownedPlayers = [];
@@ -335,7 +336,7 @@ export function optimizeRoster({
 
   const cost = ownedCost + picks.reduce((s, p) => s + p.plannedPrice, 0);
   const full = [...ownedPlayers.map((p) => ({ ...p, plannedPrice: p.paid })), ...picks];
-  return {
+  const risultato = {
     ok: true,
     picks,
     owned: ownedPlayers,
@@ -347,6 +348,37 @@ export function optimizeRoster({
     budgetCurve,
     budgetLeft,
   };
+
+  if (ripartenze <= 0) return risultato;
+
+  // Ripartenze: la programmazione dinamica e' esatta sulla parte separabile del punteggio, ma
+  // e' cieca alla sinergia, che dipende da quali giocatori stanno insieme e non si puo' scrivere
+  // come somma di contributi individuali. Cosi' capita che il piano compri il giocatore che
+  // massimizza la somma e perda un blocco che varrebbe di piu': sui listoni di prova escludere
+  // l'attaccante piu' caro faceva salire la rosa da 1905 a 1949 punti, perche' la sinergia
+  // passava da 21 a 87.
+  //
+  // Rimedio economico: si riprova togliendo a turno una delle scelte piu' costose e si tiene la
+  // rosa migliore. Non garantisce l'ottimo — quello richiederebbe un modello non separabile —
+  // ma recupera proprio i casi in cui una singola scelta cara sbarra la strada a un blocco.
+  let migliore = risultato;
+  const candidate = picks.slice().sort((a, b) => b.plannedPrice - a.plannedPrice).slice(0, ripartenze);
+  for (const c of candidate) {
+    const escluso = new Set(unavailable);
+    escluso.add(c.id);
+    const alt = optimizeRoster({
+      players,
+      settings,
+      owned,
+      unavailable: escluso,
+      priceOverride,
+      prune,
+      localSearch,
+      ripartenze: 0,
+    });
+    if (alt.ok && alt.score > migliore.score) migliore = alt;
+  }
+  return migliore;
 }
 
 function spendByRole(ownedPlayers, picks) {

@@ -16,9 +16,11 @@ import { valuePlayers, markTopPlayers, rosterScore, expectedShare } from '../src
 import { withExpectedPrices } from '../src/domain/market.js';
 import { statoMercato, applyPrezziLive } from '../src/domain/mercato.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
-import { maxBid, budgetDiFase } from '../src/domain/advisor.js';
+import { maxBid, budgetDiFase, CONFIG_ASTA } from '../src/domain/advisor.js';
 
-const FAST = { prune: true, localSearch: false };
+// La simulazione deve usare lo stesso solutore che finisce in mano all'utente, altrimenti
+// misura un'app che non esiste.
+const FAST = CONFIG_ASTA;
 
 function rng(seed) {
   return function () {
@@ -205,7 +207,7 @@ export function simula({ roster, settings, seed = 1, appLive = true, avversari =
   }
 
   const app = managers[0];
-  app.piano = optimizeRoster({ players, settings, ...FAST });
+  app.piano = optimizeRoster({ players, settings, ...FAST, ripartenze: 4 });
 
   // Si chiama reparto per reparto, dal portiere all'attacco, e dentro ogni reparto dal piu'
   // caro in giu' con un po' di disordine, come succede davvero.
@@ -266,7 +268,7 @@ export function simula({ roster, settings, seed = 1, appLive = true, avversari =
         const merc = statoMercato({ settings, players: base, owned: app.owned, taken: takenGlobale });
         players = markTopPlayers(applyPrezziLive(base, settings, merc), settings);
       }
-      app.piano = optimizeRoster({ players, settings, owned: app.owned, unavailable: venduti, ...FAST });
+      app.piano = optimizeRoster({ players, settings, owned: app.owned, unavailable: venduti, ...FAST, ripartenze: 4 });
     }
     }
   }

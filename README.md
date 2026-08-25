@@ -78,6 +78,33 @@ Si trova per ricerca binaria, ricalcolando il piano a ogni tentativo.
 aver perso l'obiettivo e misura quanto vale ogni possibile sostituto dentro il piano che ne
 risulta. A volte la risposta migliore non e' un altro attaccante, e' spostare i crediti in difesa.
 
+Un elenco di sostituti pero' non basta, e sa ingannare. Perdere un attaccante da centosessanta
+crediti non significa comprarne un altro da centosessanta ne' ripiegare su uno da venti: significa
+che quei crediti si ridistribuiscono e il piano puo' rifare il reparto intero portandosi dietro
+gli altri. Per questo la scheda mostra prima il ragionamento — chi entra al posto suo, dove
+finiscono i crediti che si liberano, quante scelte cambiano e quanto costa in punti — e i nomi
+solo dopo. Chi era gia' destinato a entrare anche senza il giocatore perso viene tenuto da parte
+e detto per quello che e': non un sostituto, ma la rosa che avresti comunque.
+
+**Il solutore durante l'asta** e' lo stesso che calcola il piano. Sembra ovvio e non lo era: per
+risparmiare tempo l'offerta massima veniva calcolata saltando la ricerca locale, e su un listone
+vero l'errore arrivava al cinquanta per cento in entrambe le direzioni — diceva di lasciar perdere
+un giocatore che valeva ottantatre crediti e di spingersi fino a centottantotto per uno che ne
+valeva centoventitre. La ricerca locale e' obbligatoria; il pruning invece non cambia mai il
+risultato e a conti fatti rallenta. Il conto ora sta sotto il secondo, e nel frattempo si vede
+girare la rotella.
+
+**Le ripartenze.** La programmazione dinamica e' esatta sulla parte del punteggio che si puo'
+scrivere come somma di contributi individuali, ma e' cieca alla sinergia, che dipende da quali
+giocatori stanno insieme. Il risultato e' che il piano puo' comprare chi massimizza la somma e
+perdere per strada un blocco che varrebbe di piu': sui listoni di prova la rosa migliore senza
+l'attaccante piu' caro valeva 1949 punti contro i 1905 di quella che lo comprava, perche' la
+sinergia passava da 21 a 87. Un ottimizzatore corretto non puo' migliorare quando gli si toglie
+una scelta, e quello era il sintomo. Il rimedio e' economico: si riprova togliendo a turno una
+delle scelte piu' costose e si tiene la rosa migliore. Non garantisce l'ottimo — servirebbe un
+modello non separabile — ma recupera proprio i casi in cui una singola scelta cara sbarra la
+strada a un blocco, e costa un paio di decimi di secondo.
+
 **I big in rosa.** Lasciato libero, l'ottimizzatore schiva i campioni: costano piu' di quanto
 rendano, e comprare valore e' matematicamente superiore. Ma una rosa senza big non vince le
 giornate, e il premio che il mercato chiede per un campione compra anche qualcosa che il modello
