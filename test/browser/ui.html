@@ -44,7 +44,10 @@ try {
   store.state.ui.tab = 'asta';
   let html = asta.render(noop);
   check('la schermata asta mostra i crediti', html.includes('crediti liberi') && html.includes('500'));
-  check('mostra gli obiettivi ancora liberi', html.includes('Obiettivi ancora liberi'));
+  // Gli obiettivi sono ora tagliati sul reparto in corso, con gli altri piegati sotto.
+  check('mostra gli obiettivi del reparto in corso', /Obiettivi · portieri/.test(html));
+  check('gli obiettivi dei reparti dopo restano raggiungibili', html.includes('Gli obiettivi dei reparti dopo'));
+  check('propone chi sta per essere chiamato', html.includes('i piu&#39; probabili adesso') || html.includes("i piu' probabili adesso"));
   check('ogni obiettivo ha il tocco singolo per dirlo perso', html.includes('data-action="quick-gone"'));
 
   // Seleziono un obiettivo: deve comparire il pannello con offerta massima e alternative.

@@ -358,3 +358,49 @@ export function momentoGiusto({ settings, players, owned, taken, player, tabello
   }
   return { chiama: null, testo: null };
 }
+
+/**
+ * La concorrenza su tutti e quattro i reparti in un colpo solo.
+ * Serve al quadro d'insieme: prima di guardare il singolo giocatore conviene sapere
+ * dove c'e' ancora battaglia e dove il campo si e' liberato.
+ */
+export function concorrenzaPerRuolo({ settings, players = [], owned = new Map(), taken = new Map(), tabellone = null }) {
+  const board = tabellone || avversari({ settings, players, owned, taken });
+  const out = {};
+  for (const role of ROLES) out[role] = concorrenza({ settings, players, owned, taken, role, tabellone: board });
+  return out;
+}
+
+/**
+ * Quanti giocatori di ogni ruolo restano davvero comprabili, e quanti me ne mancano.
+ *
+ * Sono due conteggi diversi che e' facile confondere, ed e' il tipo di confusione che fa
+ * sbagliare un'asta: gli slot ancora in palio dicono quanto mercato resta per tutti, i
+ * giocatori liberi nel listone dicono fra quanti posso ancora scegliere io. In porta possono
+ * restare due soli posti in palio e quaranta portieri disponibili: significa che quei due
+ * posti sono miei e nessuno me li contende.
+ */
+export function disponibilita({ settings, players = [], owned = new Map(), mercato }) {
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const miei = { P: 0, D: 0, C: 0, A: 0 };
+  for (const id of owned.keys()) {
+    const p = byId.get(id);
+    if (p && p.role in miei) miei[p.role] += 1;
+  }
+  const out = {};
+  for (const role of ROLES) {
+    const liberi = players.filter((p) => p.role === role && !mercato.assegnatiIds.has(p.id)).length;
+    const servono = Math.max(0, (settings.slots?.[role] || 0) - miei[role]);
+    out[role] = {
+      role,
+      liberi,
+      inPalio: mercato.residui[role] || 0,
+      servono,
+      presi: miei[role],
+      // Con meno giocatori liberi che slot da riempire non si chiude la rosa: e' l'unico
+      // caso in cui la scarsita' e' un problema vero, e non capita quasi mai.
+      critico: liberi <= servono,
+    };
+  }
+  return out;
+}

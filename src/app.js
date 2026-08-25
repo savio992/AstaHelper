@@ -3,17 +3,19 @@
 import { state, load, save, notify, subscribe, rebuildPlan } from './store.js';
 import * as asta from './ui/asta.js';
 import * as piano from './ui/piano.js';
+import * as mercato from './ui/mercato.js';
 import * as listone from './ui/listone.js';
 import * as setup from './ui/setup.js';
 
 const TABS = [
   ['asta', 'Asta', '🎯'],
+  ['mercato', 'Mercato', '📈'],
   ['piano', 'Piano', '📊'],
   ['listone', 'Listone', '📋'],
   ['setup', 'Lega', '⚙️'],
 ];
 
-const VIEWS = { asta, piano, listone, setup };
+const VIEWS = { asta, mercato, piano, listone, setup };
 
 const root = document.getElementById('app');
 const tabbar = document.getElementById('tabbar');

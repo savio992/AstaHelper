@@ -21,12 +21,18 @@ account. Tutti i dati restano sul dispositivo.
 
 **Durante l'asta**
 
-Resta sulla scheda **Asta**. All'inizio di ogni reparto tocca **Prepara il piano**: ottieni
-obiettivi in ordine, tetto massimo su ciascuno, ripieghi gia' decisi e cosa fare se saltano tutti.
-Poi, mentre si chiama:
+La scheda **Asta** e' tagliata sul reparto in corso e non mostra altro: in cima quanto ti resta,
+sotto chi sta per essere chiamato, poi il piano del reparto e i tuoi obiettivi scoperti. Tutto
+quello che si legge con calma — andamento del mercato, tabellone degli avversari, big rimasti —
+sta nella scheda **Mercato**, che guardi fra un giocatore e l'altro.
 
-- quando chiamano un tuo obiettivo, cercalo (bastano tre lettere) e guarda il numerone
-  dell'**offerta massima**: e' il prezzo oltre il quale conviene lasciarlo andare;
+All'inizio di ogni reparto tocca **Prepara il piano**: ottieni obiettivi in ordine, tetto massimo
+su ciascuno, ripieghi gia' decisi e cosa fare se saltano tutti. Poi, mentre si chiama:
+
+- non serve quasi mai cercare: sotto la casella trovi gia' **i piu' probabili adesso**, cioe' i
+  piu' cari ancora liberi del reparto in corso. Si digita solo per le sorprese;
+- quando chiamano un tuo obiettivo, guarda il numerone dell'**offerta massima**: e' il prezzo
+  oltre il quale conviene lasciarlo andare;
 - quando un giocatore va a un avversario, registralo. Ci sono due velocita', e **entrambe vanno
   bene**: un solo tocco su **✕** nella lista obiettivi (nessuna domanda, nessun prezzo), oppure
   la scheda del giocatore con prezzo e nome di chi se l'e' preso.
@@ -112,6 +118,13 @@ reparto smette di essere un rivale per quanti crediti abbia. Nella simulazione l
 di convenienza su Dimarco e' 395, ma nessun avversario puo' superare 85: il verdetto e'
 *"e' tuo a 86, non offrire di piu'"*, e sono trecento crediti risparmiati. Senza attribuzione i
 numeri diventano un limite superiore, ed e' dichiarato.
+
+**Posti in palio e nomi liberi** sono due conteggi diversi che e' facile confondere, ed e' il tipo
+di confusione che fa sbagliare un'asta. I posti ancora in palio dicono quanto mercato resta per
+tutti; i nomi liberi dicono fra quanti puoi ancora scegliere tu. A meta' asta possono restare due
+soli posti da portiere e quaranta portieri disponibili: significa che quei due posti sono i tuoi e
+nessuno te li contende, quindi li prendi per un credito invece di rilanciare. L'app lo dice a
+parole in cima alla schermata, perche' i due numeri accostati si leggono al contrario.
 
 **L'abbinamento dei portieri** e' il consiglio che i creators ripetono a ogni guida, e qui e' un
 vincolo del piano. In Classic se ne schiera uno solo ma se ne possiedono tre: il secondo non serve

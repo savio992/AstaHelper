@@ -118,7 +118,10 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
   left: 0; right: 0; bottom: 0;
   z-index: 40;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* Il numero di schede e' dichiarato dal codice: cinque non stanno in quattro colonne
+     e la barra andava a capo coprendo il contenuto. */
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   background: var(--surface);
   border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom);
@@ -126,17 +129,19 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .tabbar button {
   background: none;
   border: 0;
-  padding: 9px 4px 10px;
-  font-size: 11px;
+  padding: 9px 2px 10px;
+  font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 0.2px;
+  letter-spacing: 0;
+  min-width: 0;
+  white-space: nowrap;
   color: var(--muted);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 3px;
 }
-.tabbar button .ico { font-size: 21px; line-height: 1; }
+.tabbar button .ico { font-size: 20px; line-height: 1; }
 .tabbar button[aria-current='true'] { color: var(--accent); }
 
 /* --- componenti ------------------------------------------------------ */
@@ -2595,7 +2600,53 @@ function momentoGiusto({ settings, players, owned, taken, player, tabellone = nu
   return { chiama: null, testo: null };
 }
 
-return { normalizeTaken, nomiSquadre, statoMercato, prezziLive, applyPrezziLive, avversari, concorrenza, verdettoConcorrenza, momentoGiusto };
+/**
+ * La concorrenza su tutti e quattro i reparti in un colpo solo.
+ * Serve al quadro d'insieme: prima di guardare il singolo giocatore conviene sapere
+ * dove c'e' ancora battaglia e dove il campo si e' liberato.
+ */
+function concorrenzaPerRuolo({ settings, players = [], owned = new Map(), taken = new Map(), tabellone = null }) {
+  const board = tabellone || avversari({ settings, players, owned, taken });
+  const out = {};
+  for (const role of ROLES) out[role] = concorrenza({ settings, players, owned, taken, role, tabellone: board });
+  return out;
+}
+
+/**
+ * Quanti giocatori di ogni ruolo restano davvero comprabili, e quanti me ne mancano.
+ *
+ * Sono due conteggi diversi che e' facile confondere, ed e' il tipo di confusione che fa
+ * sbagliare un'asta: gli slot ancora in palio dicono quanto mercato resta per tutti, i
+ * giocatori liberi nel listone dicono fra quanti posso ancora scegliere io. In porta possono
+ * restare due soli posti in palio e quaranta portieri disponibili: significa che quei due
+ * posti sono miei e nessuno me li contende.
+ */
+function disponibilita({ settings, players = [], owned = new Map(), mercato }) {
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const miei = { P: 0, D: 0, C: 0, A: 0 };
+  for (const id of owned.keys()) {
+    const p = byId.get(id);
+    if (p && p.role in miei) miei[p.role] += 1;
+  }
+  const out = {};
+  for (const role of ROLES) {
+    const liberi = players.filter((p) => p.role === role && !mercato.assegnatiIds.has(p.id)).length;
+    const servono = Math.max(0, (settings.slots?.[role] || 0) - miei[role]);
+    out[role] = {
+      role,
+      liberi,
+      inPalio: mercato.residui[role] || 0,
+      servono,
+      presi: miei[role],
+      // Con meno giocatori liberi che slot da riempire non si chiude la rosa: e' l'unico
+      // caso in cui la scarsita' e' un problema vero, e non capita quasi mai.
+      critico: liberi <= servono,
+    };
+  }
+  return out;
+}
+
+return { normalizeTaken, nomiSquadre, statoMercato, prezziLive, applyPrezziLive, avversari, concorrenza, verdettoConcorrenza, momentoGiusto, concorrenzaPerRuolo, disponibilita };
 })();
 
 // ===== src/store.js =====
@@ -3259,137 +3310,6 @@ function abbinamentoPortiere({ players, settings, plan, owned = new Map(), unava
 return { maxSpendableNow, slotsLeftByRole, faseCorrente, budgetDiFase, maxBid, alternatives, planDiff, tierBudgetReport, pianoDiReparto, abbinamentoPortiere };
 })();
 
-// ===== src/domain/strategia.js =====
-const __m_src_domain_strategia_js = (() => {
-// Quando salta il piano, non basta sapere chi prendere al posto di uno: serve capire
-// che la strada e' cambiata. Se i big di un reparto finiscono tutti, i crediti che avevi
-// messo da parte per loro vanno spostati, e conviene saperlo prima che sia troppo tardi.
-
-const { ROLES, ROLE_LABEL } = __m_src_domain_model_js;
-const { optimizeRoster } = __m_src_domain_optimizer_js;
-
-/** Quanti giocatori di prima fascia restano liberi, reparto per reparto. */
-function bigRimasti(players, { owned = new Map(), unavailable = new Set() } = {}) {
-  const out = {};
-  for (const role of ROLES) {
-    const liberi = players.filter((p) => p.role === role && p.isTop && !owned.has(p.id) && !unavailable.has(p.id));
-    const miei = [...owned.keys()]
-      .map((id) => players.find((p) => p.id === id))
-      .filter((p) => p && p.role === role && p.isTop).length;
-    out[role] = { liberi: liberi.length, miei, nomi: liberi.sort((a, b) => b.score - a.score).slice(0, 3).map((p) => p.name) };
-  }
-  return out;
-}
-
-/**
- * Il piano che resterebbe se tutti i big ancora liberi finissero agli avversari.
- * Se `role` e' indicato riguarda solo quel reparto, altrimenti tutti.
- */
-function scenarioSenzaBig({ players, settings, owned = new Map(), unavailable = new Set(), role = null }) {
-  const persi = new Set(unavailable);
-  for (const p of players) {
-    if (!p.isTop || owned.has(p.id)) continue;
-    if (role && p.role !== role) continue;
-    persi.add(p.id);
-  }
-  return optimizeRoster({ players, settings, owned, unavailable: persi, localSearch: false });
-}
-
-/** Chi entra e chi esce fra due piani, e come si spostano i crediti fra i reparti. */
-function confrontaPiani(prima, dopo) {
-  const a = new Map((prima?.picks || []).map((p) => [p.id, p]));
-  const b = new Map((dopo?.picks || []).map((p) => [p.id, p]));
-  const entrati = [...b.values()].filter((p) => !a.has(p.id)).sort((x, y) => y.plannedPrice - x.plannedPrice);
-  const usciti = [...a.values()].filter((p) => !b.has(p.id)).sort((x, y) => y.plannedPrice - x.plannedPrice);
-  const spostamenti = {};
-  for (const role of ROLES) {
-    spostamenti[role] = (dopo?.spentByRole?.[role] ?? 0) - (prima?.spentByRole?.[role] ?? 0);
-  }
-  return { entrati, usciti, spostamenti };
-}
-
-/**
- * Traduce il cambio di piano in frasi.
- * Si citano solo i movimenti che contano davvero: un riempitivo da un credito che ne sostituisce
- * un altro non e' una notizia, mentre venti crediti che passano dall'attacco al centrocampo si'.
- */
-function narrazione({ prima, dopo, settings, soglia = null }) {
-  if (!prima?.ok || !dopo?.ok) return [];
-  const { entrati, usciti, spostamenti } = confrontaPiani(prima, dopo);
-  const minimo = soglia ?? Math.max(6, Math.round((settings.budget || 500) * 0.02));
-  const frasi = [];
-
-  const mosse = ROLES.map((role) => ({ role, delta: spostamenti[role] }))
-    .filter((x) => Math.abs(x.delta) >= minimo)
-    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
-
-  if (mosse.length) {
-    const su = mosse.filter((m) => m.delta > 0);
-    const giu = mosse.filter((m) => m.delta < 0);
-    if (su.length && giu.length) {
-      frasi.push(
-        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
-          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
-      );
-    } else if (su.length) {
-      frasi.push(`Ora c'e' piu' budget per ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
-    }
-  }
-
-  const nuoviObiettivi = entrati.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 3);
-  if (nuoviObiettivi.length) {
-    frasi.push(`Nuovi obiettivi: ${nuoviObiettivi.map((p) => `${p.name} (${p.plannedPrice})`).join(', ')}.`);
-  }
-
-  const rinunce = usciti.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 2);
-  if (rinunce.length && !nuoviObiettivi.length) {
-    frasi.push(`Esce dal piano ${rinunce.map((p) => p.name).join(' e ')}.`);
-  }
-
-  return frasi;
-}
-
-/**
- * Il consiglio strategico complessivo sullo stato attuale dell'asta.
- * Guarda quanti big restano e cosa succederebbe perdendoli tutti: se il piano regge, non c'e'
- * niente da dire; se crolla, conviene muoversi adesso invece di restare senza.
- */
-function consiglioStrategico({ players, settings, owned = new Map(), unavailable = new Set(), piano }) {
-  if (!piano?.ok) return null;
-  const big = bigRimasti(players, { owned, unavailable });
-  const avvisi = [];
-
-  for (const role of ROLES) {
-    const richiesti = Math.max(0, Math.round(settings.minTop?.[role] ?? 0));
-    if (!richiesti) continue;
-    const { liberi, miei, nomi } = big[role];
-    if (miei >= richiesti) continue;
-
-    if (liberi === 0) {
-      const scenario = scenarioSenzaBig({ players, settings, owned, unavailable, role });
-      const frasi = narrazione({ prima: piano, dopo: scenario, settings });
-      avvisi.push({
-        role,
-        gravita: 'finiti',
-        titolo: `I big in ${ROLE_LABEL[role].toLowerCase()} sono finiti.`,
-        testo: frasi.length ? frasi.join(' ') : 'Il piano si e\' gia\' adattato senza di loro.',
-      });
-    } else if (liberi <= richiesti - miei) {
-      avvisi.push({
-        role,
-        gravita: 'ultimi',
-        titolo: `Restano ${liberi} big in ${ROLE_LABEL[role].toLowerCase()}: ${nomi.join(', ')}.`,
-        testo: `Te ne serve ${richiesti - miei}. Se li perdi tutti devi cambiare strada.`,
-      });
-    }
-  }
-
-  return { big, avvisi };
-}
-
-return { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico };
-})();
-
 // ===== src/ui/common.js =====
 const __m_src_ui_common_js = (() => {
 // Utilita' condivise di rendering. Niente framework: template string + delega degli eventi.
@@ -3496,8 +3416,7 @@ const __m_src_ui_asta_js = (() => {
 const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } = __m_src_domain_model_js;
 const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere } = __m_src_domain_advisor_js;
-const { concorrenza, verdettoConcorrenza, nomiSquadre } = __m_src_domain_mercato_js;
-const { consiglioStrategico, scenarioSenzaBig, narrazione } = __m_src_domain_strategia_js;
+const { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } = __m_src_domain_mercato_js;
 const { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } = __m_src_ui_common_js;
 
 // I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
@@ -3510,7 +3429,6 @@ function cacheKey() {
 
 function invalidate() {
   cache = { key: null, bid: null, alts: null };
-  scenario = null;
   reparto = null;
 }
 
@@ -3573,115 +3491,51 @@ function hud() {
       <span class="muted"><b class="mono" style="color:var(--${sforato ? 'danger' : 'text'})">${fase.perLaFase}</b> per il reparto ·
         <b class="mono">${fase.riservatoDopo}</b> riservati al resto</span>
     </div>
+    ${climaCard(fase)}
   </div>`;
 }
 
 /**
- * Il conto del mercato.
+ * La riga che dice com'e' l'aria nel reparto in corso.
  *
- * Risponde alla domanda che regge tutto il resto: quanti giocatori restano davvero e quanti
- * crediti ci sono ancora in giro per comprarli. Gli slot sono un conteggio esatto, i crediti
- * dipendono da quanti prezzi ho registrato: la copertura si dichiara, cosi' so quanto fidarmi.
+ * Sono due conteggi che e' facilissimo confondere e che decidono il prezzo: quanti posti
+ * restano in palio in tutta la lega, e quanti giocatori restano liberi fra cui scegliere.
+ * Possono essere due posti e quaranta nomi: vuol dire che quei posti sono miei e nessuno
+ * me li contende, ed e' il momento di prenderli per un credito invece di rilanciare.
  */
-function mercatoCard() {
-  const m = state.mercato;
-  if (!m || !m.slotAssegnati) return '';
-  const inf = m.inflazioneGlobale;
-  const lambda = state.players[0]?.lambdaMercato ?? 1;
-  const salita = lambda > 1.08;
-  const discesa = lambda < 0.92;
+function climaCard(fase) {
+  if (!state.mercato) return '';
+  const owned = ownedMap();
+  const c = concorrenza({
+    settings: state.settings,
+    players: state.players,
+    owned,
+    taken: takenMap(),
+    role: fase.fase,
+    tabellone: state.tabellone,
+  });
+  const d = disponibilita({ settings: state.settings, players: state.players, owned, mercato: state.mercato })[fase.fase];
+  if (!d.servono) return '';
 
-  return `
-  <div class="card">
-    <div class="row between" style="margin-bottom:10px">
-      <h2 style="margin:0">Il mercato</h2>
-      <span class="tiny muted">${m.slotAssegnati} di ${m.slotTotaliLega} assegnati</span>
-    </div>
-
-    <div class="slotbar">
-      ${ROLES.map(
-        (r) => `<div><b class="mono">${m.residui[r]}</b><span>${ROLE_LABEL_SHORT[r].toUpperCase()} liberi</span></div>`
-      ).join('')}
-    </div>
-
-    <div class="row between small" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
-      <span class="muted">crediti ancora in circolazione</span>
-      <span class="mono"><b>${m.creditiResidui}</b> <span class="muted">di ${m.creditiTotali}</span></span>
-    </div>
-    <div class="row between small" style="margin-top:6px">
-      <span class="muted">di cui davvero contendibili</span>
-      <span class="mono"><b>${m.discrezionali}</b> <span class="muted">· ${m.slotResidui} slot da riempire</span></span>
-    </div>
-
-    ${
-      m.affidabile
-        ? `<div class="verdict ${salita ? 'stop' : discesa ? 'go' : 'edge'}" style="margin-top:12px;text-align:left">
-             <div>${
-               salita
-                 ? 'I prezzi stanno salendo.'
-                 : discesa
-                   ? 'Il mercato si sta svuotando: da qui in avanti si compra meglio.'
-                   : 'Il mercato sta pagando quello che diceva il listone.'
-             }</div>
-             <div class="small" style="font-weight:500;margin-top:4px">
-               Finora si e' pagato il ${Math.round((inf - 1) * 100) >= 0 ? '+' : ''}${Math.round((inf - 1) * 100)}% rispetto alle stime.
-               Le stime dei giocatori ancora liberi sono state corrette di conseguenza${discesa ? ' verso il basso' : salita ? ' verso l&#39;alto' : ''}.
-             </div>
-           </div>`
-        : `<div class="tiny muted" style="margin-top:12px">Ancora poche aggiudicazioni per misurare l&#39;inflazione dell&#39;asta.</div>`
-    }
-
-    ${
-      m.copertura < 0.999
-        ? `<div class="tiny muted" style="margin-top:8px">
-             ${m.senzaPrezzo} aggiudicazioni registrate senza prezzo: per quelle uso la stima.
-             Registrare la cifra vera rende esatto il conto dei crediti.
-           </div>`
-        : ''
-    }
-  </div>`;
-}
-
-/**
- * Il tabellone degli avversari: quanto puo' ancora offrire ciascuno su un singolo giocatore.
- * E' il numero piu' decisivo dell'asta, perche' un giocatore costa quanto il secondo miglior
- * offerente puo' pagare, non quanto vale.
- */
-function tabelloneCard() {
-  const board = state.tabellone;
-  if (!board) return '';
-  const attivi = board.squadre.filter((s) => s.presi > 0);
-  if (!attivi.length) return '';
-  const righe = board.squadre
-    .slice()
-    .sort((a, b) => b.massimo - a.massimo)
-    .map(
-      (s) => `<tr${s.io ? ' style="font-weight:700"' : ''}>
-        <td>${esc(s.nome)}</td>
-        <td class="r">${s.presi}/${state.mercato?.rosa ?? 25}</td>
-        <td class="r">${s.residuo}</td>
-        <td class="r"><b>${s.massimo}</b></td>
-      </tr>`
-    )
-    .join('');
-  return `
-  <div class="card">
-    <details${board.attendibile ? '' : ' open'}>
-      <summary><b>Tabellone avversari</b> <span class="tiny muted">— fin dove possono spingersi</span></summary>
-      <table class="tiers" style="margin-top:10px">
-        <thead><tr><th>Squadra</th><th class="r">Rosa</th><th class="r">Crediti</th><th class="r">Max</th></tr></thead>
-        <tbody>${righe}</tbody>
-      </table>
-      ${
-        board.attendibile
-          ? '<div class="tiny muted" style="margin-top:8px">Numeri esatti: ogni acquisto e&#39; attribuito.</div>'
-          : `<div class="tiny muted" style="margin-top:8px">
-               ${board.nonAttribuiti} acquisti non attribuiti a nessuno: questi massimi sono un limite superiore.
-               Quando segni un giocatore come preso, tocca anche la squadra che se l&#39;e&#39; aggiudicato.
-             </div>`
-      }
-    </details>
-  </div>`;
+  let frase;
+  let colore;
+  if (!c.quanti) {
+    frase =
+      d.servono === 1
+        ? `Nessuno te lo contende piu': l'ultimo lo prendi a un credito.`
+        : `Nessuno te li contende piu': i tuoi ${d.servono} li prendi a un credito l'uno.`;
+    colore = 'accent';
+  } else if (d.critico) {
+    frase = `Restano ${d.liberi} nomi liberi e te ne servono ${d.servono}: non puoi permetterti di perderne.`;
+    colore = 'danger';
+  } else if (!c.attendibile) {
+    frase = `${c.quanti} avversari ne cercano ancora. Segna a chi vanno i giocatori e ti dico fin dove possono spingersi.`;
+    colore = 'muted';
+  } else {
+    frase = `${c.quanti} avversari ne cercano ancora, il piu' ricco puo' arrivare a ${c.massimo}. Nomi liberi: ${d.liberi}.`;
+    colore = 'text';
+  }
+  return `<div class="small" style="margin-top:8px;color:var(--${colore})">${frase}</div>`;
 }
 
 /**
@@ -3947,78 +3801,6 @@ function altsCard(p, alts) {
   </div>`;
 }
 
-// Lo scenario "se finiscono i big" si calcola su richiesta: sono ottimizzazioni complete.
-let scenario = null;
-
-/**
- * La bussola strategica: quanti big restano, cosa e' cambiato dopo l'ultima assegnazione,
- * e cosa succederebbe restando senza. E' la differenza fra sapere chi prendere al posto di uno
- * e capire che la strada e' cambiata.
- */
-function strategiaCard() {
-  const plan = state.plan;
-  if (!plan?.ok) return '';
-  const owned = ownedMap();
-  const unavailable = unavailableSet();
-  const consiglio = consiglioStrategico({ players: state.players, settings: state.settings, owned, unavailable, piano: plan });
-  if (!consiglio) return '';
-
-  const cambiamenti = state.prevPlan
-    ? narrazione({ prima: state.prevPlan, dopo: plan, settings: state.settings })
-    : [];
-
-  const bigRow = ROLES.map((r) => {
-    const b = consiglio.big[r];
-    const richiesti = Math.max(0, Math.round(state.settings.minTop?.[r] ?? 0));
-    const colore = b.miei >= richiesti && richiesti > 0 ? 'accent' : b.liberi === 0 ? 'danger' : b.liberi <= 2 ? 'warn' : 'muted';
-    return `<div><b class="mono" style="color:var(--${colore})">${b.miei}/${b.liberi}</b><span>${r}</span></div>`;
-  }).join('');
-
-  return `
-  <div class="card">
-    <div class="row between" style="margin-bottom:8px">
-      <h2 style="margin:0">Strategia</h2>
-      <span class="tiny muted">big: tuoi / ancora liberi</span>
-    </div>
-    <div class="slotbar">${bigRow}</div>
-
-    ${
-      cambiamenti.length
-        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
-             <div class="tiny muted" style="margin-bottom:4px">dopo l'ultima assegnazione</div>
-             <div class="small">${cambiamenti.map((f) => esc(f)).join(' ')}</div>
-           </div>`
-        : ''
-    }
-
-    ${consiglio.avvisi
-      .map(
-        (a) => `<div class="verdict ${a.gravita === 'finiti' ? 'stop' : 'edge'}" style="margin-top:12px;text-align:left">
-          <div>${esc(a.titolo)}</div>
-          <div class="small" style="font-weight:500;margin-top:4px">${esc(a.testo)}</div>
-        </div>`
-      )
-      .join('')}
-
-    ${
-      scenario
-        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
-             <div class="row between" style="margin-bottom:6px">
-               <b class="small">Se non prendi nessun big in ${esc(ROLE_LABEL[scenario.role].toLowerCase())}</b>
-               <button class="btn ghost tiny" data-action="chiudi-scenario">chiudi</button>
-             </div>
-             <div class="small">${scenario.frasi.map((f) => esc(f)).join(' ') || 'Il piano non cambierebbe granche&#39;.'}</div>
-             <div class="tiny muted" style="margin-top:6px">costo del cambio: ${scenario.costo} punti</div>
-           </div>`
-        : `<div class="segment" style="margin-top:12px">
-             ${ROLES.filter((r) => consiglio.big[r].liberi > 0)
-               .map((r) => `<button data-action="scenario" data-role="${r}">se perdo i big ${r}</button>`)
-               .join('')}
-           </div>`
-    }
-  </div>`;
-}
-
 // Il piano del reparto costa una decina di ottimizzazioni complete: si prepara su richiesta
 // e vale finche' non cambia nulla.
 let reparto = null;
@@ -4153,35 +3935,81 @@ function targetsCard() {
   if (!plan?.ok) return '';
   const pending = plan.picks.filter((p) => !state.auction.owned[p.id] && !state.auction.taken[p.id]);
   if (!pending.length) return '';
-  const byRole = {};
-  for (const p of pending) (byRole[p.role] ||= []).push(p);
+  const fase = budgetDiFase({ settings: state.settings, players: state.players, owned: ownedMap(), plan });
+  const adesso = pending.filter((p) => p.role === fase.fase).sort((a, b) => b.plannedPrice - a.plannedPrice);
+  const dopo = ROLES.filter((r) => r !== fase.fase).flatMap((r) =>
+    pending.filter((p) => p.role === r).sort((a, b) => b.plannedPrice - a.plannedPrice)
+  );
+
+  const riga = (p) => `<li>
+    ${roleChip(p.role)}
+    <div class="grow" data-action="select" data-id="${esc(p.id)}">
+      <div class="nm">${esc(p.name)}</div>
+      <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+    </div>
+    <div class="pr mono" data-action="select" data-id="${esc(p.id)}">${p.plannedPrice}<small>a piano</small></div>
+    <button class="btn danger" style="min-width:46px;padding:10px" data-action="quick-gone" data-id="${esc(p.id)}" aria-label="Preso da un avversario">✕</button>
+  </li>`;
+
   return `
   <div class="card">
     <div class="row between" style="margin-bottom:8px">
-      <h2 style="margin:0">Obiettivi ancora liberi</h2>
-      <span class="tiny muted">${pending.length}</span>
+      <h2 style="margin:0">Obiettivi · ${esc(fase.etichetta.toLowerCase())}</h2>
+      <span class="tiny muted">${adesso.length}</span>
     </div>
-    <div class="tiny muted" style="margin-bottom:10px">
-      Durante l'asta tocca <b>✕</b> quando uno di questi va a un avversario: un solo tocco, senza prezzo.
-      Gli altri giocatori puoi ignorarli.
-    </div>
-    <div class="listwrap">
-      <ul class="plist">
-        ${ROLES.flatMap((r) => (byRole[r] || []).sort((a, b) => b.plannedPrice - a.plannedPrice))
-          .map(
-            (p) => `<li>
-              ${roleChip(p.role)}
-              <div class="grow" data-action="select" data-id="${esc(p.id)}">
-                <div class="nm">${esc(p.name)}</div>
-                <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
-              </div>
-              <div class="pr mono" data-action="select" data-id="${esc(p.id)}">${p.plannedPrice}<small>a piano</small></div>
-              <button class="btn danger" style="min-width:46px;padding:10px" data-action="quick-gone" data-id="${esc(p.id)}" aria-label="Preso da un avversario">✕</button>
-            </li>`
-          )
-          .join('')}
-      </ul>
-    </div>
+    ${
+      adesso.length
+        ? `<div class="tiny muted" style="margin-bottom:10px">
+             Tocca <b>✕</b> quando uno di questi va a un avversario: un solo tocco, senza prezzo.
+           </div>
+           <div class="listwrap"><ul class="plist">${adesso.map(riga).join('')}</ul></div>`
+        : `<div class="small muted" style="padding:6px 0">Nessun obiettivo scoperto in questo reparto.</div>`
+    }
+    ${
+      dopo.length
+        ? `<details style="margin-top:12px">
+             <summary class="small muted">Gli obiettivi dei reparti dopo (${dopo.length})</summary>
+             <div class="listwrap" style="margin-top:8px"><ul class="plist">${dopo.map(riga).join('')}</ul></div>
+           </details>`
+        : ''
+    }
+  </div>`;
+}
+
+/**
+ * Chi sta per essere chiamato.
+ *
+ * Digitare mentre il banditore urla un nome e' il vero attrito di questa schermata, e quasi
+ * sempre e' inutile: in un'asta per reparto si chiamano i piu' cari del ruolo in corso, che
+ * l'app conosce gia'. La ricerca resta li' per le sorprese.
+ */
+function prossimeChiamate() {
+  if (!state.plan?.ok) return '';
+  const owned = ownedMap();
+  const fase = budgetDiFase({ settings: state.settings, players: state.players, owned, plan: state.plan });
+  const obiettivi = new Set((state.plan.picks || []).map((p) => p.id));
+  // Il filtro in alto vale anche qui: se scelgo un ruolo voglio vedere quello, non la fase.
+  const ruolo = state.ui.roleFilter === 'ALL' ? fase.fase : state.ui.roleFilter;
+  const lista = state.players
+    .filter(
+      (p) =>
+        p.role === ruolo &&
+        state.auction.owned[p.id] === undefined &&
+        state.auction.taken[p.id] === undefined
+    )
+    .sort((a, b) => (b.expectedPrice ?? 0) - (a.expectedPrice ?? 0))
+    .slice(0, 6);
+  if (!lista.length) return '';
+  return `
+  <div style="margin-top:12px">
+    <div class="tiny muted" style="margin-bottom:6px">${
+      state.ui.roleFilter === 'ALL' ? "i piu' probabili adesso — tocca senza cercare" : `i piu' cari ancora liberi — ${esc(ROLE_LABEL[ruolo].toLowerCase())}`
+    }</div>
+    <div class="listwrap"><ul class="plist">
+      ${lista
+        .map((p) => playerRow(p, { inPlan: obiettivi.has(p.id), selected: p.id === state.ui.selectedId }))
+        .join('')}
+    </ul></div>
   </div>`;
 }
 
@@ -4231,17 +4059,14 @@ function render(rerender) {
               .join('')}</ul></div>`
           : q.trim()
             ? `<div class="small muted center" style="padding:14px">Nessun giocatore trovato.</div>`
-            : ''
+            : prossimeChiamate()
       }
     </div>
 
     ${selected ? detail(selected) : ''}
     ${!selected && !state.auction.log.length ? readyCard() : ''}
     ${selected ? '' : repartoCard()}
-    ${selected ? '' : mercatoCard()}
-    ${selected ? '' : strategiaCard()}
     ${selected ? '' : targetsCard()}
-    ${selected ? '' : tabelloneCard()}
 
     <div class="row" style="gap:10px">
       <button class="btn grow" data-action="undo" ${state.auction.log.length ? '' : 'disabled'}>↩︎ Annulla ultima</button>
@@ -4319,27 +4144,6 @@ function onAction(action, target, ev, rerender) {
     case 'reparto':
       reparto = null;
       buildReparto(rerender);
-      rerender();
-      return true;
-    case 'scenario': {
-      const role = target.dataset.role;
-      const dopo = scenarioSenzaBig({
-        players: state.players,
-        settings: state.settings,
-        owned: ownedMap(),
-        unavailable: unavailableSet(),
-        role,
-      });
-      scenario = {
-        role,
-        frasi: narrazione({ prima: state.plan, dopo, settings: state.settings }),
-        costo: Math.max(0, Math.round(state.plan.score - dopo.score)),
-      };
-      rerender();
-      return true;
-    }
-    case 'chiudi-scenario':
-      scenario = null;
       rerender();
       return true;
     case 'goto':
@@ -4632,6 +4436,397 @@ function onAction(action, target, ev, rerender) {
 }
 
 return { render, onAction };
+})();
+
+// ===== src/domain/strategia.js =====
+const __m_src_domain_strategia_js = (() => {
+// Quando salta il piano, non basta sapere chi prendere al posto di uno: serve capire
+// che la strada e' cambiata. Se i big di un reparto finiscono tutti, i crediti che avevi
+// messo da parte per loro vanno spostati, e conviene saperlo prima che sia troppo tardi.
+
+const { ROLES, ROLE_LABEL } = __m_src_domain_model_js;
+const { optimizeRoster } = __m_src_domain_optimizer_js;
+
+/** Quanti giocatori di prima fascia restano liberi, reparto per reparto. */
+function bigRimasti(players, { owned = new Map(), unavailable = new Set() } = {}) {
+  const out = {};
+  for (const role of ROLES) {
+    const liberi = players.filter((p) => p.role === role && p.isTop && !owned.has(p.id) && !unavailable.has(p.id));
+    const miei = [...owned.keys()]
+      .map((id) => players.find((p) => p.id === id))
+      .filter((p) => p && p.role === role && p.isTop).length;
+    out[role] = { liberi: liberi.length, miei, nomi: liberi.sort((a, b) => b.score - a.score).slice(0, 3).map((p) => p.name) };
+  }
+  return out;
+}
+
+/**
+ * Il piano che resterebbe se tutti i big ancora liberi finissero agli avversari.
+ * Se `role` e' indicato riguarda solo quel reparto, altrimenti tutti.
+ */
+function scenarioSenzaBig({ players, settings, owned = new Map(), unavailable = new Set(), role = null }) {
+  const persi = new Set(unavailable);
+  for (const p of players) {
+    if (!p.isTop || owned.has(p.id)) continue;
+    if (role && p.role !== role) continue;
+    persi.add(p.id);
+  }
+  return optimizeRoster({ players, settings, owned, unavailable: persi, localSearch: false });
+}
+
+/** Chi entra e chi esce fra due piani, e come si spostano i crediti fra i reparti. */
+function confrontaPiani(prima, dopo) {
+  const a = new Map((prima?.picks || []).map((p) => [p.id, p]));
+  const b = new Map((dopo?.picks || []).map((p) => [p.id, p]));
+  const entrati = [...b.values()].filter((p) => !a.has(p.id)).sort((x, y) => y.plannedPrice - x.plannedPrice);
+  const usciti = [...a.values()].filter((p) => !b.has(p.id)).sort((x, y) => y.plannedPrice - x.plannedPrice);
+  const spostamenti = {};
+  for (const role of ROLES) {
+    spostamenti[role] = (dopo?.spentByRole?.[role] ?? 0) - (prima?.spentByRole?.[role] ?? 0);
+  }
+  return { entrati, usciti, spostamenti };
+}
+
+/**
+ * Traduce il cambio di piano in frasi.
+ * Si citano solo i movimenti che contano davvero: un riempitivo da un credito che ne sostituisce
+ * un altro non e' una notizia, mentre venti crediti che passano dall'attacco al centrocampo si'.
+ */
+function narrazione({ prima, dopo, settings, soglia = null }) {
+  if (!prima?.ok || !dopo?.ok) return [];
+  const { entrati, usciti, spostamenti } = confrontaPiani(prima, dopo);
+  const minimo = soglia ?? Math.max(6, Math.round((settings.budget || 500) * 0.02));
+  const frasi = [];
+
+  const mosse = ROLES.map((role) => ({ role, delta: spostamenti[role] }))
+    .filter((x) => Math.abs(x.delta) >= minimo)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  if (mosse.length) {
+    const su = mosse.filter((m) => m.delta > 0);
+    const giu = mosse.filter((m) => m.delta < 0);
+    if (su.length && giu.length) {
+      frasi.push(
+        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
+          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+      );
+    } else if (su.length) {
+      frasi.push(`Ora c'e' piu' budget per ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+    }
+  }
+
+  const nuoviObiettivi = entrati.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 3);
+  if (nuoviObiettivi.length) {
+    frasi.push(`Nuovi obiettivi: ${nuoviObiettivi.map((p) => `${p.name} (${p.plannedPrice})`).join(', ')}.`);
+  }
+
+  const rinunce = usciti.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 2);
+  if (rinunce.length && !nuoviObiettivi.length) {
+    frasi.push(`Esce dal piano ${rinunce.map((p) => p.name).join(' e ')}.`);
+  }
+
+  return frasi;
+}
+
+/**
+ * Il consiglio strategico complessivo sullo stato attuale dell'asta.
+ * Guarda quanti big restano e cosa succederebbe perdendoli tutti: se il piano regge, non c'e'
+ * niente da dire; se crolla, conviene muoversi adesso invece di restare senza.
+ */
+function consiglioStrategico({ players, settings, owned = new Map(), unavailable = new Set(), piano }) {
+  if (!piano?.ok) return null;
+  const big = bigRimasti(players, { owned, unavailable });
+  const avvisi = [];
+
+  for (const role of ROLES) {
+    const richiesti = Math.max(0, Math.round(settings.minTop?.[role] ?? 0));
+    if (!richiesti) continue;
+    const { liberi, miei, nomi } = big[role];
+    if (miei >= richiesti) continue;
+
+    if (liberi === 0) {
+      const scenario = scenarioSenzaBig({ players, settings, owned, unavailable, role });
+      const frasi = narrazione({ prima: piano, dopo: scenario, settings });
+      avvisi.push({
+        role,
+        gravita: 'finiti',
+        titolo: `I big in ${ROLE_LABEL[role].toLowerCase()} sono finiti.`,
+        testo: frasi.length ? frasi.join(' ') : 'Il piano si e\' gia\' adattato senza di loro.',
+      });
+    } else if (liberi <= richiesti - miei) {
+      avvisi.push({
+        role,
+        gravita: 'ultimi',
+        titolo: `Restano ${liberi} big in ${ROLE_LABEL[role].toLowerCase()}: ${nomi.join(', ')}.`,
+        testo: `Te ne serve ${richiesti - miei}. Se li perdi tutti devi cambiare strada.`,
+      });
+    }
+  }
+
+  return { big, avvisi };
+}
+
+return { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico };
+})();
+
+// ===== src/ui/mercato.js =====
+const __m_src_ui_mercato_js = (() => {
+// Quello che si legge fra un giocatore e l'altro: com'e' andata finora, chi ha ancora crediti,
+// e se la strada e' cambiata. Sta fuori dalla schermata d'asta apposta: sono cose da leggere
+// con calma, non mentre si rilancia.
+
+const { state, ownedMap, unavailableSet, takenMap } = __m_src_store_js;
+const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
+const { concorrenzaPerRuolo, disponibilita } = __m_src_domain_mercato_js;
+const { consiglioStrategico, scenarioSenzaBig, narrazione } = __m_src_domain_strategia_js;
+const { esc, roleChip, emptyState } = __m_src_ui_common_js;
+
+let scenario = null;
+
+function invalidate() {
+  scenario = null;
+}
+
+/** Come sta andando l'asta: quanto e' stato assegnato e quanti crediti restano in giro. */
+function andamentoCard() {
+  const m = state.mercato;
+  const lambda = state.players[0]?.lambdaMercato ?? 1;
+  const inf = m.inflazioneGlobale;
+  const perc = Math.round((inf - 1) * 100);
+  const salita = lambda > 1.08;
+  const discesa = lambda < 0.92;
+
+  const frase = !m.affidabile
+    ? "Troppo poco mercato per dire qualcosa: servono un po' di aggiudicazioni."
+    : discesa
+      ? `Finora si e' pagato il ${perc >= 0 ? '+' : ''}${perc}% sopra le stime, e la stanza si sta svuotando. Da qui in avanti si compra meglio: le stime di chi resta le ho gia' abbassate.`
+      : salita
+        ? `Finora si e' pagato il ${perc >= 0 ? '+' : ''}${perc}% sopra le stime e ci sono ancora molti crediti in giro. I prezzi di chi resta saliranno: le stime le ho gia' alzate.`
+        : `Finora si e' pagato quello che diceva il listone (${perc >= 0 ? '+' : ''}${perc}%). Le stime tengono.`;
+
+  return `
+  <div class="card">
+    <h2>Come sta andando</h2>
+    <div class="small" style="margin-bottom:12px">${esc(frase)}</div>
+
+    <div class="row between small" style="padding-top:12px;border-top:1px solid var(--line)">
+      <span class="muted">giocatori assegnati</span>
+      <span class="mono"><b>${m.slotAssegnati}</b> <span class="muted">di ${m.slotTotaliLega}</span></span>
+    </div>
+    <div class="row between small" style="margin-top:6px">
+      <span class="muted">crediti ancora in circolazione</span>
+      <span class="mono"><b>${m.creditiResidui}</b> <span class="muted">di ${m.creditiTotali}</span></span>
+    </div>
+    <div class="row between small" style="margin-top:6px">
+      <span class="muted">di cui davvero spendibili</span>
+      <span class="mono"><b>${m.discrezionali}</b> <span class="muted">· ${m.slotResidui} posti da riempire</span></span>
+    </div>
+    <div class="tiny muted" style="margin-top:8px">
+      Ogni squadra deve tenere un credito per ogni posto ancora vuoto: quelli non sono contendibili.
+    </div>
+
+    ${
+      m.copertura < 0.999
+        ? `<div class="tiny muted" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+             ${m.senzaPrezzo} aggiudicazioni le hai segnate al volo, senza cifra: per quelle uso la stima.
+             Il conto dei posti resta esatto comunque.
+           </div>`
+        : ''
+    }
+  </div>`;
+}
+
+/**
+ * Dove c'e' ancora battaglia.
+ *
+ * E' la distinzione che confonde di piu': i posti ancora in palio dicono quanto mercato resta
+ * per tutti, i giocatori liberi dicono fra quanti posso scegliere io. Quando nessun avversario
+ * cerca piu' un ruolo, li' i prezzi vanno a zero, e vale la pena saperlo prima.
+ */
+function concorrenzaCard() {
+  const owned = ownedMap();
+  const conc = concorrenzaPerRuolo({ settings: state.settings, players: state.players, owned, taken: takenMap(), tabellone: state.tabellone });
+  const disp = disponibilita({ settings: state.settings, players: state.players, owned, mercato: state.mercato });
+
+  return `
+  <div class="card">
+    <h2>Dove c'e' ancora battaglia</h2>
+    ${ROLES.map((r) => {
+      const c = conc[r];
+      const d = disp[r];
+      if (!d.servono && !c.quanti) return '';
+      const frase = !d.servono
+        ? `Reparto chiuso, li hai presi tutti.`
+        : !c.quanti
+          ? d.servono === 1
+            ? `Nessuno te lo contende piu': l'ultimo lo prendi a un credito.`
+            : `Nessuno te li contende piu': i tuoi ${d.servono} li prendi a un credito l'uno.`
+          : d.critico
+            ? `Attenzione: restano ${d.liberi} nomi liberi e te ne servono ${d.servono}.`
+            : `${c.quanti} avversari ne cercano ancora, il piu' ricco puo' arrivare a ${c.massimo}.`;
+      const colore = !d.servono ? 'muted' : !c.quanti ? 'accent' : d.critico ? 'danger' : 'text';
+      return `
+      <div style="padding:10px 0;border-top:1px solid var(--line)">
+        <div class="row between" style="margin-bottom:4px">
+          <div>${roleChip(r)} <b>${esc(ROLE_LABEL[r])}</b></div>
+          <div class="tiny muted mono">te ne mancano ${d.servono} · ${d.liberi} liberi</div>
+        </div>
+        <div class="small" style="color:var(--${colore})">${esc(frase)}</div>
+      </div>`;
+    }).join('')}
+    <div class="tiny muted" style="margin-top:10px">
+      ${
+        state.tabellone?.attendibile
+          ? 'Numeri esatti: ogni acquisto e&#39; attribuito a una squadra.'
+          : `${state.tabellone?.nonAttribuiti || 0} acquisti non sono attribuiti a nessuno, quindi questi massimi sono un limite superiore. Segnando anche la squadra che compra diventano esatti.`
+      }
+    </div>
+  </div>`;
+}
+
+/** Il tabellone: quanto puo' ancora offrire ogni squadra su un singolo colpo. */
+function tabelloneCard() {
+  const board = state.tabellone;
+  if (!board) return '';
+  return `
+  <div class="card">
+    <h2>Chi ha ancora crediti</h2>
+    <div class="tiny muted" style="margin-bottom:10px">
+      L'ultima colonna e' quanto puo' ancora offrire su un solo giocatore, tenendo un credito
+      per ogni posto che gli resta da riempire. E' il numero che decide i rilanci.
+    </div>
+    <table class="tiers">
+      <thead><tr><th>Squadra</th><th class="r">Rosa</th><th class="r">Crediti</th><th class="r">Max</th></tr></thead>
+      <tbody>
+        ${board.squadre
+          .slice()
+          .sort((a, b) => b.massimo - a.massimo)
+          .map(
+            (s) => `<tr${s.io ? ' style="font-weight:700"' : ''}>
+              <td>${esc(s.nome)}</td>
+              <td class="r">${s.presi}/${totalSlots(state.settings)}</td>
+              <td class="r">${s.residuo}</td>
+              <td class="r"><b>${s.massimo}</b></td>
+            </tr>`
+          )
+          .join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+/** I big: quanti ne ho, quanti ne restano, e cosa succede se finiscono. */
+function strategiaCard() {
+  const plan = state.plan;
+  if (!plan?.ok) return '';
+  const owned = ownedMap();
+  const unavailable = unavailableSet();
+  const consiglio = consiglioStrategico({ players: state.players, settings: state.settings, owned, unavailable, piano: plan });
+  if (!consiglio) return '';
+
+  const cambiamenti = state.prevPlan ? narrazione({ prima: state.prevPlan, dopo: plan, settings: state.settings }) : [];
+
+  return `
+  <div class="card">
+    <h2>I big</h2>
+    ${ROLES.map((r) => {
+      const b = consiglio.big[r];
+      const richiesti = Math.max(0, Math.round(state.settings.minTop?.[r] ?? 0));
+      if (!b.miei && !b.liberi && !richiesti) return '';
+      const restano = b.liberi === 1 ? 'ne resta 1 libero' : `ne restano ${b.liberi} liberi`;
+      const frase = b.miei
+        ? `Ne hai ${b.miei}${b.liberi ? `, e ${restano}` : ', e non ne restano altri'}.`
+        : b.liberi
+          ? `Non ne hai ancora, ${restano}${b.nomi?.length ? ': ' + b.nomi.slice(0, 3).join(', ') : ''}.`
+          : `Finiti, e non ne hai preso nessuno.`;
+      const colore = b.miei >= richiesti && richiesti > 0 ? 'accent' : !b.liberi && !b.miei ? 'danger' : 'text';
+      return `
+      <div style="padding:9px 0;border-top:1px solid var(--line)">
+        <div>${roleChip(r)} <b class="small">${esc(ROLE_LABEL[r])}</b></div>
+        <div class="small" style="color:var(--${colore});margin-top:3px">${esc(frase)}</div>
+      </div>`;
+    }).join('')}
+
+    ${consiglio.avvisi
+      .map(
+        (a) => `<div class="verdict ${a.gravita === 'finiti' ? 'stop' : 'edge'}" style="margin-top:12px;text-align:left">
+          <div>${esc(a.titolo)}</div>
+          <div class="small" style="font-weight:500;margin-top:4px">${esc(a.testo)}</div>
+        </div>`
+      )
+      .join('')}
+
+    ${
+      cambiamenti.length
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+             <div class="tiny muted" style="margin-bottom:4px">dopo l'ultima assegnazione</div>
+             <div class="small">${cambiamenti.map((f) => esc(f)).join(' ')}</div>
+           </div>`
+        : ''
+    }
+
+    ${
+      scenario
+        ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+             <div class="row between" style="margin-bottom:6px">
+               <b class="small">Se non prendi nessun big in ${esc(ROLE_LABEL[scenario.role].toLowerCase())}</b>
+               <button class="btn ghost tiny" data-action="chiudi-scenario">chiudi</button>
+             </div>
+             <div class="small">${scenario.frasi.map((f) => esc(f)).join(' ') || 'Il piano non cambierebbe granche&#39;.'}</div>
+             <div class="tiny muted" style="margin-top:6px">costo del cambio: ${scenario.costo} punti</div>
+           </div>`
+        : `<div class="segment" style="margin-top:12px">
+             ${ROLES.filter((r) => consiglio.big[r].liberi > 0)
+               .map((r) => `<button data-action="scenario" data-role="${r}">se perdo i big ${r}</button>`)
+               .join('')}
+           </div>`
+    }
+  </div>`;
+}
+
+function render() {
+  if (!state.players.length) {
+    return `<div class="view">${emptyState('📈', 'Nessun listone caricato', 'Importa prima il listone dalla scheda <b>Listone</b>.')}</div>`;
+  }
+  if (!state.mercato) {
+    return `<div class="view">${emptyState('📈', 'Asta non ancora cominciata', 'Qui compare come sta andando il mercato appena assegni il primo giocatore.')}</div>`;
+  }
+  return `
+  <div class="view">
+    ${concorrenzaCard()}
+    ${andamentoCard()}
+    ${strategiaCard()}
+    ${tabelloneCard()}
+  </div>`;
+}
+
+function onAction(action, target, ev, rerender) {
+  if (action === 'scenario') {
+    const role = target.dataset.role;
+    const dopo = scenarioSenzaBig({
+      players: state.players,
+      settings: state.settings,
+      owned: ownedMap(),
+      unavailable: unavailableSet(),
+      role,
+    });
+    scenario = {
+      role,
+      frasi: narrazione({ prima: state.plan, dopo, settings: state.settings }),
+      costo: Math.max(0, Math.round(state.plan.score - dopo.score)),
+    };
+    rerender();
+    return true;
+  }
+  if (action === 'chiudi-scenario') {
+    scenario = null;
+    rerender();
+    return true;
+  }
+  return false;
+}
+
+return { invalidate, render, onAction };
 })();
 
 // ===== src/domain/xlsx.js =====
@@ -5515,17 +5710,19 @@ const __m_src_app_js = (() => {
 const { state, load, save, notify, subscribe, rebuildPlan } = __m_src_store_js;
 const asta = __m_src_ui_asta_js;
 const piano = __m_src_ui_piano_js;
+const mercato = __m_src_ui_mercato_js;
 const listone = __m_src_ui_listone_js;
 const setup = __m_src_ui_setup_js;
 
 const TABS = [
   ['asta', 'Asta', '🎯'],
+  ['mercato', 'Mercato', '📈'],
   ['piano', 'Piano', '📊'],
   ['listone', 'Listone', '📋'],
   ['setup', 'Lega', '⚙️'],
 ];
 
-const VIEWS = { asta, piano, listone, setup };
+const VIEWS = { asta, mercato, piano, listone, setup };
 
 const root = document.getElementById('app');
 const tabbar = document.getElementById('tabbar');
