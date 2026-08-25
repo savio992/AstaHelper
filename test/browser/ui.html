@@ -60,6 +60,26 @@ try {
   check('pannello del giocatore aperto', html.includes(target.name));
   check("mostra l'offerta massima", html.includes('fin qui conviene'));
   check('mostra le alternative se lo perdo', html.includes('Se lo perdo'));
+  // Il divario fra prezzo di mercato e offerta massima va motivato, non lasciato li': un
+  // portiere di riserva caro e' il caso tipico, e il ripiego non deve essere gia' in rosa.
+  const titolare = store.state.plan.picks.filter((x) => x.role === 'P').sort((a, b) => b.score - a.score)[0];
+  const riserva = store.state.players
+    .filter((x) => x.role === 'P' && x.id !== titolare.id && x.expectedPrice > 8)
+    .sort((a, b) => a.score - b.score)[0];
+  if (riserva) {
+    store.state.ui.selectedId = riserva.id;
+    asta.render(noop);
+    await new Promise((r) => setTimeout(r, 900));
+    const conRiserva = asta.render(noop);
+    check('il divario col mercato viene motivato', /mercato lo paga/.test(conRiserva), riserva.name);
+    const rip = conRiserva.match(/(?:se lo superi, meglio|se ti serve il ruolo,) <b>([^<]+)<\/b>/);
+    const inPiano = new Set(store.state.plan.picks.map((x) => x.name));
+    check('il ripiego non e\' uno che prendo comunque', !rip || !inPiano.has(rip[1]), rip ? rip[1] : 'nessun ripiego');
+    store.state.ui.selectedId = target.id;
+    asta.render(noop);
+    await new Promise((r) => setTimeout(r, 900));
+  }
+
   check('mostra i pulsanti di assegnazione', html.includes('data-action="take-mine"') && html.includes('data-action="take-other"'));
   check('le alternative sono spiegate a parole, non con un delta', /praticamente uguale|poco sotto|sensibilmente sotto|ripiego|meglio di lui/.test(html));
 

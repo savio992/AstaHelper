@@ -102,6 +102,20 @@ Il racconto sopravvive anche alla riapertura dell'app, che in mezzo a un'asta ca
 precedente vive solo in memoria, ma il registro delle assegnazioni e' salvato, e rigiocarlo senza
 l'ultima voce restituisce esattamente il piano di prima.
 
+**Perche' l'offerta massima si discosta dal mercato.** Un numero senza motivo non si usa:
+leggere *"il mercato lo paga 43, tu fermati a 5"* fa pensare a un errore, e a quel punto o si
+ignora il consiglio o si perde tempo a discuterci. L'app cerca la ragione vera, e quasi sempre e'
+una di tre — gioca troppo poco, esiste qualcuno che rende uguale per molto meno, oppure il posto
+da titolare in quel reparto e' gia' occupato:
+
+> *Il mercato lo paga 43, ma alla tua rosa non serve: anche a un credito il piano peggiora.
+> In porta ne giochi uno solo, e il tuo titolare e' gia' Svilar: lui andrebbe in panchina.
+> Ci si aspettano 21 partite da lui, contro le 31 di un titolare del ruolo. Corvi rende quanto
+> lui e il mercato lo paga 2.*
+
+Vale anche al contrario: quando vale piu' di quanto costa lo dice, senza attaccarci le
+motivazioni di una bocciatura.
+
 **Il solutore durante l'asta** e' lo stesso che calcola il piano. Sembra ovvio e non lo era: per
 risparmiare tempo l'offerta massima veniva calcolata saltando la ricerca locale, e su un listone
 vero l'errore arrivava al cinquanta per cento in entrambe le direzioni — diceva di lasciar perdere

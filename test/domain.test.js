@@ -6,7 +6,7 @@ import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domai
 import { valuePlayers, rosterScore, depthWeights } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
-import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, CONFIG_ASTA } from '../src/domain/advisor.js';
+import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, CONFIG_ASTA } from '../src/domain/advisor.js';
 import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa } from '../src/domain/strategia.js';
 import { makeContext, makeListone } from './helpers.js';
 
@@ -648,4 +648,45 @@ test('un giocatore che non mi interessava non genera allarmi', () => {
   const sp = spiegaMossa({ prima, dopo, players, settings, evento: { id: estraneo.id, kind: 'other', price: 2 } });
   assert.equal(sp.eraObiettivo, false);
   assert.match(sp.frasi[0], /Non era fra i tuoi obiettivi/);
+});
+
+test('il ripiego non puo\' essere un giocatore che prenderei comunque', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const piano = optimizeRoster({ players, settings, ...CONFIG_ASTA });
+  const planB = (id) => optimizeRoster({ players, settings, unavailable: new Set([id]), ...CONFIG_ASTA });
+  // Un portiere caro ma poco titolare: il caso in cui il ripiego proposto era gia' in rosa.
+  const target = piano.picks.filter((p) => p.role === 'P').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  const { alternatives: alt } = alternatives({ players, settings, playerId: target.id, limit: 8 });
+  const idsB = new Set(planB(target.id).picks.map((p) => p.id));
+  const primoVero = alt.find((a) => !a.giaNelPiano);
+  if (primoVero) assert.ok(!idsB.has(primoVero.player.id), 'il primo ripiego valido non e\' gia\' nel piano B');
+});
+
+test('quando il mercato lo paga molto piu\' di quanto vale, l\'app dice perche\'', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const piano = optimizeRoster({ players, settings, ...CONFIG_ASTA });
+  // Un portiere di riserva: il posto da titolare e' gia' occupato.
+  const titolare = piano.picks.filter((p) => p.role === 'P').sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+  const riserva = players
+    .filter((p) => p.role === 'P' && p.id !== titolare.id && (p.expectedPrice ?? 0) > 10)
+    .sort((a, b) => (a.score || 0) - (b.score || 0))[0];
+  if (!riserva) return;
+  const sp = spiegaOfferta({ players, settings, playerId: riserva.id, offerta: 1, piano });
+  assert.ok(sp.frasi.length >= 1, 'deve dare almeno una ragione');
+  assert.match(sp.frasi.join(' '), /mercato lo paga/);
+});
+
+test('a un\'occasione non si attacca una spiegazione da bocciatura', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const p = players.find((x) => x.role === 'A' && (x.expectedPrice ?? 0) > 5);
+  const sp = spiegaOfferta({ players, settings, playerId: p.id, offerta: Math.round(p.expectedPrice * 2) });
+  assert.match(sp.frasi[0], /occasione/);
+  assert.equal(sp.frasi.length, 1, 'niente motivi di scarto su un affare');
+});
+
+test('quando prezzo e valore coincidono non si dice niente', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const p = players.find((x) => x.role === 'C' && (x.expectedPrice ?? 0) > 5);
+  const sp = spiegaOfferta({ players, settings, playerId: p.id, offerta: p.expectedPrice });
+  assert.equal(sp.frasi.length, 0);
 });

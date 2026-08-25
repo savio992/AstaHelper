@@ -1,6 +1,7 @@
 // L'assistente d'asta: quanto posso offrire davvero, e chi prendo se questo giocatore me lo soffiano.
 
 import { ROLES, ROLE_LABEL, tierKey, totalSlots } from './model.js';
+import { expectedShare } from './valuation.js';
 import { optimizeRoster, creditShadowPrice } from './optimizer.js';
 
 /**
@@ -448,4 +449,81 @@ export function spiegaPerdita({ players, settings, owned = new Map(), unavailabl
     giaTuoi: tutte.filter((a) => a.giaNelPiano).slice(0, limite),
     frasi,
   };
+}
+
+
+/**
+ * Perche' l'offerta massima e' cosi' lontana dal prezzo di mercato.
+ *
+ * Un numero senza motivo non si usa: leggere "il mercato lo paga 43, tu fermati a 5" fa pensare
+ * a un errore, e a quel punto o si ignora il consiglio o si perde tempo a discuterci. Qui si
+ * cerca la ragione vera, e quasi sempre e' una di tre: gioca troppo poco, esiste qualcuno che
+ * rende uguale per molto meno, oppure il posto da titolare in quel reparto e' gia' occupato.
+ */
+export function spiegaOfferta({ players, settings, owned = new Map(), unavailable = new Set(), playerId, offerta, piano = null }) {
+  const p = players.find((x) => x.id === playerId);
+  if (!p) return null;
+  const atteso = Math.max(1, Math.round(p.expectedPrice ?? 1));
+  const frasi = [];
+
+  // Chi rende almeno quanto lui e costa meno: e' la ragione piu' convincente di tutte.
+  const equivalenti = players
+    .filter(
+      (x) =>
+        x.role === p.role &&
+        x.id !== p.id &&
+        !owned.has(x.id) &&
+        !unavailable.has(x.id) &&
+        (x.score || 0) >= (p.score || 0) &&
+        Math.round(x.expectedPrice ?? 1) < atteso
+    )
+    .sort((a, b) => (a.expectedPrice ?? 0) - (b.expectedPrice ?? 0));
+
+  // Quante partite ci si aspetta da lui, contro i titolari veri del suo ruolo.
+  const presenze = Math.round(expectedShare(p) * 38);
+  const riferimento = players
+    .filter((x) => x.role === p.role && !unavailable.has(x.id))
+    .map((x) => Math.round(expectedShare(x) * 38))
+    .sort((a, b) => b - a);
+  const tipico = riferimento.length ? riferimento[Math.min(riferimento.length - 1, (settings.participants || 8) - 1)] : presenze;
+
+  // Il posto da titolare e' gia' occupato da qualcuno di piu' forte?
+  const titolari = Math.max(1, settings.starters?.[p.role] ?? 1);
+  const miei = piano?.ok
+    ? [...piano.owned.filter((x) => x.role === p.role), ...piano.picks.filter((x) => x.role === p.role && x.id !== p.id)]
+        .sort((a, b) => (b.score || 0) - (a.score || 0))
+    : [];
+  const davanti = miei.filter((x) => (x.score || 0) > (p.score || 0));
+  const panchina = davanti.length >= titolari;
+
+  if (offerta <= 0) {
+    frasi.push(`Il mercato lo paga ${atteso}, ma alla tua rosa non serve: anche a un credito il piano peggiora.`);
+  } else if (offerta < atteso * 0.65) {
+    frasi.push(`Il mercato lo paga ${atteso}, per la tua rosa ne vale ${offerta}.`);
+  } else if (offerta > atteso * 1.15) {
+    frasi.push(`Il mercato lo paga ${atteso} e per te ne vale ${offerta}: e' un'occasione.`);
+    return { frasi, atteso, offerta, presenze, equivalente: equivalenti[0] || null, panchina };
+  } else {
+    return { frasi: [], atteso, offerta, presenze, equivalente: equivalenti[0] || null, panchina };
+  }
+
+  if (panchina && titolari === 1) {
+    frasi.push(`In ${p.role === 'P' ? 'porta' : 'quel ruolo'} ne giochi uno solo, e il tuo titolare e' gia' ${davanti[0].name}: lui andrebbe in panchina.`);
+  } else if (panchina) {
+    frasi.push(`Sarebbe una riserva: davanti a lui hai gia' ${davanti.slice(0, titolari).map((x) => x.name).join(', ')}.`);
+  }
+
+  if (presenze < tipico - 5) {
+    frasi.push(`Ci si aspettano ${presenze} partite da lui, contro le ${tipico} di un titolare del ruolo.`);
+  }
+
+  const eq = equivalenti[0];
+  if (eq) {
+    const meglio = (eq.score || 0) > (p.score || 0) * 1.1;
+    frasi.push(
+      `${eq.name} rende ${meglio ? 'di piu' + "'" : 'quanto lui'} e il mercato lo paga ${Math.round(eq.expectedPrice ?? 1)}.`
+    );
+  }
+
+  return { frasi, atteso, offerta, presenze, equivalente: eq || null, panchina };
 }

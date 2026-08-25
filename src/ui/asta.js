@@ -2,7 +2,7 @@
 
 import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset } from '../store.js';
 import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } from '../domain/model.js';
-import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita } from '../domain/advisor.js';
+import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta } from '../domain/advisor.js';
 import { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } from '../domain/mercato.js';
 import { spiegaMossa } from '../domain/strategia.js';
 import { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } from './common.js';
@@ -298,10 +298,11 @@ function detail(p) {
     <div class="maxbid">
       ${
         bid
-          ? `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid}</div>
-             <div class="lbl">fin qui conviene</div>
-             ${ripiego(alts)}
+          ? `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid <= 0 ? '—' : bid.maxBid}</div>
+             <div class="lbl">${bid.maxBid <= 0 ? 'non fa per te' : 'fin qui conviene'}</div>
+             ${ripiego(alts, bid)}
              ${bid.reason ? `<div class="small muted" style="margin-top:6px">${esc(bid.reason)}</div>` : ''}
+             ${perche(p, bid)}
              ${concorrenzaBox(p, bid)}`
           : `<div class="n mono"><span class="spinner"></span></div><div class="lbl">calcolo in corso</div>`
       }
@@ -376,11 +377,43 @@ function concorrenzaBox(p, bid) {
   </div>`;
 }
 
-/** Un numero da solo non basta: si dice a chi si ripiega, con nome e prezzo. */
-function ripiego(alts) {
-  const first = alts?.alternatives?.[0];
+/**
+ * Un numero da solo non basta: si dice a chi si ripiega, con nome e prezzo.
+ *
+ * Chi e' gia' negli obiettivi anche senza di lui non e' un ripiego, e nominarlo fa credere a
+ * uno scambio che non esiste: "fermati a 5, meglio Falcone a 9" e' incomprensibile finche' non
+ * si scopre che Falcone lo prendi comunque.
+ */
+function ripiego(alts, bid) {
+  const first = (alts?.alternatives || []).find((a) => !a.giaNelPiano);
   if (!first) return '';
-  return `<div class="small muted" style="margin-top:8px">se lo superi, meglio <b>${esc(first.player.name)}</b> a ${first.price}</div>`;
+  // Con offerta zero non c'e' niente da superare: la frase deve dire cosa fare, non a che
+  // soglia fermarsi.
+  const testo =
+    bid && bid.maxBid <= 0
+      ? `lascialo andare: se ti serve il ruolo, <b>${esc(first.player.name)}</b> a ${first.price}`
+      : `se lo superi, meglio <b>${esc(first.player.name)}</b> a ${first.price}`;
+  return `<div class="small muted" style="margin-top:8px">${testo}</div>`;
+}
+
+/** Perche' l'offerta massima e' cosi' distante dal prezzo di mercato. */
+function perche(p, bid) {
+  if (!bid) return '';
+  const sp = spiegaOfferta({
+    players: state.players,
+    settings: state.settings,
+    owned: ownedMap(),
+    unavailable: unavailableSet(),
+    playerId: p.id,
+    offerta: bid.maxBid,
+    piano: state.plan,
+  });
+  if (!sp?.frasi.length) return '';
+  const occasione = bid.maxBid > (sp.atteso || 0) * 1.15;
+  return `<div class="verdict ${occasione ? 'go' : 'edge'}" style="margin-top:10px;text-align:left">
+    <div class="small" style="font-weight:600">${esc(sp.frasi[0])}</div>
+    ${sp.frasi.length > 1 ? `<div class="small" style="font-weight:500;margin-top:4px">${sp.frasi.slice(1).map((f) => esc(f)).join(' ')}</div>` : ''}
+  </div>`;
 }
 
 /** Quello che i creators dicono di lui: giudizi, etichette, disaccordo sul prezzo. */
