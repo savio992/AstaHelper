@@ -70,7 +70,7 @@ function handle(kind, ev) {
   if (kind === 'click') {
     if (target.matches('input, select, textarea')) return;
     if (view.onAction?.(action, target, ev, render)) ev.preventDefault();
-  } else if (view.onInput?.(action, target, render)) {
+  } else if (view.onInput?.(action, target, render, ev.type)) {
     // gestito dalla vista
   }
 }

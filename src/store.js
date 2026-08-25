@@ -459,6 +459,17 @@ export function undo() {
   notify();
 }
 
+/**
+ * I nomi delle squadre avversarie non entrano in nessun calcolo: servono solo a leggere
+ * il tabellone. Passare da `updateSettings` significherebbe rivalutare il listone e rifare
+ * il piano — un paio di secondi — per aver scritto una lettera.
+ */
+export function rinominaSquadre(squadre) {
+  state.settings.squadre = [...squadre];
+  save();
+  notify();
+}
+
 export function updateSettings(patch) {
   Object.assign(state.settings, patch);
   recompute();

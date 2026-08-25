@@ -140,6 +140,28 @@ try {
   check('le impostazioni mostrano i modificatori', html.includes('Modificatore di difesa') && html.includes('Imbattibilita'));
   check('le impostazioni mostrano il tetto per club', html.includes('Concentrazione per club'));
 
+  // --- rinominare una squadra ---------------------------------------------------------
+  // Ogni campo in cui si scrive deve avere un id: il ridisegno rifa' tutto il DOM e senza id
+  // il cursore finisce nel nulla dopo la prima lettera.
+  const campi = [...html.matchAll(/<input[^>]*data-action="(?:set|setsquadra|setslot|setstarter|setcap|setmintop|setmaxclub)"[^>]*>/g)].map((m) => m[0]);
+  check('ogni campo delle impostazioni ha un id', campi.length >= 10 && campi.every((c) => /\sid="/.test(c)), `${campi.length} campi`);
+
+  let ridisegni = 0;
+  const conta = () => { ridisegni++; };
+  const campo = { value: '', dataset: { i: '2' }, id: 'cfg-squadra-2' };
+  for (const c of 'Sasso FC') {
+    campo.value += c;
+    setup.onInput('setsquadra', campo, conta, 'input');
+  }
+  check('scrivere un nome non ridisegna la pagina', ridisegni === 0, `${ridisegni} ridisegni`);
+  check('e il nome resta quello che ho scritto', store.state.settings.squadre[2] === 'Sasso FC', store.state.settings.squadre[2]);
+  setup.onInput('setsquadra', campo, conta, 'change');
+  check('uscendo dal campo il nome e\' salvato', JSON.parse(localStorage.getItem('astahelper:v1')).settings.squadre[2] === 'Sasso FC');
+  check('e il ridisegno arriva alla fine', ridisegni === 1);
+  const campoVuoto = { value: '   ', dataset: { i: '3' }, id: 'cfg-squadra-3' };
+  setup.onInput('setsquadra', campoVuoto, noop, 'change');
+  check('un nome svuotato torna al valore di partenza', store.state.settings.squadre[3] === 'Squadra 4', store.state.settings.squadre[3]);
+
   // --- persistenza -------------------------------------------------------------------
   const primaDelReload = store.creditsLeft();
   store.state.roster = [];

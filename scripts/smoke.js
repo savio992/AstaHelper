@@ -86,6 +86,16 @@ try {
   }
   expect('il flusso di interfaccia ha prodotto risultati', uiOut.trim().length > 0);
 
+  console.log('\ncampi che si scrivono a mano:');
+  const fuoco = await dumpDom(`http://127.0.0.1:${port}/test/browser/fuoco.html`, 30000);
+  const fuocoOut = (fuoco.match(/<pre id="out">([\s\S]*?)<\/pre>/) || [])[1] || '';
+  for (const line of decode(fuocoOut).split('\n').filter(Boolean)) {
+    const ok = line.startsWith('PASS');
+    if (!ok) failures++;
+    console.log(`${ok ? '  ok  ' : ' FAIL '} ${line.replace(/^(PASS|FAIL) /, '')}`);
+  }
+  expect('il fuoco nei campi e\' stato verificato', fuocoOut.trim().length > 0);
+
   console.log('\napp in sviluppo:');
   const dev = await dumpDom(`http://127.0.0.1:${port}/index.html`);
   expect("l'app disegna la barra delle schede", dev.includes('data-tab="asta"'));
