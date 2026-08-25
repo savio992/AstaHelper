@@ -126,6 +126,14 @@ soli posti da portiere e quaranta portieri disponibili: significa che quei due p
 nessuno te li contende, quindi li prendi per un credito invece di rilanciare. L'app lo dice a
 parole in cima alla schermata, perche' i due numeri accostati si leggono al contrario.
 
+**Incollare l'elenco dei venduti.** Segnare a mano duecento aggiudicazioni durante un'asta non e'
+realistico, e senza quei prezzi il conto dei crediti resta approssimato. Quasi tutte le
+piattaforme mostrano da qualche parte la lista di chi e' gia' andato: si copia e si incolla nella
+scheda Mercato. Il lettore non pretende nessun formato — cerca in ogni riga un nome che assomigli
+a qualcuno del listone e, se c'e', un prezzo — e dichiara sempre cosa non ha capito invece di far
+sparire le righe in silenzio. Gli omonimi si sciolgono con la squadra se e' scritta da qualche
+parte nella riga, altrimenti restano segnalati come ambigui.
+
 **L'abbinamento dei portieri** e' il consiglio che i creators ripetono a ogni guida, e qui e' un
 vincolo del piano. In Classic se ne schiera uno solo ma se ne possiedono tre: il secondo non serve
 a giocare, serve a non restare mai senza voto. Preso nella stessa squadra del titolare, qualunque
@@ -151,6 +159,35 @@ di una squadra solida vale molto piu' del suo prezzo, e il piano tende a metterg
 stessa difesa. Il rovescio della medaglia e' la concentrazione: il tetto **titolari per club**
 serve a non legare mezza rosa alla stagione di una sola squadra. Il conteggio e' sui titolari
 effettivi, non sui giocatori in rosa: quattro riempitivi da un credito non sono un rischio.
+
+## L'asta simulata
+
+I test dicono che i pezzi fanno quello che promettono; non dicono se alla fine della serata la
+rosa e' migliore di quella degli altri. `npm run simula` gioca un'asta intera con otto
+partecipanti: sette strategie diverse, alcune sbagliate come nella realta' (chi si innamora della
+squadra del cuore, chi brucia il budget sui primi nomi, chi tiene i crediti e poi va nel panico),
+piu' l'app, che usa il proprio piano e il proprio tetto di reparto come li userebbe una persona.
+Ogni lotto si chiude al secondo prezzo, che e' come finisce davvero un'asta a voce: chi vince
+paga un credito piu' di quanto era disposto a pagare il secondo.
+
+Le rose non vengono classificate con il punteggio del modello — sarebbe la funzione che
+l'ottimizzatore massimizza, e l'app vincerebbe per costruzione. Il metro e' invece indipendente:
+i punti che la formazione titolare produrrebbe in una stagione, fantamedia attesa per presenze
+attese, senza bonus di fascia, modificatori, sinergie o penalita' di concentrazione.
+
+Sui listoni veri l'app vince 5 aste su 5 con il 16% di punti in piu' del secondo. Su un listone
+sintetico vince 12 su 12 ma con appena il 3,5%: la differenza dice qualcosa di preciso, cioe' che
+il vantaggio nasce dal trovare i giocatori mal prezzati, e un listone generato a tavolino per
+costruzione non ne ha quasi.
+
+`--confronto` rigioca le stesse aste con e senza il riprezzamento del mercato. Il guadagno
+misurato e' dello 0,2%, dentro il rumore, e anche in un campo di avversari che bruciano tutto sui
+big non cambia. Il motivo e' strutturale e vale la pena saperlo: l'offerta massima non nasce da
+una previsione di prezzo ma dal confronto fra la rosa con quel giocatore e la rosa senza, quindi
+sbagliare i prezzi attesi la sposta poco. E' una buona proprieta' — il consiglio regge anche
+quando le stime sono sbagliate — ma significa che il conto del mercato serve a chi guarda lo
+schermo, non all'ottimizzatore. La simulazione non sa misurare le funzioni che valgono per la
+persona e non per il solutore, ed e' un limite del metodo, non un risultato.
 
 ## Formati riconosciuti
 

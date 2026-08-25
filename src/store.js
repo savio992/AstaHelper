@@ -254,6 +254,30 @@ export function assign(id, kind, price, by = null) {
   notify();
 }
 
+/**
+ * Registra molte aggiudicazioni in un colpo solo.
+ *
+ * Serve quando si incolla l'elenco dei venduti preso dal sito dell'asta: farlo con `assign` una
+ * riga alla volta rifarebbe il piano duecento volte, e ci vorrebbero minuti. Qui si scrive tutto
+ * il registro e si ricalcola una volta.
+ */
+export function assegnaMolti(voci) {
+  for (const { id, kind = 'other', price = 0, by = null } of voci) {
+    const p = Math.max(0, Math.round(Number(price) || 0));
+    const squadra = Number.isInteger(by) && by > 0 ? by : null;
+    delete state.auction.owned[id];
+    delete state.auction.taken[id];
+    if (kind === 'mine') state.auction.owned[id] = p;
+    else state.auction.taken[id] = { price: p, by: squadra };
+    state.auction.log.push({ id, kind, price: p, by: squadra, at: Date.now() });
+  }
+  recompute();
+  rebuildPlan();
+  save();
+  notify();
+  return voci.length;
+}
+
 export function release(id) {
   delete state.auction.owned[id];
   delete state.auction.taken[id];

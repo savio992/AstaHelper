@@ -2,16 +2,85 @@
 // e se la strada e' cambiata. Sta fuori dalla schermata d'asta apposta: sono cose da leggere
 // con calma, non mentre si rilancia.
 
-import { state, ownedMap, unavailableSet, takenMap } from '../store.js';
+import { state, ownedMap, unavailableSet, takenMap, assegnaMolti } from '../store.js';
+import { leggiElenco } from '../domain/incolla.js';
 import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
 import { concorrenzaPerRuolo, disponibilita } from '../domain/mercato.js';
 import { consiglioStrategico, scenarioSenzaBig, narrazione } from '../domain/strategia.js';
-import { esc, roleChip, emptyState } from './common.js';
+import { esc, roleChip, emptyState, toast } from './common.js';
 
 let scenario = null;
+let incollato = null;
 
 export function invalidate() {
   scenario = null;
+  incollato = null;
+}
+
+/**
+ * Aggiornare il mercato incollando l'elenco dei venduti.
+ *
+ * Segnare a mano duecento aggiudicazioni durante un'asta non e' realistico, e senza quei dati
+ * il conto dei crediti resta approssimato. Quasi tutte le piattaforme mostrano da qualche parte
+ * la lista di chi e' gia' andato: copiarla e incollarla qui rimette in pari tutto in un gesto.
+ * Il lettore non pretende un formato: cerca in ogni riga un nome del listone e, se c'e', un prezzo.
+ */
+function incollaCard() {
+  if (incollato) {
+    const c = incollato.conta;
+    const problemi = incollato.esiti.filter((e) => e.esito === 'ambiguo' || e.esito === 'sconosciuto');
+    return `
+    <div class="card">
+      <h2>Elenco riconosciuto</h2>
+      <div class="small" style="margin-bottom:10px">
+        <b>${c.trovato}</b> giocatori riconosciuti, di cui ${incollato.conPrezzo} con il prezzo.
+        ${c.duplicato ? `${c.duplicato} erano gia' registrati e li salto.` : ''}
+        ${c.ambiguo ? `${c.ambiguo} righe ambigue.` : ''}
+        ${c.sconosciuto ? `${c.sconosciuto} nomi non trovati nel listone.` : ''}
+      </div>
+      <div class="tiny muted mono" style="margin-bottom:10px">
+        ${ROLES.map((r) => `${r}: ${incollato.perRuolo[r]}`).join(' · ')}
+      </div>
+      ${
+        problemi.length
+          ? `<details style="margin-bottom:10px">
+               <summary class="small muted">Righe da controllare (${problemi.length})</summary>
+               <div class="tiny muted" style="margin-top:8px;line-height:1.7">
+                 ${problemi
+                   .slice(0, 30)
+                   .map(
+                     (e) =>
+                       `<div>${esc(e.testo.slice(0, 60))} — <b>${
+                         e.esito === 'ambiguo' ? 'piu&#39; giocatori con questo nome' : 'non nel listone'
+                       }</b></div>`
+                   )
+                   .join('')}
+               </div>
+             </details>`
+          : ''
+      }
+      <div class="grid2">
+        <button class="btn primary" data-action="conferma-incolla" ${c.trovato ? '' : 'disabled'}>Registra ${c.trovato}</button>
+        <button class="btn" data-action="annulla-incolla">Annulla</button>
+      </div>
+      <div class="tiny muted" style="margin-top:8px">
+        Vengono segnati come presi dagli avversari. I tuoi li registri dalla scheda Asta.
+      </div>
+    </div>`;
+  }
+  return `
+  <div class="card">
+    <details>
+      <summary><b>Aggiorna dal sito dell'asta</b> <span class="tiny muted">— incolla chi e' gia' andato</span></summary>
+      <p class="small muted" style="margin-top:10px">
+        Copia dalla piattaforma l'elenco dei giocatori gia' venduti e incollalo qui. Non serve un
+        formato preciso: basta che ogni riga contenga il nome, e se c'e' anche il prezzo il conto
+        dei crediti diventa esatto.
+      </p>
+      <textarea id="assegnati" rows="6" placeholder="Svilar  ROM  52&#10;Dimarco  INT  78&#10;..." style="width:100%"></textarea>
+      <button class="btn primary block" style="margin-top:10px" data-action="leggi-incolla">Leggi l'elenco</button>
+    </details>
+  </div>`;
 }
 
 /** Come sta andando l'asta: quanto e' stato assegnato e quanti crediti restano in giro. */
@@ -222,12 +291,39 @@ export function render() {
   <div class="view">
     ${concorrenzaCard()}
     ${andamentoCard()}
+    ${incollaCard()}
     ${strategiaCard()}
     ${tabelloneCard()}
   </div>`;
 }
 
 export function onAction(action, target, ev, rerender) {
+  if (action === 'leggi-incolla') {
+    const testo = document.getElementById('assegnati')?.value || '';
+    if (!testo.trim()) {
+      toast('Incolla prima l&#39;elenco.');
+      return true;
+    }
+    const gia = new Set([...Object.keys(state.auction.owned), ...Object.keys(state.auction.taken)]);
+    incollato = leggiElenco(testo, state.players, { gia });
+    rerender();
+    return true;
+  }
+  if (action === 'conferma-incolla') {
+    const voci = incollato.esiti
+      .filter((e) => e.esito === 'trovato')
+      .map((e) => ({ id: e.player.id, kind: 'other', price: Number.isFinite(e.prezzo) ? e.prezzo : 0 }));
+    const n = assegnaMolti(voci);
+    incollato = null;
+    toast(`${n} aggiudicazioni registrate.`);
+    rerender();
+    return true;
+  }
+  if (action === 'annulla-incolla') {
+    incollato = null;
+    rerender();
+    return true;
+  }
   if (action === 'scenario') {
     const role = target.dataset.role;
     const dopo = scenarioSenzaBig({
