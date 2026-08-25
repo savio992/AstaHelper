@@ -4,7 +4,7 @@ import { state, rebuildPlan } from '../store.js';
 import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
 import { tierBudgetReport, maxBid, alternatives } from '../domain/advisor.js';
 import { clubExposure } from '../domain/valuation.js';
-import { ownedMap, unavailableSet } from '../store.js';
+import { ownedMap, unavailableSet, onReset } from '../store.js';
 import { esc, roleChip, emptyState, playerRow, edgeBadge } from './common.js';
 
 function roleBlock(role, plan) {
@@ -71,6 +71,11 @@ function exposureCard(plan) {
 // La scheda d'asta si calcola su richiesta: sono 25 ottimizzazioni complete.
 let scheda = null;
 let schedaInCorso = false;
+
+onReset(() => {
+  scheda = null;
+  schedaInCorso = false;
+});
 
 function buildScheda(rerender) {
   schedaInCorso = true;

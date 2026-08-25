@@ -1,6 +1,6 @@
 // Import dei listoni (xlsx dei creators o CSV) e consultazione dei giocatori.
 
-import { state, addSource, removeSource, setForm, clearForm } from '../store.js';
+import { state, addSource, removeSource, setForm, clearForm, onReset } from '../store.js';
 import { parseCsv, sheetsToTable, autoMap, refineMapping, buildPlayers } from '../domain/csv.js';
 import { readXlsx } from '../domain/xlsx.js';
 import { formMapping, aggregateForm, matchCount } from '../domain/form.js';
@@ -11,6 +11,12 @@ import { esc, matches, playerRow, emptyState, toast } from './common.js';
 let draft = null;
 let showMapping = false;
 let tipoAtteso = 'listone';
+
+onReset(() => {
+  draft = null;
+  showMapping = false;
+  tipoAtteso = 'listone';
+});
 
 const FIELDS = [
   ['name', 'Nome', true],

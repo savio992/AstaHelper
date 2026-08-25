@@ -1,6 +1,6 @@
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
-import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa } from '../store.js';
+import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset } from '../store.js';
 import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } from '../domain/model.js';
 import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita } from '../domain/advisor.js';
 import { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } from '../domain/mercato.js';
@@ -15,7 +15,12 @@ function cacheKey() {
   return `${state.ui.selectedId}|${state.auction.log.length}|${JSON.stringify(state.settings)}`;
 }
 
+onReset(() => invalidate());
+
 export function invalidate() {
+  mossaChiusa = null;
+  mossaRicostruita = null;
+
   cache = { key: null, bid: null, alts: null, perdita: null };
   reparto = null;
 }

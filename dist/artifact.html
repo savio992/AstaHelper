@@ -2718,6 +2718,16 @@ const state = {
 };
 
 const listeners = new Set();
+// Le viste tengono in memoria dei calcoli costosi (scheda d'asta, piano del reparto, elenco
+// incollato). Sono fuori dallo stato, quindi un azzeramento non li toccherebbe e resterebbero
+// a schermo giocatori di un listone appena cancellato.
+const ripuliture = new Set();
+
+/** Registra una ripulitura da eseguire quando si cancella tutto. */
+function onReset(fn) {
+  ripuliture.add(fn);
+  return () => ripuliture.delete(fn);
+}
 function subscribe(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
@@ -2769,7 +2779,11 @@ function load() {
 
 function resetAll() {
   state.prevPlan = null;
-  localStorage.removeItem(KEY);
+  try {
+    localStorage.removeItem(KEY);
+  } catch (err) {
+    console.warn('Cancellazione non riuscita', err);
+  }
   state.settings = defaultSettings();
   state.sources = [];
   state.roster = [];
@@ -2780,6 +2794,14 @@ function resetAll() {
   state.mercato = null;
   state.tabellone = null;
   state.plan = null;
+  state.ui = { ...state.ui, tab: 'listone', query: '', listQuery: '', selectedId: null, bidPrice: null, chiediSquadra: null, prezzoAltri: null, roleFilter: 'ALL', listRole: 'ALL' };
+  for (const fn of ripuliture) {
+    try {
+      fn();
+    } catch (err) {
+      console.warn('Ripulitura non riuscita', err);
+    }
+  }
   notify();
 }
 
@@ -3027,7 +3049,7 @@ function creditsLeft() {
   return (state.settings.budget || 500) - spentTotal();
 }
 
-return { subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, undo, updateSettings, spentTotal, creditsLeft, state };
+return { onReset, subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, undo, updateSettings, spentTotal, creditsLeft, state };
 })();
 
 // ===== src/domain/advisor.js =====
@@ -3813,7 +3835,7 @@ return { esc, n, roleChip, toast, matches, playerRow, edgeBadge, altVerdict, emp
 const __m_src_ui_asta_js = (() => {
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
-const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa } = __m_src_store_js;
+const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } = __m_src_domain_model_js;
 const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita } = __m_src_domain_advisor_js;
 const { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } = __m_src_domain_mercato_js;
@@ -3828,7 +3850,12 @@ function cacheKey() {
   return `${state.ui.selectedId}|${state.auction.log.length}|${JSON.stringify(state.settings)}`;
 }
 
+onReset(() => invalidate());
+
 function invalidate() {
+  mossaChiusa = null;
+  mossaRicostruita = null;
+
   cache = { key: null, bid: null, alts: null, perdita: null };
   reparto = null;
 }
@@ -4750,7 +4777,7 @@ const { state, rebuildPlan } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
 const { tierBudgetReport, maxBid, alternatives } = __m_src_domain_advisor_js;
 const { clubExposure } = __m_src_domain_valuation_js;
-const { ownedMap, unavailableSet } = __m_src_store_js;
+const { ownedMap, unavailableSet, onReset } = __m_src_store_js;
 const { esc, roleChip, emptyState, playerRow, edgeBadge } = __m_src_ui_common_js;
 
 function roleBlock(role, plan) {
@@ -4817,6 +4844,11 @@ function exposureCard(plan) {
 // La scheda d'asta si calcola su richiesta: sono 25 ottimizzazioni complete.
 let scheda = null;
 let schedaInCorso = false;
+
+onReset(() => {
+  scheda = null;
+  schedaInCorso = false;
+});
 
 function buildScheda(rerender) {
   schedaInCorso = true;
@@ -5161,7 +5193,7 @@ const __m_src_ui_mercato_js = (() => {
 // e se la strada e' cambiata. Sta fuori dalla schermata d'asta apposta: sono cose da leggere
 // con calma, non mentre si rilancia.
 
-const { state, ownedMap, unavailableSet, takenMap, assegnaMolti } = __m_src_store_js;
+const { state, ownedMap, unavailableSet, takenMap, assegnaMolti, onReset } = __m_src_store_js;
 const { leggiElenco } = __m_src_domain_incolla_js;
 const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
 const { concorrenzaPerRuolo, disponibilita } = __m_src_domain_mercato_js;
@@ -5171,7 +5203,10 @@ const { esc, roleChip, emptyState, toast } = __m_src_ui_common_js;
 let scenario = null;
 let incollato = null;
 
+onReset(() => invalidate());
+
 function invalidate() {
+
   scenario = null;
   incollato = null;
 }
@@ -5714,7 +5749,7 @@ return { unzip, columnToIndex, readXlsx };
 const __m_src_ui_listone_js = (() => {
 // Import dei listoni (xlsx dei creators o CSV) e consultazione dei giocatori.
 
-const { state, addSource, removeSource, setForm, clearForm } = __m_src_store_js;
+const { state, addSource, removeSource, setForm, clearForm, onReset } = __m_src_store_js;
 const { parseCsv, sheetsToTable, autoMap, refineMapping, buildPlayers } = __m_src_domain_csv_js;
 const { readXlsx } = __m_src_domain_xlsx_js;
 const { formMapping, aggregateForm, matchCount } = __m_src_domain_form_js;
@@ -5725,6 +5760,12 @@ const { esc, matches, playerRow, emptyState, toast } = __m_src_ui_common_js;
 let draft = null;
 let showMapping = false;
 let tipoAtteso = 'listone';
+
+onReset(() => {
+  draft = null;
+  showMapping = false;
+  tipoAtteso = 'listone';
+});
 
 const FIELDS = [
   ['name', 'Nome', true],
@@ -6103,6 +6144,11 @@ const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
 const { nomiSquadre } = __m_src_domain_mercato_js;
 const { esc, roleChip, toast } = __m_src_ui_common_js;
 
+// La conferma sta dentro la pagina e non in una finestra del browser: `confirm()` viene
+// ignorato in silenzio dentro un iframe con sandbox, che e' esattamente dove gira l'app
+// pubblicata, e il tasto non faceva assolutamente niente.
+let chiedeConferma = false;
+
 function tierEditor() {
   const role = state.ui.tierRole || 'D';
   const order = state.settings.tierOrder?.[role] || [];
@@ -6272,7 +6318,18 @@ function render() {
     ${tierEditor()}
 
     <div class="card">
-      <button class="btn danger block" data-action="reset">Cancella tutto e ricomincia</button>
+      ${
+        chiedeConferma
+          ? `<div class="verdict stop" style="text-align:left">
+               <div>Cancello listone, impostazioni e asta in corso.</div>
+               <div class="small" style="font-weight:500;margin-top:4px">Non si torna indietro.</div>
+             </div>
+             <div class="grid2" style="margin-top:12px">
+               <button class="btn danger" data-action="reset-conferma">Si', cancella</button>
+               <button class="btn" data-action="reset-annulla">Annulla</button>
+             </div>`
+          : `<button class="btn danger block" data-action="reset">Cancella tutto e ricomincia</button>`
+      }
       <div class="tiny muted center" style="margin-top:8px">Listone, impostazioni e asta in corso restano solo su questo dispositivo.</div>
     </div>
   </div>`;
@@ -6302,11 +6359,18 @@ function onAction(action, target, ev, rerender) {
       return true;
     }
     case 'reset':
-      if (confirm('Cancello listone, impostazioni e asta in corso. Confermi?')) {
-        resetAll();
-        toast('Tutto azzerato.');
-        rerender();
-      }
+      chiedeConferma = true;
+      rerender();
+      return true;
+    case 'reset-annulla':
+      chiedeConferma = false;
+      rerender();
+      return true;
+    case 'reset-conferma':
+      chiedeConferma = false;
+      resetAll();
+      toast('Tutto azzerato.');
+      rerender();
       return true;
     default:
       return false;

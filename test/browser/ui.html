@@ -6,6 +6,7 @@
 import * as store from '../../src/store.js';
 import * as asta from '../../src/ui/asta.js';
 import * as piano from '../../src/ui/piano.js';
+import * as mercato from '../../src/ui/mercato.js';
 import * as listone from '../../src/ui/listone.js';
 import * as setup from '../../src/ui/setup.js';
 import { ROLES } from '../../src/domain/model.js';
@@ -126,6 +127,57 @@ try {
   const ok = store.load();
   check('lo stato si ricarica dal telefono', ok && store.state.players.length === 540 && store.creditsLeft() === primaDelReload);
   check("l'asta in corso sopravvive alla chiusura", store.state.auction.owned[target.id] === prezzo);
+
+  // --- cancella tutto ----------------------------------------------------------------
+  // Il tasto usava confirm(), che dentro un iframe con sandbox viene ignorato in silenzio:
+  // la conferma deve stare nella pagina, e l'azzeramento deve ripulire anche le memorie
+  // delle viste, che vivono fuori dallo stato.
+  piano.render(noop);
+  store.state.ui.tab = 'setup';
+  setup.onAction('reset', { dataset: {} }, null, noop);
+  const conConferma = setup.render(noop);
+  check('la conferma sta dentro la pagina', conConferma.includes('reset-conferma') && conConferma.includes('Annulla'));
+
+  setup.onAction('reset-annulla', { dataset: {} }, null, noop);
+  check('si puo\' annullare', !setup.render(noop).includes('reset-conferma') && store.state.players.length === 540);
+
+  setup.onAction('reset', { dataset: {} }, null, noop);
+  setup.onAction('reset-conferma', { dataset: {} }, null, noop);
+  check('il listone e\' sparito', store.state.players.length === 0 && store.state.sources.length === 0);
+  check('l\'asta in corso e\' sparita', Object.keys(store.state.auction.owned).length === 0 && store.state.auction.log.length === 0);
+  check('la memoria del telefono e\' vuota', localStorage.getItem('astahelper:v1') === null);
+  check('non si ricarica piu\' niente', store.load() === false);
+  const astaDopo = asta.render(noop);
+  check('l\'asta torna alla schermata iniziale', astaDopo.includes('Nessun listone caricato'));
+  check('il mercato e\' vuoto', mercato.render(noop).includes('Nessun listone caricato'));
+
+  // Il caso che conta davvero per le memorie delle viste: azzero e reimporto un listone
+  // diverso. Se la scheda d'asta calcolata prima sopravvive, restano a schermo giocatori
+  // di un listone che non esiste piu'.
+  store.addSource({ name: 'prova', players, headers: [], mapping: {}, warnings: [], fileName: 'prova.xlsx' });
+  const nomeVecchio = target.name;
+  piano.onAction('scheda', { dataset: {} }, null, noop);
+  await new Promise((r) => setTimeout(r, 400));
+  const conScheda = piano.render(noop);
+  check('la scheda d\'asta si calcola', conScheda.includes("Scheda d'asta") && conScheda.includes('Ricalcola'));
+
+  setup.onAction('reset', { dataset: {} }, null, noop);
+  setup.onAction('reset-conferma', { dataset: {} }, null, noop);
+  // Nomi che non contengono i vecchi nemmeno come sottostringa, altrimenti il controllo mente.
+  store.addSource({
+    name: 'altro',
+    players: players.slice(0, 200).map((p, i) => ({ ...p, id: 'nuovo' + i, name: 'Nuovo' + i })),
+    headers: [],
+    mapping: {},
+    warnings: [],
+    fileName: 'altro.xlsx',
+  });
+  const dopoReimport = piano.render(noop);
+  check(
+    'la scheda del listone cancellato non sopravvive',
+    !dopoReimport.includes('Ricalcola') && !dopoReimport.includes(nomeVecchio),
+    'memoria della vista ripulita'
+  );
 
   localStorage.clear();
 } catch (err) {

@@ -232,6 +232,18 @@ quando le stime sono sbagliate — ma significa che il conto del mercato serve a
 schermo, non all'ottimizzatore. La simulazione non sa misurare le funzioni che valgono per la
 persona e non per il solutore, ed e' un limite del metodo, non un risultato.
 
+## Una nota sulle finestre del browser
+
+L'app pubblicata gira dentro un iframe con sandbox, e li' `confirm()`, `alert()` e `prompt()`
+vengono ignorati in silenzio: la chiamata ritorna `false` senza che compaia niente. Il tasto
+"cancella tutto" ci era cascato e non faceva assolutamente nulla. Le conferme stanno quindi
+dentro la pagina, e non c'e' nessuna chiamata a quelle tre funzioni in tutto il progetto.
+
+Un azzeramento inoltre non basta che svuoti lo stato: le viste tengono in memoria dei calcoli
+costosi — la scheda d'asta, il piano del reparto, l'elenco appena incollato — che vivono fuori
+dallo stato e sopravviverebbero. Cancellando e reimportando un listone diverso restavano a
+schermo giocatori che non esistevano piu'. Le viste registrano ora la propria ripulitura.
+
 ## Formati riconosciuti
 
 - `.xlsx` dei creators (template Fantalab): un foglio per ruolo, colonne `Fascia`, `Ruolo`,

@@ -5,6 +5,11 @@ import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
 import { nomiSquadre } from '../domain/mercato.js';
 import { esc, roleChip, toast } from './common.js';
 
+// La conferma sta dentro la pagina e non in una finestra del browser: `confirm()` viene
+// ignorato in silenzio dentro un iframe con sandbox, che e' esattamente dove gira l'app
+// pubblicata, e il tasto non faceva assolutamente niente.
+let chiedeConferma = false;
+
 function tierEditor() {
   const role = state.ui.tierRole || 'D';
   const order = state.settings.tierOrder?.[role] || [];
@@ -174,7 +179,18 @@ export function render() {
     ${tierEditor()}
 
     <div class="card">
-      <button class="btn danger block" data-action="reset">Cancella tutto e ricomincia</button>
+      ${
+        chiedeConferma
+          ? `<div class="verdict stop" style="text-align:left">
+               <div>Cancello listone, impostazioni e asta in corso.</div>
+               <div class="small" style="font-weight:500;margin-top:4px">Non si torna indietro.</div>
+             </div>
+             <div class="grid2" style="margin-top:12px">
+               <button class="btn danger" data-action="reset-conferma">Si', cancella</button>
+               <button class="btn" data-action="reset-annulla">Annulla</button>
+             </div>`
+          : `<button class="btn danger block" data-action="reset">Cancella tutto e ricomincia</button>`
+      }
       <div class="tiny muted center" style="margin-top:8px">Listone, impostazioni e asta in corso restano solo su questo dispositivo.</div>
     </div>
   </div>`;
@@ -204,11 +220,18 @@ export function onAction(action, target, ev, rerender) {
       return true;
     }
     case 'reset':
-      if (confirm('Cancello listone, impostazioni e asta in corso. Confermi?')) {
-        resetAll();
-        toast('Tutto azzerato.');
-        rerender();
-      }
+      chiedeConferma = true;
+      rerender();
+      return true;
+    case 'reset-annulla':
+      chiedeConferma = false;
+      rerender();
+      return true;
+    case 'reset-conferma':
+      chiedeConferma = false;
+      resetAll();
+      toast('Tutto azzerato.');
+      rerender();
       return true;
     default:
       return false;

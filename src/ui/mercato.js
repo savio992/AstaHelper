@@ -2,7 +2,7 @@
 // e se la strada e' cambiata. Sta fuori dalla schermata d'asta apposta: sono cose da leggere
 // con calma, non mentre si rilancia.
 
-import { state, ownedMap, unavailableSet, takenMap, assegnaMolti } from '../store.js';
+import { state, ownedMap, unavailableSet, takenMap, assegnaMolti, onReset } from '../store.js';
 import { leggiElenco } from '../domain/incolla.js';
 import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
 import { concorrenzaPerRuolo, disponibilita } from '../domain/mercato.js';
@@ -12,7 +12,10 @@ import { esc, roleChip, emptyState, toast } from './common.js';
 let scenario = null;
 let incollato = null;
 
+onReset(() => invalidate());
+
 export function invalidate() {
+
   scenario = null;
   incollato = null;
 }

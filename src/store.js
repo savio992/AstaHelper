@@ -45,6 +45,16 @@ export const state = {
 };
 
 const listeners = new Set();
+// Le viste tengono in memoria dei calcoli costosi (scheda d'asta, piano del reparto, elenco
+// incollato). Sono fuori dallo stato, quindi un azzeramento non li toccherebbe e resterebbero
+// a schermo giocatori di un listone appena cancellato.
+const ripuliture = new Set();
+
+/** Registra una ripulitura da eseguire quando si cancella tutto. */
+export function onReset(fn) {
+  ripuliture.add(fn);
+  return () => ripuliture.delete(fn);
+}
 export function subscribe(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
@@ -96,7 +106,11 @@ export function load() {
 
 export function resetAll() {
   state.prevPlan = null;
-  localStorage.removeItem(KEY);
+  try {
+    localStorage.removeItem(KEY);
+  } catch (err) {
+    console.warn('Cancellazione non riuscita', err);
+  }
   state.settings = defaultSettings();
   state.sources = [];
   state.roster = [];
@@ -107,6 +121,14 @@ export function resetAll() {
   state.mercato = null;
   state.tabellone = null;
   state.plan = null;
+  state.ui = { ...state.ui, tab: 'listone', query: '', listQuery: '', selectedId: null, bidPrice: null, chiediSquadra: null, prezzoAltri: null, roleFilter: 'ALL', listRole: 'ALL' };
+  for (const fn of ripuliture) {
+    try {
+      fn();
+    } catch (err) {
+      console.warn('Ripulitura non riuscita', err);
+    }
+  }
   notify();
 }
 
