@@ -9,6 +9,7 @@ import * as piano from '../../src/ui/piano.js';
 import * as mercato from '../../src/ui/mercato.js';
 import * as listone from '../../src/ui/listone.js';
 import * as setup from '../../src/ui/setup.js';
+import * as advisor from '../../src/domain/advisor.js';
 import { ROLES } from '../../src/domain/model.js';
 
 const lines = [];
@@ -211,6 +212,51 @@ try {
   check('e resta visibile per poterlo recuperare', piano.render(noop).includes('Scartati da te'));
   piano.onAction('libera', { dataset: { id: daScartare.id } }, null, noop);
   check('si puo\' recuperare', !piano.render(noop).includes('Scartati da te'));
+
+  // --- le due modalita' ---------------------------------------------------------------
+  store.state.ui.tab = 'piano';
+  piano.onAction('modalita', { dataset: { v: 'mia' } }, null, noop);
+  check('la modalita\' si puo\' cambiare', store.state.settings.modalita === 'mia');
+  const inModalitaMia = piano.render(noop);
+  check('la lista compare', inModalitaMia.includes('La tua lista'));
+  check('e si puo\' cercare chi aggiungere', inModalitaMia.includes('Aggiungi alla lista'));
+
+  const daMettere = store.state.players.filter((x) => x.role === 'A' && !store.state.auction.taken[x.id]).sort((a, b) => b.expectedPrice - a.expectedPrice)[0];
+  piano.onAction('blocca', { dataset: { id: daMettere.id } }, null, noop);
+  const conUnNome = piano.render(noop);
+  check('il nome scelto entra in lista', conUnNome.includes('1 nomi') || conUnNome.includes('scelto da te'));
+
+  // In modalita' "scelgo io" il numerone dell'asta cambia domanda.
+  store.state.ui.tab = 'asta';
+  store.state.ui.selectedId = daMettere.id;
+  asta.invalidate();
+  // Il primo disegno avvia il calcolo e restituisce la rotella; il secondo lo trova pronto.
+  // Nell'app lo fa il rerender passato a ensureAdvice, qui il rerender e' un noop.
+  asta.render(noop);
+  await new Promise((r) => setTimeout(r, 4000));
+  asta.render(noop);
+  await new Promise((r) => setTimeout(r, 4000));
+  const schedaMia = asta.render(noop);
+  // Se il calcolo va in errore la scheda resta con la rotella: qui lo si fa emergere.
+  let erroreConsiglio = '';
+  try {
+    const ctx = store.contestoConsiglio(daMettere.id);
+    const a = { players: store.state.players, settings: store.state.settings, owned: store.ownedMap(), unavailable: ctx.unavailable, obbligati: store.obbligatiSet(), playerId: daMettere.id };
+    const alts = advisor.alternatives({ ...a, limit: 12 });
+    advisor.maxBid(a);
+    advisor.spiegaPerdita({ ...a, piano: store.state.plan, alternative: alts.alternatives });
+    advisor.tettoSullaLista({ players: a.players, settings: a.settings, owned: a.owned, lista: store.obbligatiSet(), playerId: daMettere.id });
+  } catch (e) {
+    erroreConsiglio = (e && e.message) || String(e);
+  }
+  check('i consigli non vanno in errore', !erroreConsiglio, erroreConsiglio || 'ok');
+  const etichetta = (schedaMia.match(/class="lbl">([^<]*)</) || [])[1] || 'NESSUNA';
+  check('l\'asta chiede quanto posso arrivare, non quanto vale', schedaMia.includes('puoi arrivare a questo'), `${daMettere.name} · ${etichetta}`);
+  check('e dice quanto e\' impegnato sul resto della lista', schedaMia.includes('della tua lista'));
+
+  piano.onAction('modalita', { dataset: { v: 'auto' } }, null, noop);
+  store.state.ui.selectedId = null;
+  asta.invalidate();
 
   // --- cancella tutto ----------------------------------------------------------------
   // Il tasto usava confirm(), che dentro un iframe con sandbox viene ignorato in silenzio:

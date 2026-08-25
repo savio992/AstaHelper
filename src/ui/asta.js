@@ -2,7 +2,7 @@
 
 import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, contestoConsiglio } from '../store.js';
 import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots, elenco } from '../domain/model.js';
-import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta } from '../domain/advisor.js';
+import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista } from '../domain/advisor.js';
 import { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } from '../domain/mercato.js';
 import { spiegaMossa } from '../domain/strategia.js';
 import { optimizeRoster, CONFIG_SOLUTORE } from '../domain/optimizer.js';
@@ -49,13 +49,15 @@ function ensureAdvice(rerender) {
       const pianoRif = escluso
         ? optimizeRoster({ players: args.players, settings: args.settings, owned: args.owned, unavailable, obbligati: args.obbligati, ...CONFIG_SOLUTORE })
         : state.plan;
+      const alts = alternatives({ ...args, limit: 12 });
       cache = {
         key,
         escluso,
         pianoRif,
         bid: maxBid(args),
-        alts: alternatives({ ...args, limit: 8 }),
-        perdita: spiegaPerdita({ ...args, piano: pianoRif }),
+        alts,
+        // Le stesse alternative, non ricalcolate: erano due secondi buttati a ogni apertura.
+        perdita: spiegaPerdita({ ...args, piano: pianoRif, alternative: alts.alternatives }),
       };
     } catch (err) {
       console.error(err);
@@ -319,11 +321,29 @@ function detail(p) {
               // rosa e quanto il reparto puo' permettersi sono due cose diverse: schiacciarle
               // in una cifra sola costringe a indovinare quale delle due si sta leggendo.
               const tettoFase = fase.slotMancanti > 0 ? fase.massimoOra : null;
-              const frena = tettoFase !== null && bid.maxBid > tettoFase;
-              return `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid <= 0 ? '—' : bid.maxBid}</div>
-             <div class="lbl">${bid.maxBid <= 0 ? 'non fa per te' : 'vale fino a questo'}</div>
+
+              // In modalita' "scelgo io" la domanda e' un'altra. Il punto di pareggio confronta
+              // con la rosa alternativa che il solutore costruirebbe, ma chi ha scelto la
+              // propria lista non vuole quell'alternativa: vuole sapere fin dove puo' spingersi
+              // continuando a permettersi tutti gli altri nomi che ha messo in lista.
+              const miaLista = state.settings.modalita === 'mia';
+              const conto = miaLista
+                ? tettoSullaLista({ players: state.players, settings: state.settings, owned, lista: obbligatiSet(), playerId: p.id })
+                : null;
+              const cifra = miaLista ? conto.massimo : bid.maxBid;
+              const frena = !miaLista && tettoFase !== null && bid.maxBid > tettoFase;
+              return `<div class="n mono ${cifra <= 0 ? 'zero' : ''}">${cifra <= 0 ? '—' : cifra}</div>
+             <div class="lbl">${cifra <= 0 ? 'non fa per te' : miaLista ? 'puoi arrivare a questo' : 'vale fino a questo'}</div>
              ${
-               tettoFase !== null && bid.maxBid > 0
+               miaLista
+                 ? `<div class="small muted" style="margin-top:8px">
+                      Restano ${conto.riservatoLista} crediti impegnati sugli altri nomi della tua lista
+                      e ${conto.scoperte} caselle da riempire. Il valore di mercato dice ${bid.maxBid}.
+                    </div>`
+                 : ''
+             }
+             ${
+               !miaLista && tettoFase !== null && bid.maxBid > 0
                  ? `<div class="small" style="margin-top:8px;color:var(--${frena ? 'warn' : 'muted'})">
                       ${
                         frena

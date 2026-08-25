@@ -6,7 +6,7 @@ import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domai
 import { valuePlayers, rosterScore, depthWeights } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
-import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, CONFIG_ASTA } from '../src/domain/advisor.js';
+import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, CONFIG_ASTA } from '../src/domain/advisor.js';
 import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa, spiegaModifica } from '../src/domain/strategia.js';
 import { makeContext, makeListone } from './helpers.js';
 
@@ -833,4 +833,48 @@ test('un giocatore fuori dal piano non puo\' avere un pareggio assurdo', () => {
       `${fuori.name}: il piano non lo vuole a ${Math.round(fuori.expectedPrice)} ma il pareggio dice ${res.maxBid}`
     );
   }
+});
+
+test('il tetto su una lista scelta a mano tiene conto di tutti gli altri nomi', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const scelti = optimizeRoster({ players, settings, ...CONFIG_ASTA }).picks.slice(0, 10);
+  const lista = new Set(scelti.map((p) => p.id));
+  const target = scelti[0];
+  const conto = tettoSullaLista({ players, settings, lista, playerId: target.id });
+
+  const altri = scelti
+    .filter((p) => p.id !== target.id)
+    .reduce((a, p) => a + Math.max(1, Math.round(p.expectedPrice ?? 1)), 0);
+  assert.equal(conto.riservatoLista, altri, 'riserva il prezzo di mercato di ogni altro nome in lista');
+  assert.ok(conto.massimo <= settings.budget - altri, 'non puo\' promettere piu\' di quel che resta');
+  assert.ok(conto.massimo > 0);
+  // Le caselle che la lista lascia vuote costano almeno un credito l'una.
+  assert.equal(conto.scoperte, totalSlots(settings) - lista.size);
+});
+
+test('piu\' nomi metto in lista, meno posso spendere su ciascuno', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const picks = optimizeRoster({ players, settings, ...CONFIG_ASTA }).picks;
+  const target = picks[0];
+  const corta = tettoSullaLista({ players, settings, lista: new Set([target.id]), playerId: target.id });
+  const lunga = tettoSullaLista({ players, settings, lista: new Set(picks.slice(0, 12).map((p) => p.id)), playerId: target.id });
+  assert.ok(lunga.massimo < corta.massimo, `${lunga.massimo} deve essere sotto ${corta.massimo}`);
+});
+
+test('scegliere la propria lista ha un costo misurabile, e viene detto', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  // Una lista volutamente discutibile: i piu' cari del listone, ruolo per ruolo.
+  const lista = new Set(
+    ROLES.flatMap((r) =>
+      players
+        .filter((p) => p.role === r)
+        .sort((a, b) => (b.expectedPrice ?? 0) - (a.expectedPrice ?? 0))
+        .slice(0, 1)
+        .map((p) => p.id)
+    )
+  );
+  const c = costoDellaLista({ players, settings, lista });
+  assert.ok(c);
+  assert.ok(c.differenza >= -0.001, 'imporre una lista non puo\' battere il piano libero');
+  assert.equal(typeof c.percentuale, 'number');
 });

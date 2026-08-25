@@ -1,12 +1,12 @@
 // Il piano: la miglior rosa possibile con i crediti che restano, e come sono distribuiti.
 
-import { state, rebuildPlan, blocca, scarta, liberaScelta, statoScelta, obbligatiSet } from '../store.js';
+import { state, rebuildPlan, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, updateSettings } from '../store.js';
 import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
-import { tierBudgetReport, maxBid, alternatives } from '../domain/advisor.js';
+import { tierBudgetReport, maxBid, alternatives, tettoSullaLista, costoDellaLista } from '../domain/advisor.js';
 import { clubExposure } from '../domain/valuation.js';
 import { ownedMap, unavailableSet, onReset } from '../store.js';
 import { spiegaModifica } from '../domain/strategia.js';
-import { esc, roleChip, emptyState, playerRow, edgeBadge, toast } from './common.js';
+import { esc, roleChip, emptyState, playerRow, edgeBadge, toast, matches } from './common.js';
 
 /**
  * L'effetto di una correzione fatta a mano.
@@ -180,6 +180,7 @@ onReset(() => {
   scheda = null;
   schedaInCorso = false;
   modificaChiusa = null;
+  confronto = null;
 });
 
 function buildScheda(rerender) {
@@ -278,6 +279,183 @@ function tiersCard(plan) {
   </div>`;
 }
 
+/**
+ * Le due modalita' di lavoro.
+ *
+ * Il solutore nasce per rispondere a "la miglior rosa possibile", e l'offerta massima ha senso
+ * proprio perche' esiste un'alternativa da ricalcolare. Ma chi all'asta ha gia' in testa la
+ * squadra che vuole non sta facendo quella domanda, e imporre venticinque nomi uno alla volta
+ * col lucchetto e' scomodo. Qui si sceglie quale delle due domande si sta facendo.
+ */
+function modalitaCard() {
+  const mia = state.settings.modalita === 'mia';
+  const lista = obbligatiSet();
+  return `
+  <div class="card">
+    <div class="segment">
+      <button data-action="modalita" data-v="auto" aria-pressed="${!mia}">La scegli tu</button>
+      <button data-action="modalita" data-v="mia" aria-pressed="${mia}">Scelgo io</button>
+    </div>
+    <div class="tiny muted" style="margin-top:8px">
+      ${
+        mia
+          ? `La rosa e' la tua lista: ${lista.size} nomi scelti. Le caselle che lasci vuote le completo io,
+             e per ogni giocatore ti dico quanto puoi pagarlo continuando a permetterti tutti gli altri.`
+          : `Costruisco io la miglior rosa possibile coi crediti che restano. Col lucchetto imponi
+             un nome e ricalcolo il resto attorno a lui.`
+      }
+    </div>
+  </div>`;
+}
+
+/**
+ * Il conto della lista scelta a mano.
+ *
+ * Due numeri che in modalita' automatica non servono: quanto costa la lista ai prezzi di
+ * mercato, e quanto costa in punti rispetto alla rosa che avrei costruito io. Il secondo non
+ * e' un rimprovero — a volte si sa qualcosa che il listone non sa — ma va detto.
+ */
+function listaCard(plan) {
+  const lista = obbligatiSet();
+  const budget = state.settings.budget || 500;
+  const speso = plan.owned.reduce((a, p) => a + p.paid, 0);
+  const conto = tettoSullaLista({
+    players: state.players,
+    settings: state.settings,
+    owned: new Map(plan.owned.map((p) => [p.id, p.paid])),
+    lista,
+    playerId: null,
+  });
+  const scelti = [...lista].map((id) => state.players.find((p) => p.id === id)).filter(Boolean);
+
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:10px">
+      <h2 style="margin:0">La tua lista</h2>
+      <span class="tiny muted">${scelti.length} nomi · ${conto.scoperte} caselle libere</span>
+    </div>
+    ${
+      scelti.length
+        ? `<div class="row between small">
+             <span class="muted">costo ai prezzi di mercato</span>
+             <span class="mono"><b>${conto.riservatoLista + speso}</b> <span class="muted">di ${budget}</span></span>
+           </div>
+           <div class="row between small" style="margin-top:6px">
+             <span class="muted">ti resta per le caselle libere</span>
+             <span class="mono"><b style="color:var(--${budget - speso - conto.riservatoLista < conto.scoperte ? 'danger' : 'text'})">${
+               budget - speso - conto.riservatoLista
+             }</b> <span class="muted">per ${conto.scoperte}</span></span>
+           </div>
+           ${
+             budget - speso - conto.riservatoLista < conto.scoperte
+               ? `<div class="verdict stop" style="margin-top:10px;text-align:left">
+                    <div class="small" style="font-weight:600">La lista non ci sta nel budget.</div>
+                    <div class="small" style="font-weight:500;margin-top:4px">Ai prezzi di mercato non riusciresti a riempire le caselle rimaste. Togli qualche nome o accetta di pagarne qualcuno meno del previsto.</div>
+                  </div>`
+               : ''
+           }
+           <div class="tiny muted" style="margin-top:10px">
+             Caselle libere per ruolo: ${ROLES.map((r) => `${r} ${conto.mancanti[r]}`).join(' · ')}
+           </div>`
+        : `<div class="small muted">Non hai ancora scelto nessuno. Cerca i giocatori qui sotto o nella scheda Asta e tocca <b>🔓</b> per metterli in lista.</div>`
+    }
+    ${confrontoCard()}
+  </div>
+  ${cercaCard()}`;
+}
+
+/** La ricerca per costruire la lista: senza, ogni nome andrebbe cercato nella scheda Asta. */
+function cercaCard() {
+  const q = (state.ui.listaQuery || '').trim();
+  const lista = obbligatiSet();
+  const risultati = q
+    ? state.players
+        .filter((p) => matches(p, q) && !state.auction.taken[p.id] && !state.auction.owned[p.id])
+        .sort((a, b) => (b.expectedPrice ?? 0) - (a.expectedPrice ?? 0))
+        .slice(0, 25)
+    : [];
+  return `
+  <div class="card">
+    <h2>Aggiungi alla lista</h2>
+    <input type="search" id="listaQuery" placeholder="Cerca un giocatore" value="${esc(q)}" data-action="listaquery" autocomplete="off" autocorrect="off" spellcheck="false">
+    ${
+      risultati.length
+        ? `<div class="listwrap" style="margin-top:12px"><ul class="plist">
+             ${risultati
+               .map(
+                 (p) => `<li>
+                   ${roleChip(p.role)}
+                   <div class="grow">
+                     <div class="nm">${esc(p.name)}</div>
+                     <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+                   </div>
+                   <div class="pr mono">${Math.round(p.expectedPrice ?? 0)}<small>atteso</small></div>
+                   <button class="btn ${lista.has(p.id) ? 'primary' : 'ghost'}" style="min-width:44px;padding:9px"
+                     data-action="${lista.has(p.id) ? 'libera' : 'blocca'}" data-id="${esc(p.id)}"
+                     aria-label="${lista.has(p.id) ? 'Togli dalla lista' : 'Metti in lista'}">${lista.has(p.id) ? '🔒' : '＋'}</button>
+                 </li>`
+               )
+               .join('')}
+           </ul></div>`
+        : q
+          ? `<div class="small muted center" style="padding:14px">Nessun giocatore trovato.</div>`
+          : `<div class="tiny muted" style="margin-top:8px">Bastano tre lettere.</div>`
+    }
+  </div>`;
+}
+
+// Il confronto con la rosa automatica costa due ottimizzazioni: si calcola su richiesta.
+let confronto = null;
+let confrontoInCorso = false;
+
+function buildConfronto(rerender) {
+  confrontoInCorso = true;
+  setTimeout(() => {
+    try {
+      confronto = costoDellaLista({
+        players: state.players,
+        settings: state.settings,
+        owned: ownedMap(),
+        unavailable: unavailableSet(),
+        lista: obbligatiSet(),
+      });
+    } catch (err) {
+      console.error(err);
+      confronto = null;
+    } finally {
+      confrontoInCorso = false;
+      rerender();
+    }
+  }, 30);
+}
+
+function confrontoCard() {
+  const lista = obbligatiSet();
+  if (!lista.size) return '';
+  if (confrontoInCorso) {
+    return `<div class="small muted" style="margin-top:12px"><span class="spinner"></span> Confronto con la rosa automatica…</div>`;
+  }
+  if (!confronto) {
+    return `<button class="btn ghost block" style="margin-top:12px" data-action="confronta">Quanto mi costa scegliere io?</button>`;
+  }
+  const d = confronto.differenza;
+  return `
+  <div class="verdict ${d > 0 ? 'edge' : 'go'}" style="margin-top:12px;text-align:left">
+    <div class="small" style="font-weight:600">
+      ${
+        d > 0.5
+          ? `La tua lista vale ${d} punti in meno della rosa che costruirei io (−${confronto.percentuale}%).`
+          : d < -0.5
+            ? `La tua lista vale ${-d} punti in piu' della mia.`
+            : `La tua lista vale quanto la rosa che costruirei io.`
+      }
+    </div>
+    <div class="small" style="font-weight:500;margin-top:4px">
+      Non e' un rimprovero: a volte si sa qualcosa che il listone non sa. Serve solo a sapere quanto sta costando.
+    </div>
+  </div>`;
+}
+
 export function render() {
   if (!state.players.length) {
     return `<div class="view">${emptyState('📋', 'Nessun listone caricato', 'Importa prima il CSV delle fasce.')}</div>`;
@@ -298,6 +476,8 @@ export function render() {
   const filled = plan.owned.length;
   return `
   <div class="view">
+    ${modalitaCard()}
+    ${state.settings.modalita === 'mia' ? listaCard(plan) : ''}
     ${modificaCard()}
     <div class="card">
       <div class="row between">
@@ -337,6 +517,7 @@ export function render() {
 export function onAction(action, target, ev, rerender) {
   if (action === 'blocca' || action === 'scarta' || action === 'libera') {
     const id = target.dataset.id;
+    confronto = null;
     const ok = action === 'blocca' ? blocca(id) : action === 'scarta' ? scarta(id) : liberaScelta(id);
     if (ok === false) toast('Con questo scarto la rosa non si chiude piu\'.');
     scheda = null;
@@ -346,6 +527,18 @@ export function onAction(action, target, ev, rerender) {
   }
   if (action === 'chiudi-modifica') {
     modificaChiusa = state.ultimaModifica?.at ?? null;
+    rerender();
+    return true;
+  }
+  if (action === 'modalita') {
+    updateSettings({ modalita: target.dataset.v });
+    confronto = null;
+    rerender();
+    return true;
+  }
+  if (action === 'confronta') {
+    confronto = null;
+    buildConfronto(rerender);
     rerender();
     return true;
   }
@@ -359,6 +552,15 @@ export function onAction(action, target, ev, rerender) {
     scheda = null;
     buildScheda(rerender);
     rerender();
+    return true;
+  }
+  return false;
+}
+
+export function onInput(action, target, rerender) {
+  if (action === 'listaquery') {
+    state.ui.listaQuery = target.value;
+    rerender({ keepFocus: 'listaQuery' });
     return true;
   }
   return false;

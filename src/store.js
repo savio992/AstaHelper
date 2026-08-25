@@ -206,6 +206,11 @@ export function unavailableSet() {
   return new Set([...Object.keys(state.auction.taken), ...Object.keys(state.auction.esclusi || {})]);
 }
 
+/** La lista scelta a mano, che in modalita' "scelgo io" e' la rosa vera e propria. */
+export function listaMia() {
+  return obbligatiSet();
+}
+
 /** I giocatori che voglio in rosa comunque: il piano si ricalcola attorno a loro. */
 export function obbligatiSet() {
   return new Set(Object.keys(state.auction.bloccati || {}).filter((id) => !state.auction.owned[id] && !state.auction.taken[id]));

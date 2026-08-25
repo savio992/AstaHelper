@@ -150,6 +150,28 @@ valeva centoventitre. La ricerca locale e' obbligatoria; il pruning invece non c
 risultato e a conti fatti rallenta. Il conto ora sta sotto il secondo, e nel frattempo si vede
 girare la rotella.
 
+## Due modi di lavorare
+
+Il solutore nasce per rispondere a una domanda sola: la miglior rosa possibile coi crediti che
+restano. E' anche il motivo per cui l'offerta massima significa qualcosa — e' un punto di
+pareggio contro l'alternativa che il solutore ricostruirebbe. Ma chi all'asta ha gia' in testa la
+squadra che vuole non sta facendo quella domanda, e la scheda **Piano** ha quindi due modalita'.
+
+**La scegli tu** e' il comportamento di sempre: rosa ottimale, e col lucchetto si impone un nome
+alla volta.
+
+**Scelgo io** ribalta i ruoli. Si costruisce la propria lista cercando i giocatori, le caselle
+lasciate vuote le completa il solutore, e il numero grande durante l'asta cambia domanda: non
+piu' "quanto vale" ma **"fin dove posso spingermi continuando a permettermi tutti gli altri nomi
+della lista"**. E' aritmetica, non ottimizzazione — si mette da parte il prezzo di mercato di
+ogni altro nome ancora da comprare piu' un credito per ogni casella scoperta — ed e' la risposta
+giusta a quella domanda, perche' su una lista decisa a mano l'alternativa da ricalcolare non
+esiste: la rosa e' quella.
+
+La lista dichiara anche quanto costa: *"la tua lista vale 41 punti in meno della rosa che
+costruirei io"*. Non e' un rimprovero — a volte si sa qualcosa che il listone non sa — ma il
+prezzo di quella convinzione va visto.
+
 **Il piano e' una proposta, non un verdetto.** Nella scheda Piano ogni obiettivo ha due comandi:
 il lucchetto lo impone e il solutore ricalcola tutto il resto attorno a lui con i crediti che
 restano, la crocetta lo toglie di mezzo per sempre. Sono le due cose che un'ottimizzazione non

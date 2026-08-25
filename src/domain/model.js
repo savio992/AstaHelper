@@ -152,6 +152,9 @@ export function defaultSettings() {
     // I prezzi consigliati dai creators sono gia' calibrati sul montepremi di una lega da
     // dieci: quando ci sono, sono la stima migliore. 'model' serve ai listoni senza prezzi.
     priceSource: 'listone',
+    // Come si compone la rosa: 'auto' la sceglie il solutore, 'mia' la scelgo io e il solutore
+    // si limita a completare le caselle che lascio vuote e a dirmi quanto posso spendere.
+    modalita: 'auto',
     // Tetti opzionali di spesa per ruolo (crediti). null = nessun vincolo.
     roleBudget: { P: null, D: null, C: null, A: null },
     // Ordine delle fasce per ruolo (dalla migliore alla peggiore), popolato all'import.

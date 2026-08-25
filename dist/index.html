@@ -495,6 +495,9 @@ function defaultSettings() {
     // I prezzi consigliati dai creators sono gia' calibrati sul montepremi di una lega da
     // dieci: quando ci sono, sono la stima migliore. 'model' serve ai listoni senza prezzi.
     priceSource: 'listone',
+    // Come si compone la rosa: 'auto' la sceglie il solutore, 'mia' la scelgo io e il solutore
+    // si limita a completare le caselle che lascio vuote e a dirmi quanto posso spendere.
+    modalita: 'auto',
     // Tetti opzionali di spesa per ruolo (crediti). null = nessun vincolo.
     roleBudget: { P: null, D: null, C: null, A: null },
     // Ordine delle fasce per ruolo (dalla migliore alla peggiore), popolato all'import.
@@ -2942,6 +2945,11 @@ function unavailableSet() {
   return new Set([...Object.keys(state.auction.taken), ...Object.keys(state.auction.esclusi || {})]);
 }
 
+/** La lista scelta a mano, che in modalita' "scelgo io" e' la rosa vera e propria. */
+function listaMia() {
+  return obbligatiSet();
+}
+
 /** I giocatori che voglio in rosa comunque: il piano si ricalcola attorno a loro. */
 function obbligatiSet() {
   return new Set(Object.keys(state.auction.bloccati || {}).filter((id) => !state.auction.owned[id] && !state.auction.taken[id]));
@@ -3206,7 +3214,7 @@ function creditsLeft() {
   return (state.settings.budget || 500) - spentTotal();
 }
 
-return { onReset, subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, obbligatiSet, blocca, scarta, liberaScelta, contestoConsiglio, statoScelta, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, undo, updateSettings, spentTotal, creditsLeft, state };
+return { onReset, subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, listaMia, obbligatiSet, blocca, scarta, liberaScelta, contestoConsiglio, statoScelta, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, undo, updateSettings, spentTotal, creditsLeft, state };
 })();
 
 // ===== src/domain/advisor.js =====
@@ -3609,7 +3617,7 @@ function abbinamentoPortiere({ players, settings, plan, owned = new Map(), unava
  * su uno da venti: significa che quei crediti si ridistribuiscono, e il piano puo' rifare
  * l'attacco intero e portarsi dietro difesa e centrocampo.
  */
-function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, piano = null, limite = 4 }) {
+function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, piano = null, limite = 4, alternative = null }) {
   const perso = players.find((p) => p.id === playerId);
   if (!perso) return null;
 
@@ -3761,7 +3769,69 @@ function spiegaOfferta({ players, settings, owned = new Map(), unavailable = new
   return { frasi, atteso, offerta, presenze, equivalente: eq || null, panchina };
 }
 
-return { maxSpendableNow, slotsLeftByRole, faseCorrente, budgetDiFase, maxBid, alternatives, planDiff, tierBudgetReport, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, CONFIG_ASTA };
+/**
+ * Il tetto di spesa su una lista scelta a mano.
+ *
+ * In modalita' automatica l'offerta massima e' un punto di pareggio: il prezzo oltre il quale
+ * conviene la rosa alternativa. Su una lista decisa dall'utente quell'alternativa non esiste —
+ * la rosa e' quella, l'ha scelta lui — e la domanda cambia: quanto posso pagarlo continuando a
+ * permettermi tutti gli altri che ho messo in lista.
+ *
+ * E' aritmetica, non ottimizzazione: si mette da parte il prezzo di mercato di ogni altro nome
+ * ancora da comprare, piu' un credito per ogni casella che la lista lascia vuota.
+ */
+function tettoSullaLista({ players, settings, owned = new Map(), lista = new Set(), playerId }) {
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const budget = settings.budget || 500;
+  const speso = [...owned.values()].reduce((a, b) => a + (Number(b) || 0), 0);
+
+  const inLista = [...lista].map((id) => byId.get(id)).filter(Boolean);
+  const daComprare = inLista.filter((p) => !owned.has(p.id) && p.id !== playerId);
+  const riservatoLista = daComprare.reduce((a, p) => a + Math.max(1, Math.round(p.expectedPrice ?? 1)), 0);
+
+  // Quante caselle restano scoperte dopo la lista: ognuna costa almeno un credito.
+  const presiPerRuolo = { P: 0, D: 0, C: 0, A: 0 };
+  for (const id of owned.keys()) {
+    const p = byId.get(id);
+    if (p && p.role in presiPerRuolo) presiPerRuolo[p.role] += 1;
+  }
+  for (const p of inLista) {
+    if (!owned.has(p.id) && p.role in presiPerRuolo) presiPerRuolo[p.role] += 1;
+  }
+  let scoperte = 0;
+  const mancanti = {};
+  for (const role of ROLES) {
+    mancanti[role] = Math.max(0, (settings.slots?.[role] || 0) - presiPerRuolo[role]);
+    scoperte += mancanti[role];
+  }
+  // La casella del giocatore che sto valutando non va contata due volte.
+  const target = byId.get(playerId);
+  const suoPosto = target && !lista.has(playerId) && !owned.has(playerId) ? Math.min(1, mancanti[target.role] || 0) : 0;
+
+  const residuo = budget - speso - riservatoLista - Math.max(0, scoperte - suoPosto);
+  return {
+    massimo: Math.max(0, residuo),
+    riservatoLista,
+    scoperte,
+    mancanti,
+    costoLista: riservatoLista + (owned.size ? speso : 0),
+  };
+}
+
+/** Quanto costa in punti attesi giocare la propria lista invece del piano libero. */
+function costoDellaLista({ players, settings, owned = new Map(), unavailable = new Set(), lista = new Set() }) {
+  const libero = optimizeRoster({ players, settings, owned, unavailable, ...FAST });
+  const mia = optimizeRoster({ players, settings, owned, unavailable, obbligati: lista, ...FAST });
+  if (!libero.ok || !mia.ok) return null;
+  return {
+    libero,
+    mia,
+    differenza: Math.round((libero.score - mia.score) * 10) / 10,
+    percentuale: libero.score > 0 ? Math.round(((libero.score - mia.score) / libero.score) * 1000) / 10 : 0,
+  };
+}
+
+return { maxSpendableNow, slotsLeftByRole, faseCorrente, budgetDiFase, maxBid, alternatives, planDiff, tierBudgetReport, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, CONFIG_ASTA };
 })();
 
 // ===== src/domain/strategia.js =====
@@ -4159,7 +4229,7 @@ const __m_src_ui_asta_js = (() => {
 
 const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, contestoConsiglio } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots, elenco } = __m_src_domain_model_js;
-const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta } = __m_src_domain_advisor_js;
+const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista } = __m_src_domain_advisor_js;
 const { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } = __m_src_domain_mercato_js;
 const { spiegaMossa } = __m_src_domain_strategia_js;
 const { optimizeRoster, CONFIG_SOLUTORE } = __m_src_domain_optimizer_js;
@@ -4206,13 +4276,15 @@ function ensureAdvice(rerender) {
       const pianoRif = escluso
         ? optimizeRoster({ players: args.players, settings: args.settings, owned: args.owned, unavailable, obbligati: args.obbligati, ...CONFIG_SOLUTORE })
         : state.plan;
+      const alts = alternatives({ ...args, limit: 12 });
       cache = {
         key,
         escluso,
         pianoRif,
         bid: maxBid(args),
-        alts: alternatives({ ...args, limit: 8 }),
-        perdita: spiegaPerdita({ ...args, piano: pianoRif }),
+        alts,
+        // Le stesse alternative, non ricalcolate: erano due secondi buttati a ogni apertura.
+        perdita: spiegaPerdita({ ...args, piano: pianoRif, alternative: alts.alternatives }),
       };
     } catch (err) {
       console.error(err);
@@ -4476,11 +4548,29 @@ function detail(p) {
               // rosa e quanto il reparto puo' permettersi sono due cose diverse: schiacciarle
               // in una cifra sola costringe a indovinare quale delle due si sta leggendo.
               const tettoFase = fase.slotMancanti > 0 ? fase.massimoOra : null;
-              const frena = tettoFase !== null && bid.maxBid > tettoFase;
-              return `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid <= 0 ? '—' : bid.maxBid}</div>
-             <div class="lbl">${bid.maxBid <= 0 ? 'non fa per te' : 'vale fino a questo'}</div>
+
+              // In modalita' "scelgo io" la domanda e' un'altra. Il punto di pareggio confronta
+              // con la rosa alternativa che il solutore costruirebbe, ma chi ha scelto la
+              // propria lista non vuole quell'alternativa: vuole sapere fin dove puo' spingersi
+              // continuando a permettersi tutti gli altri nomi che ha messo in lista.
+              const miaLista = state.settings.modalita === 'mia';
+              const conto = miaLista
+                ? tettoSullaLista({ players: state.players, settings: state.settings, owned, lista: obbligatiSet(), playerId: p.id })
+                : null;
+              const cifra = miaLista ? conto.massimo : bid.maxBid;
+              const frena = !miaLista && tettoFase !== null && bid.maxBid > tettoFase;
+              return `<div class="n mono ${cifra <= 0 ? 'zero' : ''}">${cifra <= 0 ? '—' : cifra}</div>
+             <div class="lbl">${cifra <= 0 ? 'non fa per te' : miaLista ? 'puoi arrivare a questo' : 'vale fino a questo'}</div>
              ${
-               tettoFase !== null && bid.maxBid > 0
+               miaLista
+                 ? `<div class="small muted" style="margin-top:8px">
+                      Restano ${conto.riservatoLista} crediti impegnati sugli altri nomi della tua lista
+                      e ${conto.scoperte} caselle da riempire. Il valore di mercato dice ${bid.maxBid}.
+                    </div>`
+                 : ''
+             }
+             ${
+               !miaLista && tettoFase !== null && bid.maxBid > 0
                  ? `<div class="small" style="margin-top:8px;color:var(--${frena ? 'warn' : 'muted'})">
                       ${
                         frena
@@ -5218,13 +5308,13 @@ return { invalidate, render, onAction, onInput };
 const __m_src_ui_piano_js = (() => {
 // Il piano: la miglior rosa possibile con i crediti che restano, e come sono distribuiti.
 
-const { state, rebuildPlan, blocca, scarta, liberaScelta, statoScelta, obbligatiSet } = __m_src_store_js;
+const { state, rebuildPlan, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, updateSettings } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
-const { tierBudgetReport, maxBid, alternatives } = __m_src_domain_advisor_js;
+const { tierBudgetReport, maxBid, alternatives, tettoSullaLista, costoDellaLista } = __m_src_domain_advisor_js;
 const { clubExposure } = __m_src_domain_valuation_js;
 const { ownedMap, unavailableSet, onReset } = __m_src_store_js;
 const { spiegaModifica } = __m_src_domain_strategia_js;
-const { esc, roleChip, emptyState, playerRow, edgeBadge, toast } = __m_src_ui_common_js;
+const { esc, roleChip, emptyState, playerRow, edgeBadge, toast, matches } = __m_src_ui_common_js;
 
 /**
  * L'effetto di una correzione fatta a mano.
@@ -5398,6 +5488,7 @@ onReset(() => {
   scheda = null;
   schedaInCorso = false;
   modificaChiusa = null;
+  confronto = null;
 });
 
 function buildScheda(rerender) {
@@ -5496,6 +5587,183 @@ function tiersCard(plan) {
   </div>`;
 }
 
+/**
+ * Le due modalita' di lavoro.
+ *
+ * Il solutore nasce per rispondere a "la miglior rosa possibile", e l'offerta massima ha senso
+ * proprio perche' esiste un'alternativa da ricalcolare. Ma chi all'asta ha gia' in testa la
+ * squadra che vuole non sta facendo quella domanda, e imporre venticinque nomi uno alla volta
+ * col lucchetto e' scomodo. Qui si sceglie quale delle due domande si sta facendo.
+ */
+function modalitaCard() {
+  const mia = state.settings.modalita === 'mia';
+  const lista = obbligatiSet();
+  return `
+  <div class="card">
+    <div class="segment">
+      <button data-action="modalita" data-v="auto" aria-pressed="${!mia}">La scegli tu</button>
+      <button data-action="modalita" data-v="mia" aria-pressed="${mia}">Scelgo io</button>
+    </div>
+    <div class="tiny muted" style="margin-top:8px">
+      ${
+        mia
+          ? `La rosa e' la tua lista: ${lista.size} nomi scelti. Le caselle che lasci vuote le completo io,
+             e per ogni giocatore ti dico quanto puoi pagarlo continuando a permetterti tutti gli altri.`
+          : `Costruisco io la miglior rosa possibile coi crediti che restano. Col lucchetto imponi
+             un nome e ricalcolo il resto attorno a lui.`
+      }
+    </div>
+  </div>`;
+}
+
+/**
+ * Il conto della lista scelta a mano.
+ *
+ * Due numeri che in modalita' automatica non servono: quanto costa la lista ai prezzi di
+ * mercato, e quanto costa in punti rispetto alla rosa che avrei costruito io. Il secondo non
+ * e' un rimprovero — a volte si sa qualcosa che il listone non sa — ma va detto.
+ */
+function listaCard(plan) {
+  const lista = obbligatiSet();
+  const budget = state.settings.budget || 500;
+  const speso = plan.owned.reduce((a, p) => a + p.paid, 0);
+  const conto = tettoSullaLista({
+    players: state.players,
+    settings: state.settings,
+    owned: new Map(plan.owned.map((p) => [p.id, p.paid])),
+    lista,
+    playerId: null,
+  });
+  const scelti = [...lista].map((id) => state.players.find((p) => p.id === id)).filter(Boolean);
+
+  return `
+  <div class="card">
+    <div class="row between" style="margin-bottom:10px">
+      <h2 style="margin:0">La tua lista</h2>
+      <span class="tiny muted">${scelti.length} nomi · ${conto.scoperte} caselle libere</span>
+    </div>
+    ${
+      scelti.length
+        ? `<div class="row between small">
+             <span class="muted">costo ai prezzi di mercato</span>
+             <span class="mono"><b>${conto.riservatoLista + speso}</b> <span class="muted">di ${budget}</span></span>
+           </div>
+           <div class="row between small" style="margin-top:6px">
+             <span class="muted">ti resta per le caselle libere</span>
+             <span class="mono"><b style="color:var(--${budget - speso - conto.riservatoLista < conto.scoperte ? 'danger' : 'text'})">${
+               budget - speso - conto.riservatoLista
+             }</b> <span class="muted">per ${conto.scoperte}</span></span>
+           </div>
+           ${
+             budget - speso - conto.riservatoLista < conto.scoperte
+               ? `<div class="verdict stop" style="margin-top:10px;text-align:left">
+                    <div class="small" style="font-weight:600">La lista non ci sta nel budget.</div>
+                    <div class="small" style="font-weight:500;margin-top:4px">Ai prezzi di mercato non riusciresti a riempire le caselle rimaste. Togli qualche nome o accetta di pagarne qualcuno meno del previsto.</div>
+                  </div>`
+               : ''
+           }
+           <div class="tiny muted" style="margin-top:10px">
+             Caselle libere per ruolo: ${ROLES.map((r) => `${r} ${conto.mancanti[r]}`).join(' · ')}
+           </div>`
+        : `<div class="small muted">Non hai ancora scelto nessuno. Cerca i giocatori qui sotto o nella scheda Asta e tocca <b>🔓</b> per metterli in lista.</div>`
+    }
+    ${confrontoCard()}
+  </div>
+  ${cercaCard()}`;
+}
+
+/** La ricerca per costruire la lista: senza, ogni nome andrebbe cercato nella scheda Asta. */
+function cercaCard() {
+  const q = (state.ui.listaQuery || '').trim();
+  const lista = obbligatiSet();
+  const risultati = q
+    ? state.players
+        .filter((p) => matches(p, q) && !state.auction.taken[p.id] && !state.auction.owned[p.id])
+        .sort((a, b) => (b.expectedPrice ?? 0) - (a.expectedPrice ?? 0))
+        .slice(0, 25)
+    : [];
+  return `
+  <div class="card">
+    <h2>Aggiungi alla lista</h2>
+    <input type="search" id="listaQuery" placeholder="Cerca un giocatore" value="${esc(q)}" data-action="listaquery" autocomplete="off" autocorrect="off" spellcheck="false">
+    ${
+      risultati.length
+        ? `<div class="listwrap" style="margin-top:12px"><ul class="plist">
+             ${risultati
+               .map(
+                 (p) => `<li>
+                   ${roleChip(p.role)}
+                   <div class="grow">
+                     <div class="nm">${esc(p.name)}</div>
+                     <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+                   </div>
+                   <div class="pr mono">${Math.round(p.expectedPrice ?? 0)}<small>atteso</small></div>
+                   <button class="btn ${lista.has(p.id) ? 'primary' : 'ghost'}" style="min-width:44px;padding:9px"
+                     data-action="${lista.has(p.id) ? 'libera' : 'blocca'}" data-id="${esc(p.id)}"
+                     aria-label="${lista.has(p.id) ? 'Togli dalla lista' : 'Metti in lista'}">${lista.has(p.id) ? '🔒' : '＋'}</button>
+                 </li>`
+               )
+               .join('')}
+           </ul></div>`
+        : q
+          ? `<div class="small muted center" style="padding:14px">Nessun giocatore trovato.</div>`
+          : `<div class="tiny muted" style="margin-top:8px">Bastano tre lettere.</div>`
+    }
+  </div>`;
+}
+
+// Il confronto con la rosa automatica costa due ottimizzazioni: si calcola su richiesta.
+let confronto = null;
+let confrontoInCorso = false;
+
+function buildConfronto(rerender) {
+  confrontoInCorso = true;
+  setTimeout(() => {
+    try {
+      confronto = costoDellaLista({
+        players: state.players,
+        settings: state.settings,
+        owned: ownedMap(),
+        unavailable: unavailableSet(),
+        lista: obbligatiSet(),
+      });
+    } catch (err) {
+      console.error(err);
+      confronto = null;
+    } finally {
+      confrontoInCorso = false;
+      rerender();
+    }
+  }, 30);
+}
+
+function confrontoCard() {
+  const lista = obbligatiSet();
+  if (!lista.size) return '';
+  if (confrontoInCorso) {
+    return `<div class="small muted" style="margin-top:12px"><span class="spinner"></span> Confronto con la rosa automatica…</div>`;
+  }
+  if (!confronto) {
+    return `<button class="btn ghost block" style="margin-top:12px" data-action="confronta">Quanto mi costa scegliere io?</button>`;
+  }
+  const d = confronto.differenza;
+  return `
+  <div class="verdict ${d > 0 ? 'edge' : 'go'}" style="margin-top:12px;text-align:left">
+    <div class="small" style="font-weight:600">
+      ${
+        d > 0.5
+          ? `La tua lista vale ${d} punti in meno della rosa che costruirei io (−${confronto.percentuale}%).`
+          : d < -0.5
+            ? `La tua lista vale ${-d} punti in piu' della mia.`
+            : `La tua lista vale quanto la rosa che costruirei io.`
+      }
+    </div>
+    <div class="small" style="font-weight:500;margin-top:4px">
+      Non e' un rimprovero: a volte si sa qualcosa che il listone non sa. Serve solo a sapere quanto sta costando.
+    </div>
+  </div>`;
+}
+
 function render() {
   if (!state.players.length) {
     return `<div class="view">${emptyState('📋', 'Nessun listone caricato', 'Importa prima il CSV delle fasce.')}</div>`;
@@ -5516,6 +5784,8 @@ function render() {
   const filled = plan.owned.length;
   return `
   <div class="view">
+    ${modalitaCard()}
+    ${state.settings.modalita === 'mia' ? listaCard(plan) : ''}
     ${modificaCard()}
     <div class="card">
       <div class="row between">
@@ -5555,6 +5825,7 @@ function render() {
 function onAction(action, target, ev, rerender) {
   if (action === 'blocca' || action === 'scarta' || action === 'libera') {
     const id = target.dataset.id;
+    confronto = null;
     const ok = action === 'blocca' ? blocca(id) : action === 'scarta' ? scarta(id) : liberaScelta(id);
     if (ok === false) toast('Con questo scarto la rosa non si chiude piu\'.');
     scheda = null;
@@ -5564,6 +5835,18 @@ function onAction(action, target, ev, rerender) {
   }
   if (action === 'chiudi-modifica') {
     modificaChiusa = state.ultimaModifica?.at ?? null;
+    rerender();
+    return true;
+  }
+  if (action === 'modalita') {
+    updateSettings({ modalita: target.dataset.v });
+    confronto = null;
+    rerender();
+    return true;
+  }
+  if (action === 'confronta') {
+    confronto = null;
+    buildConfronto(rerender);
     rerender();
     return true;
   }
@@ -5582,7 +5865,16 @@ function onAction(action, target, ev, rerender) {
   return false;
 }
 
-return { render, onAction };
+function onInput(action, target, rerender) {
+  if (action === 'listaquery') {
+    state.ui.listaQuery = target.value;
+    rerender({ keepFocus: 'listaQuery' });
+    return true;
+  }
+  return false;
+}
+
+return { render, onAction, onInput };
 })();
 
 // ===== src/domain/incolla.js =====

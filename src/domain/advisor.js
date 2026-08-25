@@ -396,7 +396,7 @@ export function abbinamentoPortiere({ players, settings, plan, owned = new Map()
  * su uno da venti: significa che quei crediti si ridistribuiscono, e il piano puo' rifare
  * l'attacco intero e portarsi dietro difesa e centrocampo.
  */
-export function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, piano = null, limite = 4 }) {
+export function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, piano = null, limite = 4, alternative = null }) {
   const perso = players.find((p) => p.id === playerId);
   if (!perso) return null;
 
@@ -546,4 +546,66 @@ export function spiegaOfferta({ players, settings, owned = new Map(), unavailabl
   }
 
   return { frasi, atteso, offerta, presenze, equivalente: eq || null, panchina };
+}
+
+/**
+ * Il tetto di spesa su una lista scelta a mano.
+ *
+ * In modalita' automatica l'offerta massima e' un punto di pareggio: il prezzo oltre il quale
+ * conviene la rosa alternativa. Su una lista decisa dall'utente quell'alternativa non esiste —
+ * la rosa e' quella, l'ha scelta lui — e la domanda cambia: quanto posso pagarlo continuando a
+ * permettermi tutti gli altri che ho messo in lista.
+ *
+ * E' aritmetica, non ottimizzazione: si mette da parte il prezzo di mercato di ogni altro nome
+ * ancora da comprare, piu' un credito per ogni casella che la lista lascia vuota.
+ */
+export function tettoSullaLista({ players, settings, owned = new Map(), lista = new Set(), playerId }) {
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const budget = settings.budget || 500;
+  const speso = [...owned.values()].reduce((a, b) => a + (Number(b) || 0), 0);
+
+  const inLista = [...lista].map((id) => byId.get(id)).filter(Boolean);
+  const daComprare = inLista.filter((p) => !owned.has(p.id) && p.id !== playerId);
+  const riservatoLista = daComprare.reduce((a, p) => a + Math.max(1, Math.round(p.expectedPrice ?? 1)), 0);
+
+  // Quante caselle restano scoperte dopo la lista: ognuna costa almeno un credito.
+  const presiPerRuolo = { P: 0, D: 0, C: 0, A: 0 };
+  for (const id of owned.keys()) {
+    const p = byId.get(id);
+    if (p && p.role in presiPerRuolo) presiPerRuolo[p.role] += 1;
+  }
+  for (const p of inLista) {
+    if (!owned.has(p.id) && p.role in presiPerRuolo) presiPerRuolo[p.role] += 1;
+  }
+  let scoperte = 0;
+  const mancanti = {};
+  for (const role of ROLES) {
+    mancanti[role] = Math.max(0, (settings.slots?.[role] || 0) - presiPerRuolo[role]);
+    scoperte += mancanti[role];
+  }
+  // La casella del giocatore che sto valutando non va contata due volte.
+  const target = byId.get(playerId);
+  const suoPosto = target && !lista.has(playerId) && !owned.has(playerId) ? Math.min(1, mancanti[target.role] || 0) : 0;
+
+  const residuo = budget - speso - riservatoLista - Math.max(0, scoperte - suoPosto);
+  return {
+    massimo: Math.max(0, residuo),
+    riservatoLista,
+    scoperte,
+    mancanti,
+    costoLista: riservatoLista + (owned.size ? speso : 0),
+  };
+}
+
+/** Quanto costa in punti attesi giocare la propria lista invece del piano libero. */
+export function costoDellaLista({ players, settings, owned = new Map(), unavailable = new Set(), lista = new Set() }) {
+  const libero = optimizeRoster({ players, settings, owned, unavailable, ...FAST });
+  const mia = optimizeRoster({ players, settings, owned, unavailable, obbligati: lista, ...FAST });
+  if (!libero.ok || !mia.ok) return null;
+  return {
+    libero,
+    mia,
+    differenza: Math.round((libero.score - mia.score) * 10) / 10,
+    percentuale: libero.score > 0 ? Math.round(((libero.score - mia.score) / libero.score) * 1000) / 10 : 0,
+  };
 }
