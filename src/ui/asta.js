@@ -1,14 +1,15 @@
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
-import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet } from '../store.js';
-import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } from '../domain/model.js';
+import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, contestoConsiglio } from '../store.js';
+import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots, elenco } from '../domain/model.js';
 import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta } from '../domain/advisor.js';
 import { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } from '../domain/mercato.js';
 import { spiegaMossa } from '../domain/strategia.js';
+import { optimizeRoster, CONFIG_SOLUTORE } from '../domain/optimizer.js';
 import { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } from './common.js';
 
 // I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
-let cache = { key: null, bid: null, alts: null, perdita: null };
+let cache = { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
 let pending = false;
 
 function cacheKey() {
@@ -21,7 +22,7 @@ export function invalidate() {
   mossaChiusa = null;
   mossaRicostruita = null;
 
-  cache = { key: null, bid: null, alts: null, perdita: null };
+  cache = { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
   reparto = null;
 }
 
@@ -32,23 +33,33 @@ function ensureAdvice(rerender) {
   // Un frame di respiro cosi' lo spinner viene disegnato prima del calcolo.
   setTimeout(() => {
     try {
+      // Se il giocatore e' stato scartato, tutti i numeri vanno calcolati sul mondo in cui non
+      // lo e': altrimenti si finisce a dire "puoi spendere nove" perche' il piano non mette
+      // crediti in porta, e il piano non ce li mette perche' il portiere l'hai scartato tu.
+      // E' un cerchio, e la cifra che ne esce non dice niente.
+      const { escluso, unavailable } = contestoConsiglio(state.ui.selectedId);
       const args = {
         players: state.players,
         settings: state.settings,
         owned: ownedMap(),
-        unavailable: unavailableSet(),
+        unavailable,
         obbligati: obbligatiSet(),
         playerId: state.ui.selectedId,
       };
+      const pianoRif = escluso
+        ? optimizeRoster({ players: args.players, settings: args.settings, owned: args.owned, unavailable, obbligati: args.obbligati, ...CONFIG_SOLUTORE })
+        : state.plan;
       cache = {
         key,
+        escluso,
+        pianoRif,
         bid: maxBid(args),
         alts: alternatives({ ...args, limit: 8 }),
-        perdita: spiegaPerdita({ ...args, piano: state.plan }),
+        perdita: spiegaPerdita({ ...args, piano: pianoRif }),
       };
     } catch (err) {
       console.error(err);
-      cache = { key, bid: null, alts: null, perdita: null };
+      cache = { key, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
     } finally {
       pending = false;
       rerender();
@@ -268,7 +279,10 @@ function detail(p) {
   const planned = state.plan?.picks?.find((x) => x.id === p.id)?.plannedPrice;
   const current = state.ui.bidPrice ?? Math.round(p.expectedPrice ?? 1);
   const spendable = maxSpendableNow(state.settings, owned);
-  const fase = budgetDiFase({ settings: state.settings, players: state.players, owned, plan: state.plan, role: p.role });
+  // Il tetto di reparto va letto sul piano che puo' contenerlo: su un piano che lo esclude
+  // direbbe soltanto che quel piano non lo vuole, cosa che si sa gia'.
+  const pianoRif = (cache.key === cacheKey() && cache.pianoRif) || state.plan;
+  const fase = budgetDiFase({ settings: state.settings, players: state.players, owned, plan: pianoRif, role: p.role });
 
   const paid = status === 'mine' ? state.auction.owned[p.id] : status === 'other' ? state.auction.taken[p.id] : null;
 
@@ -290,6 +304,7 @@ function detail(p) {
       <button class="btn ghost" data-action="close-detail" aria-label="Chiudi">✕</button>
     </div>
 
+    ${statoScelta(p.id) ? sceltaRiga(p) : ''}
     ${creatorInfo(p)}
 
     ${
@@ -300,19 +315,21 @@ function detail(p) {
       ${
         bid
           ? (() => {
-              // Il numerone deve essere quello su cui si agisce davvero. Il pareggio non sa
-              // che l'asta va per reparti: se il piano ha gia' riservato i crediti ai ruoli
-              // successivi, mostrare il pareggio da solo invita a sfondare il budget.
-              const tettoFase = fase.slotMancanti > 0 ? fase.massimoOra : Infinity;
-              const operativo = Math.max(0, Math.min(bid.maxBid, tettoFase));
-              const frenaIlReparto = bid.maxBid > tettoFase;
-              return `<div class="n mono ${operativo <= 0 ? 'zero' : ''}">${operativo <= 0 ? '—' : operativo}</div>
-             <div class="lbl">${operativo <= 0 ? 'non fa per te' : frenaIlReparto ? 'oltre sfori il reparto' : 'fin qui conviene'}</div>
+              // Due numeri, non uno che cambia significato di nascosto. Quanto vale per la
+              // rosa e quanto il reparto puo' permettersi sono due cose diverse: schiacciarle
+              // in una cifra sola costringe a indovinare quale delle due si sta leggendo.
+              const tettoFase = fase.slotMancanti > 0 ? fase.massimoOra : null;
+              const frena = tettoFase !== null && bid.maxBid > tettoFase;
+              return `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid <= 0 ? '—' : bid.maxBid}</div>
+             <div class="lbl">${bid.maxBid <= 0 ? 'non fa per te' : 'vale fino a questo'}</div>
              ${
-               frenaIlReparto
-                 ? `<div class="small" style="margin-top:8px;color:var(--warn)">
-                      Il pareggio sarebbe a ${bid.maxBid}, ma il piano riserva ${fase.riservatoDopo} crediti agli altri reparti.
-                      Per andare oltre devi rinunciare a qualcosa dopo.
+               tettoFase !== null && bid.maxBid > 0
+                 ? `<div class="small" style="margin-top:8px;color:var(--${frena ? 'warn' : 'muted'})">
+                      ${
+                        frena
+                          ? `Ma per i ${esc(fase.etichetta.toLowerCase())} ti restano <b>${tettoFase}</b>: oltre, devi togliere crediti agli altri reparti.`
+                          : `Per i ${esc(fase.etichetta.toLowerCase())} ti restano ${tettoFase}: ci stai dentro.`
+                      }
                     </div>`
                  : ''
              }
@@ -339,7 +356,7 @@ function detail(p) {
     <div style="margin-top:10px">${
       current > fase.massimoOra && fase.slotMancanti > 0
         ? `<div class="verdict stop">A ${current} sfori il reparto: resteresti senza crediti per ${esc(
-            (state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder || ROLES).indexOf(p.role) + 1).map((r) => ROLE_LABEL[r].toLowerCase()).join(' e ')
+elenco((state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder || ROLES).indexOf(p.role) + 1).map((r) => ROLE_LABEL[r].toLowerCase()))
           ) || 'il resto'}.</div>`
         : verdictFor(current, bid)
     }</div>
@@ -363,7 +380,7 @@ function detail(p) {
              <button class="btn primary" data-action="take-mine" data-id="${esc(p.id)}">L'ho preso io</button>
              <button class="btn danger" data-action="take-other" data-id="${esc(p.id)}">Preso da altri</button>
            </div>
-           ${sceltaRiga(p)}`
+           ${statoScelta(p.id) ? '' : sceltaRiga(p)}`
     }`
     }
   </div>
@@ -432,6 +449,10 @@ function sceltaRiga(p) {
   if (stato === 'escluso') {
     return `<div class="verdict stop" style="margin-top:10px;text-align:left">
       <div class="small" style="font-weight:600">L'hai scartato: il piano non lo propone.</div>
+      <div class="small" style="font-weight:500;margin-top:4px">
+        I numeri qui sotto valgono se cambiassi idea: sono calcolati sul piano che lo comprerebbe,
+        non su quello che lo esclude.
+      </div>
       <button class="btn ghost block" style="margin-top:8px" data-action="libera" data-id="${esc(p.id)}">Rimettilo in gioco</button>
     </div>`;
   }
@@ -731,7 +752,7 @@ function repartoCard() {
                  r.senzaNessuno.liberati > 5
                    ? `e sposti ${r.senzaNessuno.liberati} crediti ${
                        r.senzaNessuno.destinazione.length
-                         ? 'su ' + r.senzaNessuno.destinazione.map((d) => `${ROLE_LABEL[d.role].toLowerCase()} (+${d.delta})`).join(' e ')
+                         ? 'su ' + elenco(r.senzaNessuno.destinazione.map((d) => `${ROLE_LABEL[d.role].toLowerCase()} (+${d.delta})`))
                          : 'sugli altri reparti'
                      }`
                    : ''

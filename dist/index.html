@@ -516,6 +516,13 @@ function defaultSettings() {
   };
 }
 
+/** Elenco leggibile: "difensori, centrocampisti e attaccanti", non "a e b e c". */
+function elenco(voci) {
+  const v = voci.filter(Boolean);
+  if (v.length <= 1) return v.join('');
+  return `${v.slice(0, -1).join(', ')} e ${v[v.length - 1]}`;
+}
+
 function totalSlots(settings) {
   return ROLES.reduce((sum, r) => sum + (settings.slots[r] || 0), 0);
 }
@@ -531,7 +538,7 @@ function tierRank(settings, role, tier) {
   return idx >= 0 ? idx : order.length;
 }
 
-return { inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, sortTierLabels, defaultSettings, totalSlots, tierKey, tierRank, ROLES, ROLE_LABEL, ROLE_LABEL_SHORT };
+return { inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, sortTierLabels, defaultSettings, elenco, totalSlots, tierKey, tierRank, ROLES, ROLE_LABEL, ROLE_LABEL_SHORT };
 })();
 
 // ===== src/domain/csv.js =====
@@ -2993,6 +3000,21 @@ function liberaScelta(id) {
   });
 }
 
+/**
+ * Il contesto su cui calcolare i consigli per un giocatore.
+ *
+ * Se l'ho scartato, i numeri vanno calcolati sul mondo in cui non l'ho fatto: altrimenti
+ * l'unica risposta possibile e' "il tuo piano non ha budget per lui", che e' vera per
+ * costruzione e non serve a niente. La domanda sensata su uno scartato e' quanto varrebbe
+ * cambiando idea.
+ */
+function contestoConsiglio(id) {
+  const escluso = statoScelta(id) === 'escluso';
+  const unavailable = unavailableSet();
+  if (escluso) unavailable.delete(id);
+  return { escluso, unavailable };
+}
+
 function statoScelta(id) {
   if (state.auction.bloccati?.[id]) return 'bloccato';
   if (state.auction.esclusi?.[id]) return 'escluso';
@@ -3184,14 +3206,14 @@ function creditsLeft() {
   return (state.settings.budget || 500) - spentTotal();
 }
 
-return { onReset, subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, obbligatiSet, blocca, scarta, liberaScelta, statoScelta, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, undo, updateSettings, spentTotal, creditsLeft, state };
+return { onReset, subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, obbligatiSet, blocca, scarta, liberaScelta, contestoConsiglio, statoScelta, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, undo, updateSettings, spentTotal, creditsLeft, state };
 })();
 
 // ===== src/domain/advisor.js =====
 const __m_src_domain_advisor_js = (() => {
 // L'assistente d'asta: quanto posso offrire davvero, e chi prendo se questo giocatore me lo soffiano.
 
-const { ROLES, ROLE_LABEL, tierKey, totalSlots } = __m_src_domain_model_js;
+const { ROLES, ROLE_LABEL, tierKey, totalSlots, elenco } = __m_src_domain_model_js;
 const { expectedShare } = __m_src_domain_valuation_js;
 const { optimizeRoster, creditShadowPrice, CONFIG_SOLUTORE } = __m_src_domain_optimizer_js;
 
@@ -3631,9 +3653,9 @@ function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new
   const altrove = spostamenti.filter((x) => x.role !== perso.role && x.delta > 0);
   if (liberati > 5 && altrove.length) {
     frasi.push(
-      `I ${liberati} crediti che si liberano vanno su ${altrove
-        .map((x) => `${ROLE_LABEL[x.role].toLowerCase()} (+${x.delta})`)
-        .join(' e ')}.`
+      `I ${liberati} crediti che si liberano vanno su ${elenco(
+        altrove.map((x) => `${ROLE_LABEL[x.role].toLowerCase()} (+${x.delta})`)
+      )}.`
     );
   }
   if (entrati.length >= 3) {
@@ -3748,7 +3770,7 @@ const __m_src_domain_strategia_js = (() => {
 // che la strada e' cambiata. Se i big di un reparto finiscono tutti, i crediti che avevi
 // messo da parte per loro vanno spostati, e conviene saperlo prima che sia troppo tardi.
 
-const { ROLES, ROLE_LABEL } = __m_src_domain_model_js;
+const { ROLES, ROLE_LABEL, elenco } = __m_src_domain_model_js;
 const { optimizeRoster } = __m_src_domain_optimizer_js;
 
 /** Quanti giocatori di prima fascia restano liberi, reparto per reparto. */
@@ -3811,11 +3833,11 @@ function narrazione({ prima, dopo, settings, soglia = null }) {
     const giu = mosse.filter((m) => m.delta < 0);
     if (su.length && giu.length) {
       frasi.push(
-        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
-          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+        `I crediti si spostano da ${elenco(giu.map((m) => ROLE_LABEL[m.role].toLowerCase()))} ` +
+          `verso ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`
       );
     } else if (su.length) {
-      frasi.push(`Ora c'e' piu' budget per ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+      frasi.push(`Ora c'e' piu' budget per ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`);
     }
   }
 
@@ -3826,7 +3848,7 @@ function narrazione({ prima, dopo, settings, soglia = null }) {
 
   const rinunce = usciti.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 2);
   if (rinunce.length && !nuoviObiettivi.length) {
-    frasi.push(`Esce dal piano ${rinunce.map((p) => p.name).join(' e ')}.`);
+    frasi.push(`Esce dal piano ${elenco(rinunce.map((p) => p.name))}.`);
   }
 
   return frasi;
@@ -3931,13 +3953,13 @@ function spiegaMossa({ prima, dopo, players, settings, evento }) {
     const giu = mosse.filter((m) => m.delta < 0);
     if (su.length && giu.length) {
       frasi.push(
-        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
-          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+        `I crediti si spostano da ${elenco(giu.map((m) => ROLE_LABEL[m.role].toLowerCase()))} ` +
+          `verso ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`
       );
     } else if (su.length) {
-      frasi.push(`Piu' budget su ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+      frasi.push(`Piu' budget su ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`);
     } else if (giu.length) {
-      frasi.push(`Si taglia su ${giu.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (${m.delta})`).join(' e ')}.`);
+      frasi.push(`Si taglia su ${elenco(giu.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (${m.delta})`))}.`);
     }
   }
 
@@ -4007,11 +4029,11 @@ function spiegaModifica({ prima, dopo, players, settings, id, azione }) {
     const giu = mosse.filter((m) => m.delta < 0);
     if (su.length && giu.length) {
       frasi.push(
-        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
-          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+        `I crediti si spostano da ${elenco(giu.map((m) => ROLE_LABEL[m.role].toLowerCase()))} ` +
+          `verso ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`
       );
     } else if (su.length) {
-      frasi.push(`Piu' budget su ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+      frasi.push(`Piu' budget su ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`);
     }
   }
 
@@ -4135,15 +4157,16 @@ return { esc, n, roleChip, toast, matches, playerRow, edgeBadge, altVerdict, emp
 const __m_src_ui_asta_js = (() => {
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
-const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet } = __m_src_store_js;
-const { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } = __m_src_domain_model_js;
+const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, contestoConsiglio } = __m_src_store_js;
+const { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots, elenco } = __m_src_domain_model_js;
 const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta } = __m_src_domain_advisor_js;
 const { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } = __m_src_domain_mercato_js;
 const { spiegaMossa } = __m_src_domain_strategia_js;
+const { optimizeRoster, CONFIG_SOLUTORE } = __m_src_domain_optimizer_js;
 const { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } = __m_src_ui_common_js;
 
 // I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
-let cache = { key: null, bid: null, alts: null, perdita: null };
+let cache = { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
 let pending = false;
 
 function cacheKey() {
@@ -4156,7 +4179,7 @@ function invalidate() {
   mossaChiusa = null;
   mossaRicostruita = null;
 
-  cache = { key: null, bid: null, alts: null, perdita: null };
+  cache = { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
   reparto = null;
 }
 
@@ -4167,23 +4190,33 @@ function ensureAdvice(rerender) {
   // Un frame di respiro cosi' lo spinner viene disegnato prima del calcolo.
   setTimeout(() => {
     try {
+      // Se il giocatore e' stato scartato, tutti i numeri vanno calcolati sul mondo in cui non
+      // lo e': altrimenti si finisce a dire "puoi spendere nove" perche' il piano non mette
+      // crediti in porta, e il piano non ce li mette perche' il portiere l'hai scartato tu.
+      // E' un cerchio, e la cifra che ne esce non dice niente.
+      const { escluso, unavailable } = contestoConsiglio(state.ui.selectedId);
       const args = {
         players: state.players,
         settings: state.settings,
         owned: ownedMap(),
-        unavailable: unavailableSet(),
+        unavailable,
         obbligati: obbligatiSet(),
         playerId: state.ui.selectedId,
       };
+      const pianoRif = escluso
+        ? optimizeRoster({ players: args.players, settings: args.settings, owned: args.owned, unavailable, obbligati: args.obbligati, ...CONFIG_SOLUTORE })
+        : state.plan;
       cache = {
         key,
+        escluso,
+        pianoRif,
         bid: maxBid(args),
         alts: alternatives({ ...args, limit: 8 }),
-        perdita: spiegaPerdita({ ...args, piano: state.plan }),
+        perdita: spiegaPerdita({ ...args, piano: pianoRif }),
       };
     } catch (err) {
       console.error(err);
-      cache = { key, bid: null, alts: null, perdita: null };
+      cache = { key, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
     } finally {
       pending = false;
       rerender();
@@ -4403,7 +4436,10 @@ function detail(p) {
   const planned = state.plan?.picks?.find((x) => x.id === p.id)?.plannedPrice;
   const current = state.ui.bidPrice ?? Math.round(p.expectedPrice ?? 1);
   const spendable = maxSpendableNow(state.settings, owned);
-  const fase = budgetDiFase({ settings: state.settings, players: state.players, owned, plan: state.plan, role: p.role });
+  // Il tetto di reparto va letto sul piano che puo' contenerlo: su un piano che lo esclude
+  // direbbe soltanto che quel piano non lo vuole, cosa che si sa gia'.
+  const pianoRif = (cache.key === cacheKey() && cache.pianoRif) || state.plan;
+  const fase = budgetDiFase({ settings: state.settings, players: state.players, owned, plan: pianoRif, role: p.role });
 
   const paid = status === 'mine' ? state.auction.owned[p.id] : status === 'other' ? state.auction.taken[p.id] : null;
 
@@ -4425,6 +4461,7 @@ function detail(p) {
       <button class="btn ghost" data-action="close-detail" aria-label="Chiudi">✕</button>
     </div>
 
+    ${statoScelta(p.id) ? sceltaRiga(p) : ''}
     ${creatorInfo(p)}
 
     ${
@@ -4435,19 +4472,21 @@ function detail(p) {
       ${
         bid
           ? (() => {
-              // Il numerone deve essere quello su cui si agisce davvero. Il pareggio non sa
-              // che l'asta va per reparti: se il piano ha gia' riservato i crediti ai ruoli
-              // successivi, mostrare il pareggio da solo invita a sfondare il budget.
-              const tettoFase = fase.slotMancanti > 0 ? fase.massimoOra : Infinity;
-              const operativo = Math.max(0, Math.min(bid.maxBid, tettoFase));
-              const frenaIlReparto = bid.maxBid > tettoFase;
-              return `<div class="n mono ${operativo <= 0 ? 'zero' : ''}">${operativo <= 0 ? '—' : operativo}</div>
-             <div class="lbl">${operativo <= 0 ? 'non fa per te' : frenaIlReparto ? 'oltre sfori il reparto' : 'fin qui conviene'}</div>
+              // Due numeri, non uno che cambia significato di nascosto. Quanto vale per la
+              // rosa e quanto il reparto puo' permettersi sono due cose diverse: schiacciarle
+              // in una cifra sola costringe a indovinare quale delle due si sta leggendo.
+              const tettoFase = fase.slotMancanti > 0 ? fase.massimoOra : null;
+              const frena = tettoFase !== null && bid.maxBid > tettoFase;
+              return `<div class="n mono ${bid.maxBid <= 0 ? 'zero' : ''}">${bid.maxBid <= 0 ? '—' : bid.maxBid}</div>
+             <div class="lbl">${bid.maxBid <= 0 ? 'non fa per te' : 'vale fino a questo'}</div>
              ${
-               frenaIlReparto
-                 ? `<div class="small" style="margin-top:8px;color:var(--warn)">
-                      Il pareggio sarebbe a ${bid.maxBid}, ma il piano riserva ${fase.riservatoDopo} crediti agli altri reparti.
-                      Per andare oltre devi rinunciare a qualcosa dopo.
+               tettoFase !== null && bid.maxBid > 0
+                 ? `<div class="small" style="margin-top:8px;color:var(--${frena ? 'warn' : 'muted'})">
+                      ${
+                        frena
+                          ? `Ma per i ${esc(fase.etichetta.toLowerCase())} ti restano <b>${tettoFase}</b>: oltre, devi togliere crediti agli altri reparti.`
+                          : `Per i ${esc(fase.etichetta.toLowerCase())} ti restano ${tettoFase}: ci stai dentro.`
+                      }
                     </div>`
                  : ''
              }
@@ -4474,7 +4513,7 @@ function detail(p) {
     <div style="margin-top:10px">${
       current > fase.massimoOra && fase.slotMancanti > 0
         ? `<div class="verdict stop">A ${current} sfori il reparto: resteresti senza crediti per ${esc(
-            (state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder || ROLES).indexOf(p.role) + 1).map((r) => ROLE_LABEL[r].toLowerCase()).join(' e ')
+elenco((state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder || ROLES).indexOf(p.role) + 1).map((r) => ROLE_LABEL[r].toLowerCase()))
           ) || 'il resto'}.</div>`
         : verdictFor(current, bid)
     }</div>
@@ -4498,7 +4537,7 @@ function detail(p) {
              <button class="btn primary" data-action="take-mine" data-id="${esc(p.id)}">L'ho preso io</button>
              <button class="btn danger" data-action="take-other" data-id="${esc(p.id)}">Preso da altri</button>
            </div>
-           ${sceltaRiga(p)}`
+           ${statoScelta(p.id) ? '' : sceltaRiga(p)}`
     }`
     }
   </div>
@@ -4567,6 +4606,10 @@ function sceltaRiga(p) {
   if (stato === 'escluso') {
     return `<div class="verdict stop" style="margin-top:10px;text-align:left">
       <div class="small" style="font-weight:600">L'hai scartato: il piano non lo propone.</div>
+      <div class="small" style="font-weight:500;margin-top:4px">
+        I numeri qui sotto valgono se cambiassi idea: sono calcolati sul piano che lo comprerebbe,
+        non su quello che lo esclude.
+      </div>
       <button class="btn ghost block" style="margin-top:8px" data-action="libera" data-id="${esc(p.id)}">Rimettilo in gioco</button>
     </div>`;
   }
@@ -4866,7 +4909,7 @@ function repartoCard() {
                  r.senzaNessuno.liberati > 5
                    ? `e sposti ${r.senzaNessuno.liberati} crediti ${
                        r.senzaNessuno.destinazione.length
-                         ? 'su ' + r.senzaNessuno.destinazione.map((d) => `${ROLE_LABEL[d.role].toLowerCase()} (+${d.delta})`).join(' e ')
+                         ? 'su ' + elenco(r.senzaNessuno.destinazione.map((d) => `${ROLE_LABEL[d.role].toLowerCase()} (+${d.delta})`))
                          : 'sugli altri reparti'
                      }`
                    : ''

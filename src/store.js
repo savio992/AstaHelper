@@ -264,6 +264,21 @@ export function liberaScelta(id) {
   });
 }
 
+/**
+ * Il contesto su cui calcolare i consigli per un giocatore.
+ *
+ * Se l'ho scartato, i numeri vanno calcolati sul mondo in cui non l'ho fatto: altrimenti
+ * l'unica risposta possibile e' "il tuo piano non ha budget per lui", che e' vera per
+ * costruzione e non serve a niente. La domanda sensata su uno scartato e' quanto varrebbe
+ * cambiando idea.
+ */
+export function contestoConsiglio(id) {
+  const escluso = statoScelta(id) === 'escluso';
+  const unavailable = unavailableSet();
+  if (escluso) unavailable.delete(id);
+  return { escluso, unavailable };
+}
+
 export function statoScelta(id) {
   if (state.auction.bloccati?.[id]) return 'bloccato';
   if (state.auction.esclusi?.[id]) return 'escluso';

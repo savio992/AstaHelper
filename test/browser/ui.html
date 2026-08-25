@@ -58,7 +58,7 @@ try {
   await new Promise((r) => setTimeout(r, 400));
   html = asta.render(noop);
   check('pannello del giocatore aperto', html.includes(target.name));
-  check("mostra l'offerta massima", html.includes('fin qui conviene'));
+  check("mostra l'offerta massima", html.includes('vale fino a questo') || html.includes('non fa per te'));
   check('mostra le alternative se lo perdo', html.includes('Se lo perdo'));
   // Il divario fra prezzo di mercato e offerta massima va motivato, non lasciato li': un
   // portiere di riserva caro e' il caso tipico, e il ripiego non deve essere gia' in rosa.
@@ -178,6 +178,32 @@ try {
   const raccontoScarto = piano.render(noop);
   check('lo scarto viene raccontato', raccontoScarto.includes(terzoPortiere.name + ' scartato'), 'card della modifica');
   piano.onAction('libera', { dataset: { id: terzoPortiere.id } }, null, noop);
+
+  // Un giocatore scartato: i numeri devono valere sul mondo in cui non lo e', altrimenti
+  // dicono solo che il piano non ha budget per lui perche' l'hai tolto tu. La decisione sta in
+  // una funzione a parte proprio per poterla verificare senza rifare tutti i calcoli.
+  const portiereCaro = store.state.players
+    .filter((x) => x.role === 'P' && !store.state.auction.taken[x.id] && !store.state.auction.owned[x.id])
+    .sort((a, b) => b.expectedPrice - a.expectedPrice)[0];
+  const primaDelloScarto = store.contestoConsiglio(portiereCaro.id);
+  check('un giocatore normale si valuta com\'e\'', primaDelloScarto.escluso === false && !primaDelloScarto.unavailable.has(portiereCaro.id));
+
+  piano.onAction('scarta', { dataset: { id: portiereCaro.id } }, null, noop);
+  const dopoLoScarto = store.contestoConsiglio(portiereCaro.id);
+  check('uno scartato resta escluso dal piano', !!store.state.auction.esclusi[portiereCaro.id]);
+  check('ma si valuta come se non lo fosse', dopoLoScarto.escluso === true && !dopoLoScarto.unavailable.has(portiereCaro.id),
+    'altrimenti il tetto direbbe solo che il piano non lo vuole');
+  // Non si puo' usare `perso`: poche righe sopra il test annulla proprio quell'assegnazione.
+  const venduto = Object.keys(store.state.auction.taken)[0];
+  if (venduto) check('e chi e\' andato agli altri resta escluso davvero', dopoLoScarto.unavailable.has(venduto));
+
+  store.state.ui.selectedId = portiereCaro.id;
+  const schermata = asta.render(noop);
+  check('lo scarto e\' dichiarato in cima', schermata.includes('L\'hai scartato'));
+  check('e si dice che i numeri valgono se cambi idea', schermata.includes('se cambiassi idea'));
+  piano.onAction('libera', { dataset: { id: portiereCaro.id } }, null, noop);
+  store.state.ui.selectedId = null;
+  asta.invalidate();
 
   const daScartare = store.state.plan.picks.filter((x) => x.role === 'C').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
   piano.onAction('scarta', { dataset: { id: daScartare.id } }, null, noop);

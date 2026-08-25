@@ -1,6 +1,6 @@
 // L'assistente d'asta: quanto posso offrire davvero, e chi prendo se questo giocatore me lo soffiano.
 
-import { ROLES, ROLE_LABEL, tierKey, totalSlots } from './model.js';
+import { ROLES, ROLE_LABEL, tierKey, totalSlots, elenco } from './model.js';
 import { expectedShare } from './valuation.js';
 import { optimizeRoster, creditShadowPrice, CONFIG_SOLUTORE } from './optimizer.js';
 
@@ -440,9 +440,9 @@ export function spiegaPerdita({ players, settings, owned = new Map(), unavailabl
   const altrove = spostamenti.filter((x) => x.role !== perso.role && x.delta > 0);
   if (liberati > 5 && altrove.length) {
     frasi.push(
-      `I ${liberati} crediti che si liberano vanno su ${altrove
-        .map((x) => `${ROLE_LABEL[x.role].toLowerCase()} (+${x.delta})`)
-        .join(' e ')}.`
+      `I ${liberati} crediti che si liberano vanno su ${elenco(
+        altrove.map((x) => `${ROLE_LABEL[x.role].toLowerCase()} (+${x.delta})`)
+      )}.`
     );
   }
   if (entrati.length >= 3) {

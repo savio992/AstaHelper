@@ -129,11 +129,18 @@ Una ripartenza sola basta — sui listoni veri porta la rosa da 1905 a 1949 punt
 aggiunge nulla — e la ricerca del pareggio parte da un intervallo stretto attorno al prezzo di
 mercato invece che da tutto il budget: sono la meta' delle risoluzioni, senza perdere precisione.
 
-**Il tetto che si legge e' quello su cui si agisce.** Il punto di pareggio non sa che l'asta va
-per reparti: puo' dire centoquarantasei mentre il piano ha gia' riservato quasi tutto ai ruoli
-successivi. Il numero grande e' quindi il piu' stringente fra i due, e quando a fermare e' il
-reparto lo dice: *"il pareggio sarebbe a 146, ma il piano riserva 489 crediti agli altri
-reparti"*.
+**Due numeri, non uno che cambia significato di nascosto.** Quanto vale un giocatore per la rosa
+e quanto il reparto in corso puo' permettersi sono due cose diverse, e schiacciarle in una cifra
+sola costringe a indovinare quale si sta leggendo. Il numero grande e' il valore; sotto c'e' il
+tetto del reparto, dichiarato sempre e messo in evidenza quando e' lui a fermare.
+
+**Un giocatore scartato si valuta come se non lo fosse.** Altrimenti si chiude un cerchio: il
+piano non mette crediti in porta perche' il portiere l'hai scartato tu, e da quel piano si
+ricava il tetto che si mostra come limite per comprare quel portiere. Ne usciva un nove che
+diceva soltanto "il tuo piano non ha budget per lui" — vero per costruzione e inutile. Sui
+listoni di prova il valore vero e' sessantatre' e non cambia scartandolo: scartare un giocatore
+non ne cambia il valore, cambia solo se viene proposto. La schermata lo dichiara in cima:
+*"L'hai scartato. I numeri qui sotto valgono se cambiassi idea."*
 
 **Il solutore durante l'asta** e' lo stesso che calcola il piano. Sembra ovvio e non lo era: per
 risparmiare tempo l'offerta massima veniva calcolata saltando la ricerca locale, e su un listone

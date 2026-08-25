@@ -173,6 +173,13 @@ export function defaultSettings() {
   };
 }
 
+/** Elenco leggibile: "difensori, centrocampisti e attaccanti", non "a e b e c". */
+export function elenco(voci) {
+  const v = voci.filter(Boolean);
+  if (v.length <= 1) return v.join('');
+  return `${v.slice(0, -1).join(', ')} e ${v[v.length - 1]}`;
+}
+
 export function totalSlots(settings) {
   return ROLES.reduce((sum, r) => sum + (settings.slots[r] || 0), 0);
 }

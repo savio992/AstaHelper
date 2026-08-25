@@ -2,7 +2,7 @@
 // che la strada e' cambiata. Se i big di un reparto finiscono tutti, i crediti che avevi
 // messo da parte per loro vanno spostati, e conviene saperlo prima che sia troppo tardi.
 
-import { ROLES, ROLE_LABEL } from './model.js';
+import { ROLES, ROLE_LABEL, elenco } from './model.js';
 import { optimizeRoster } from './optimizer.js';
 
 /** Quanti giocatori di prima fascia restano liberi, reparto per reparto. */
@@ -65,11 +65,11 @@ export function narrazione({ prima, dopo, settings, soglia = null }) {
     const giu = mosse.filter((m) => m.delta < 0);
     if (su.length && giu.length) {
       frasi.push(
-        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
-          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+        `I crediti si spostano da ${elenco(giu.map((m) => ROLE_LABEL[m.role].toLowerCase()))} ` +
+          `verso ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`
       );
     } else if (su.length) {
-      frasi.push(`Ora c'e' piu' budget per ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+      frasi.push(`Ora c'e' piu' budget per ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`);
     }
   }
 
@@ -80,7 +80,7 @@ export function narrazione({ prima, dopo, settings, soglia = null }) {
 
   const rinunce = usciti.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 2);
   if (rinunce.length && !nuoviObiettivi.length) {
-    frasi.push(`Esce dal piano ${rinunce.map((p) => p.name).join(' e ')}.`);
+    frasi.push(`Esce dal piano ${elenco(rinunce.map((p) => p.name))}.`);
   }
 
   return frasi;
@@ -185,13 +185,13 @@ export function spiegaMossa({ prima, dopo, players, settings, evento }) {
     const giu = mosse.filter((m) => m.delta < 0);
     if (su.length && giu.length) {
       frasi.push(
-        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
-          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+        `I crediti si spostano da ${elenco(giu.map((m) => ROLE_LABEL[m.role].toLowerCase()))} ` +
+          `verso ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`
       );
     } else if (su.length) {
-      frasi.push(`Piu' budget su ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+      frasi.push(`Piu' budget su ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`);
     } else if (giu.length) {
-      frasi.push(`Si taglia su ${giu.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (${m.delta})`).join(' e ')}.`);
+      frasi.push(`Si taglia su ${elenco(giu.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (${m.delta})`))}.`);
     }
   }
 
@@ -261,11 +261,11 @@ export function spiegaModifica({ prima, dopo, players, settings, id, azione }) {
     const giu = mosse.filter((m) => m.delta < 0);
     if (su.length && giu.length) {
       frasi.push(
-        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
-          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+        `I crediti si spostano da ${elenco(giu.map((m) => ROLE_LABEL[m.role].toLowerCase()))} ` +
+          `verso ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`
       );
     } else if (su.length) {
-      frasi.push(`Piu' budget su ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+      frasi.push(`Piu' budget su ${elenco(su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`))}.`);
     }
   }
 

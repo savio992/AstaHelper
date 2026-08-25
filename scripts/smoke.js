@@ -51,7 +51,10 @@ async function dumpDom(url, budget = 20000) {
     '--dump-dom',
     url,
   ];
-  const { stdout } = await run(CHROME, args, { maxBuffer: 64 * 1024 * 1024, timeout: 90000 });
+  // I consigli d'asta costano ora un paio di secondi ciascuno: il flusso di interfaccia ne
+  // fa parecchi e novanta secondi non bastavano piu'. Meglio un limite largo che un rosso
+  // che non dice niente sul codice.
+  const { stdout } = await run(CHROME, args, { maxBuffer: 64 * 1024 * 1024, timeout: 240000 });
   return stdout;
 }
 
@@ -74,7 +77,7 @@ try {
   expect('lo scenario ha prodotto risultati', out.trim().length > 0);
 
   console.log('\nflusso di interfaccia nel browser:');
-  const ui = await dumpDom(`http://127.0.0.1:${port}/test/browser/ui.html`);
+  const ui = await dumpDom(`http://127.0.0.1:${port}/test/browser/ui.html`, 60000);
   const uiOut = (ui.match(/<pre id="out">([\s\S]*?)<\/pre>/) || [])[1] || '';
   for (const line of decode(uiOut).split('\n').filter(Boolean)) {
     const ok = line.startsWith('PASS');
