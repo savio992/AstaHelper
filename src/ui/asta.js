@@ -1,9 +1,10 @@
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
-import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan } from '../store.js';
+import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa } from '../store.js';
 import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } from '../domain/model.js';
 import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita } from '../domain/advisor.js';
 import { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } from '../domain/mercato.js';
+import { spiegaMossa } from '../domain/strategia.js';
 import { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } from './common.js';
 
 // I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
@@ -47,6 +48,72 @@ function ensureAdvice(rerender) {
       rerender();
     }
   }, 16);
+}
+
+// L'ultima mossa raccontata: si azzera quando la si chiude o quando ne arriva un'altra.
+let mossaChiusa = null;
+let mossaRicostruita = null;
+
+/**
+ * Cosa e' appena successo al piano.
+ *
+ * Dopo ogni assegnazione il piano si rifa' da capo, ma il ricalcolo restava invisibile: un
+ * avviso di due secondi e la lista che cambiava sotto gli occhi. Qui la mossa viene raccontata
+ * per intero, ed e' l'unico momento in cui serve davvero: quando il piano si muove.
+ */
+function mossaCard() {
+  const log = state.auction.log;
+  const ultimo = log[log.length - 1];
+  if (!ultimo || ultimo.kind === 'release' || mossaChiusa === log.length) return '';
+  // Dopo una riapertura dell'app il piano precedente non c'e' piu': si ricostruisce dal registro.
+  if (!state.prevPlan?.ok) {
+    if (mossaRicostruita?.chiave !== log.length) {
+      mossaRicostruita = { chiave: log.length, piano: pianoPrimaDellUltimaMossa() };
+    }
+  }
+  const sp = spiegaMossa({
+    prima: state.prevPlan?.ok ? state.prevPlan : mossaRicostruita?.piano,
+    dopo: state.plan,
+    players: state.players,
+    settings: state.settings,
+    evento: ultimo,
+  });
+  if (!sp) return '';
+
+  const colore = sp.mio ? 'accent' : sp.eraObiettivo ? 'danger' : 'line';
+  return `
+  <div class="card" style="border-left:3px solid var(--${colore})">
+    <div class="row between" style="align-items:flex-start;margin-bottom:6px">
+      <b>${esc(sp.titolo)}</b>
+      <button class="btn ghost" style="padding:2px 8px" data-action="chiudi-mossa" aria-label="Chiudi">✕</button>
+    </div>
+    <div class="small" style="line-height:1.6">${sp.frasi.map((f) => esc(f)).join(' ')}</div>
+    ${
+      sp.mosse.length
+        ? `<div class="row wrap" style="gap:6px;margin-top:10px">
+             ${sp.mosse
+               .map(
+                 (m) =>
+                   `<span class="chip">${esc(ROLE_LABEL[m.role])} <b class="mono" style="color:var(--${
+                     m.delta > 0 ? 'accent' : 'danger'
+                   })">${m.delta > 0 ? '+' : ''}${m.delta}</b></span>`
+               )
+               .join('')}
+           </div>`
+        : ''
+    }
+    ${
+      sp.entrati.length
+        ? `<details style="margin-top:10px">
+             <summary class="tiny muted">Il piano in dettaglio (${sp.entrati.length} entrano, ${sp.usciti.length} escono)</summary>
+             <div class="tiny muted" style="margin-top:6px;line-height:1.7">
+               <div><b style="color:var(--accent)">entrano</b> ${sp.entrati.map((x) => `${esc(x.name)} ${x.plannedPrice}`).join(' · ')}</div>
+               ${sp.usciti.length ? `<div><b style="color:var(--danger)">escono</b> ${sp.usciti.map((x) => `${esc(x.name)} ${x.plannedPrice}`).join(' · ')}</div>` : ''}
+             </div>
+           </details>`
+        : ''
+    }
+  </div>`;
 }
 
 function hud() {
@@ -727,7 +794,7 @@ export function render(rerender) {
       }
     </div>
 
-    ${selected ? detail(selected) : ''}
+    ${selected ? detail(selected) : mossaCard()}
     ${!selected && !state.auction.log.length ? readyCard() : ''}
     ${selected ? '' : repartoCard()}
     ${selected ? '' : targetsCard()}
@@ -808,6 +875,10 @@ export function onAction(action, target, ev, rerender) {
     case 'reparto':
       reparto = null;
       buildReparto(rerender);
+      rerender();
+      return true;
+    case 'chiudi-mossa':
+      mossaChiusa = state.auction.log.length;
       rerender();
       return true;
     case 'goto':

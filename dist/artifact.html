@@ -2881,6 +2881,34 @@ function rebuildPlan(opts = {}) {
   return state.plan;
 }
 
+/**
+ * Il piano com'era prima dell'ultima assegnazione.
+ *
+ * Serve a raccontare cosa e' appena successo. Normalmente basta `prevPlan`, che resta in
+ * memoria, ma quello si perde a ogni riapertura dell'app — e riaprire l'app in mezzo a
+ * un'asta capita. Il registro delle assegnazioni invece e' salvato: si rigioca senza l'ultima
+ * voce e si riottiene esattamente il piano di prima, al costo di un'ottimizzazione.
+ */
+function pianoPrimaDellUltimaMossa() {
+  const log = state.auction.log;
+  if (!log.length || !state.players.length) return null;
+  const owned = {};
+  const taken = {};
+  for (const voce of log.slice(0, -1)) {
+    delete owned[voce.id];
+    delete taken[voce.id];
+    if (voce.kind === 'mine') owned[voce.id] = voce.price;
+    else if (voce.kind === 'other') taken[voce.id] = voce.price;
+  }
+  return optimizeRoster({
+    players: state.players,
+    settings: state.settings,
+    owned: new Map(Object.entries(owned).map(([id, v]) => [id, Number(v)])),
+    unavailable: new Set(Object.keys(taken)),
+    ripartenze: 4,
+  });
+}
+
 /** Unisce le fonti importate in un unico listone e riordina le fasce. */
 function rebuildRoster() {
   const lists = state.sources.map((s) => annotatePriceShare(annotatePmaShare(annotateTierPct(s.players))));
@@ -2999,7 +3027,7 @@ function creditsLeft() {
   return (state.settings.budget || 500) - spentTotal();
 }
 
-return { subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, takenMap, playerById, rebuildPlan, addSource, removeSource, assign, assegnaMolti, release, undo, updateSettings, spentTotal, creditsLeft, state };
+return { subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, undo, updateSettings, spentTotal, creditsLeft, state };
 })();
 
 // ===== src/domain/advisor.js =====
@@ -3459,6 +3487,229 @@ function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new
 return { maxSpendableNow, slotsLeftByRole, faseCorrente, budgetDiFase, maxBid, alternatives, planDiff, tierBudgetReport, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, CONFIG_ASTA };
 })();
 
+// ===== src/domain/strategia.js =====
+const __m_src_domain_strategia_js = (() => {
+// Quando salta il piano, non basta sapere chi prendere al posto di uno: serve capire
+// che la strada e' cambiata. Se i big di un reparto finiscono tutti, i crediti che avevi
+// messo da parte per loro vanno spostati, e conviene saperlo prima che sia troppo tardi.
+
+const { ROLES, ROLE_LABEL } = __m_src_domain_model_js;
+const { optimizeRoster } = __m_src_domain_optimizer_js;
+
+/** Quanti giocatori di prima fascia restano liberi, reparto per reparto. */
+function bigRimasti(players, { owned = new Map(), unavailable = new Set() } = {}) {
+  const out = {};
+  for (const role of ROLES) {
+    const liberi = players.filter((p) => p.role === role && p.isTop && !owned.has(p.id) && !unavailable.has(p.id));
+    const miei = [...owned.keys()]
+      .map((id) => players.find((p) => p.id === id))
+      .filter((p) => p && p.role === role && p.isTop).length;
+    out[role] = { liberi: liberi.length, miei, nomi: liberi.sort((a, b) => b.score - a.score).slice(0, 3).map((p) => p.name) };
+  }
+  return out;
+}
+
+/**
+ * Il piano che resterebbe se tutti i big ancora liberi finissero agli avversari.
+ * Se `role` e' indicato riguarda solo quel reparto, altrimenti tutti.
+ */
+function scenarioSenzaBig({ players, settings, owned = new Map(), unavailable = new Set(), role = null }) {
+  const persi = new Set(unavailable);
+  for (const p of players) {
+    if (!p.isTop || owned.has(p.id)) continue;
+    if (role && p.role !== role) continue;
+    persi.add(p.id);
+  }
+  return optimizeRoster({ players, settings, owned, unavailable: persi, localSearch: false });
+}
+
+/** Chi entra e chi esce fra due piani, e come si spostano i crediti fra i reparti. */
+function confrontaPiani(prima, dopo) {
+  const a = new Map((prima?.picks || []).map((p) => [p.id, p]));
+  const b = new Map((dopo?.picks || []).map((p) => [p.id, p]));
+  const entrati = [...b.values()].filter((p) => !a.has(p.id)).sort((x, y) => y.plannedPrice - x.plannedPrice);
+  const usciti = [...a.values()].filter((p) => !b.has(p.id)).sort((x, y) => y.plannedPrice - x.plannedPrice);
+  const spostamenti = {};
+  for (const role of ROLES) {
+    spostamenti[role] = (dopo?.spentByRole?.[role] ?? 0) - (prima?.spentByRole?.[role] ?? 0);
+  }
+  return { entrati, usciti, spostamenti };
+}
+
+/**
+ * Traduce il cambio di piano in frasi.
+ * Si citano solo i movimenti che contano davvero: un riempitivo da un credito che ne sostituisce
+ * un altro non e' una notizia, mentre venti crediti che passano dall'attacco al centrocampo si'.
+ */
+function narrazione({ prima, dopo, settings, soglia = null }) {
+  if (!prima?.ok || !dopo?.ok) return [];
+  const { entrati, usciti, spostamenti } = confrontaPiani(prima, dopo);
+  const minimo = soglia ?? Math.max(6, Math.round((settings.budget || 500) * 0.02));
+  const frasi = [];
+
+  const mosse = ROLES.map((role) => ({ role, delta: spostamenti[role] }))
+    .filter((x) => Math.abs(x.delta) >= minimo)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  if (mosse.length) {
+    const su = mosse.filter((m) => m.delta > 0);
+    const giu = mosse.filter((m) => m.delta < 0);
+    if (su.length && giu.length) {
+      frasi.push(
+        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
+          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+      );
+    } else if (su.length) {
+      frasi.push(`Ora c'e' piu' budget per ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+    }
+  }
+
+  const nuoviObiettivi = entrati.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 3);
+  if (nuoviObiettivi.length) {
+    frasi.push(`Nuovi obiettivi: ${nuoviObiettivi.map((p) => `${p.name} (${p.plannedPrice})`).join(', ')}.`);
+  }
+
+  const rinunce = usciti.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 2);
+  if (rinunce.length && !nuoviObiettivi.length) {
+    frasi.push(`Esce dal piano ${rinunce.map((p) => p.name).join(' e ')}.`);
+  }
+
+  return frasi;
+}
+
+/**
+ * Il consiglio strategico complessivo sullo stato attuale dell'asta.
+ * Guarda quanti big restano e cosa succederebbe perdendoli tutti: se il piano regge, non c'e'
+ * niente da dire; se crolla, conviene muoversi adesso invece di restare senza.
+ */
+function consiglioStrategico({ players, settings, owned = new Map(), unavailable = new Set(), piano }) {
+  if (!piano?.ok) return null;
+  const big = bigRimasti(players, { owned, unavailable });
+  const avvisi = [];
+
+  for (const role of ROLES) {
+    const richiesti = Math.max(0, Math.round(settings.minTop?.[role] ?? 0));
+    if (!richiesti) continue;
+    const { liberi, miei, nomi } = big[role];
+    if (miei >= richiesti) continue;
+
+    if (liberi === 0) {
+      const scenario = scenarioSenzaBig({ players, settings, owned, unavailable, role });
+      const frasi = narrazione({ prima: piano, dopo: scenario, settings });
+      avvisi.push({
+        role,
+        gravita: 'finiti',
+        titolo: `I big in ${ROLE_LABEL[role].toLowerCase()} sono finiti.`,
+        testo: frasi.length ? frasi.join(' ') : 'Il piano si e\' gia\' adattato senza di loro.',
+      });
+    } else if (liberi <= richiesti - miei) {
+      avvisi.push({
+        role,
+        gravita: 'ultimi',
+        titolo: `Restano ${liberi} big in ${ROLE_LABEL[role].toLowerCase()}: ${nomi.join(', ')}.`,
+        testo: `Te ne serve ${richiesti - miei}. Se li perdi tutti devi cambiare strada.`,
+      });
+    }
+  }
+
+  return { big, avvisi };
+}
+
+/**
+ * Che cosa e' appena successo, e cosa ne consegue.
+ *
+ * Dopo ogni assegnazione il piano si rifa' da capo, ma finora quel ricalcolo restava invisibile:
+ * un avviso di due secondi e la lista che cambiava sotto gli occhi senza spiegazione. Qui si
+ * racconta la mossa per intero — quanto e' costata rispetto a quanto era previsto, chi entra e
+ * chi esce, in che reparto finiscono i crediti — perche' e' proprio nel momento in cui il piano
+ * si muove che serve capire perche' si muove.
+ *
+ * Il caso che mancava del tutto e' lo scarto di prezzo: pagare sedici crediti sopra il piano
+ * significa che sedici crediti devono uscire da un altro reparto, e nessuno lo diceva.
+ */
+function spiegaMossa({ prima, dopo, players, settings, evento }) {
+  if (!evento || !prima?.ok || !dopo?.ok) return null;
+  const p = players.find((x) => x.id === evento.id);
+  if (!p) return null;
+
+  const mio = evento.kind === 'mine';
+  const pianificato = prima.picks.find((x) => x.id === evento.id)?.plannedPrice ?? null;
+  const eraObiettivo = pianificato !== null;
+  const prezzo = Math.max(0, Math.round(Number(evento.price) || 0));
+  const scarto = mio && eraObiettivo ? prezzo - pianificato : null;
+
+  const { entrati, usciti, spostamenti } = confrontaPiani(prima, dopo);
+  const minimo = Math.max(4, Math.round((settings.budget || 500) * 0.015));
+  const mosse = ROLES.map((role) => ({ role, delta: spostamenti[role] }))
+    .filter((x) => Math.abs(x.delta) >= minimo)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  const titolo = mio
+    ? `${p.name} e' tuo${prezzo ? ` a ${prezzo}` : ''}.`
+    : `${p.name} va a un avversario${prezzo ? ` per ${prezzo}` : ''}.`;
+
+  const frasi = [];
+
+  if (mio) {
+    if (!eraObiettivo) {
+      frasi.push(`Non era fra gli obiettivi: il piano si rifa' attorno a lui.`);
+    } else if (scarto > 0) {
+      frasi.push(`Hai pagato ${scarto} sopra il piano, e quei crediti devono uscire da qualche altra parte.`);
+    } else if (scarto < 0) {
+      frasi.push(`Hai speso ${-scarto} meno del previsto: quei crediti tornano disponibili.`);
+    } else {
+      frasi.push(`Esattamente il prezzo previsto dal piano.`);
+    }
+  } else if (eraObiettivo) {
+    const sostituto = entrati.filter((x) => x.role === p.role).sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+    frasi.push(
+      sostituto
+        ? `Era un tuo obiettivo da ${pianificato}. Al suo posto entra ${sostituto.name} a ${sostituto.plannedPrice}.`
+        : `Era un tuo obiettivo da ${pianificato}. Il reparto si rifa' con quello che resta.`
+    );
+  } else {
+    frasi.push(`Non era fra i tuoi obiettivi.`);
+  }
+
+  if (mosse.length) {
+    const su = mosse.filter((m) => m.delta > 0);
+    const giu = mosse.filter((m) => m.delta < 0);
+    if (su.length && giu.length) {
+      frasi.push(
+        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
+          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+      );
+    } else if (su.length) {
+      frasi.push(`Piu' budget su ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+    } else if (giu.length) {
+      frasi.push(`Si taglia su ${giu.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (${m.delta})`).join(' e ')}.`);
+    }
+  }
+
+  const nuovi = entrati.filter((x) => x.plannedPrice >= Math.max(4, minimo / 2)).slice(0, 3);
+  const persi = usciti.filter((x) => x.id !== evento.id && x.plannedPrice >= Math.max(4, minimo / 2)).slice(0, 3);
+  if (nuovi.length) frasi.push(`Entrano nel piano: ${nuovi.map((x) => `${x.name} (${x.plannedPrice})`).join(', ')}.`);
+  if (persi.length) frasi.push(`Escono: ${persi.map((x) => x.name).join(', ')}.`);
+  if (!mosse.length && !nuovi.length && !persi.length) frasi.push(`Il resto del piano non cambia.`);
+
+  return {
+    player: p,
+    mio,
+    prezzo,
+    pianificato,
+    scarto,
+    eraObiettivo,
+    titolo,
+    entrati,
+    usciti: usciti.filter((x) => x.id !== evento.id),
+    mosse,
+    frasi,
+  };
+}
+
+return { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa };
+})();
+
 // ===== src/ui/common.js =====
 const __m_src_ui_common_js = (() => {
 // Utilita' condivise di rendering. Niente framework: template string + delega degli eventi.
@@ -3562,10 +3813,11 @@ return { esc, n, roleChip, toast, matches, playerRow, edgeBadge, altVerdict, emp
 const __m_src_ui_asta_js = (() => {
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
-const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan } = __m_src_store_js;
+const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } = __m_src_domain_model_js;
 const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita } = __m_src_domain_advisor_js;
 const { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } = __m_src_domain_mercato_js;
+const { spiegaMossa } = __m_src_domain_strategia_js;
 const { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } = __m_src_ui_common_js;
 
 // I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
@@ -3609,6 +3861,72 @@ function ensureAdvice(rerender) {
       rerender();
     }
   }, 16);
+}
+
+// L'ultima mossa raccontata: si azzera quando la si chiude o quando ne arriva un'altra.
+let mossaChiusa = null;
+let mossaRicostruita = null;
+
+/**
+ * Cosa e' appena successo al piano.
+ *
+ * Dopo ogni assegnazione il piano si rifa' da capo, ma il ricalcolo restava invisibile: un
+ * avviso di due secondi e la lista che cambiava sotto gli occhi. Qui la mossa viene raccontata
+ * per intero, ed e' l'unico momento in cui serve davvero: quando il piano si muove.
+ */
+function mossaCard() {
+  const log = state.auction.log;
+  const ultimo = log[log.length - 1];
+  if (!ultimo || ultimo.kind === 'release' || mossaChiusa === log.length) return '';
+  // Dopo una riapertura dell'app il piano precedente non c'e' piu': si ricostruisce dal registro.
+  if (!state.prevPlan?.ok) {
+    if (mossaRicostruita?.chiave !== log.length) {
+      mossaRicostruita = { chiave: log.length, piano: pianoPrimaDellUltimaMossa() };
+    }
+  }
+  const sp = spiegaMossa({
+    prima: state.prevPlan?.ok ? state.prevPlan : mossaRicostruita?.piano,
+    dopo: state.plan,
+    players: state.players,
+    settings: state.settings,
+    evento: ultimo,
+  });
+  if (!sp) return '';
+
+  const colore = sp.mio ? 'accent' : sp.eraObiettivo ? 'danger' : 'line';
+  return `
+  <div class="card" style="border-left:3px solid var(--${colore})">
+    <div class="row between" style="align-items:flex-start;margin-bottom:6px">
+      <b>${esc(sp.titolo)}</b>
+      <button class="btn ghost" style="padding:2px 8px" data-action="chiudi-mossa" aria-label="Chiudi">✕</button>
+    </div>
+    <div class="small" style="line-height:1.6">${sp.frasi.map((f) => esc(f)).join(' ')}</div>
+    ${
+      sp.mosse.length
+        ? `<div class="row wrap" style="gap:6px;margin-top:10px">
+             ${sp.mosse
+               .map(
+                 (m) =>
+                   `<span class="chip">${esc(ROLE_LABEL[m.role])} <b class="mono" style="color:var(--${
+                     m.delta > 0 ? 'accent' : 'danger'
+                   })">${m.delta > 0 ? '+' : ''}${m.delta}</b></span>`
+               )
+               .join('')}
+           </div>`
+        : ''
+    }
+    ${
+      sp.entrati.length
+        ? `<details style="margin-top:10px">
+             <summary class="tiny muted">Il piano in dettaglio (${sp.entrati.length} entrano, ${sp.usciti.length} escono)</summary>
+             <div class="tiny muted" style="margin-top:6px;line-height:1.7">
+               <div><b style="color:var(--accent)">entrano</b> ${sp.entrati.map((x) => `${esc(x.name)} ${x.plannedPrice}`).join(' · ')}</div>
+               ${sp.usciti.length ? `<div><b style="color:var(--danger)">escono</b> ${sp.usciti.map((x) => `${esc(x.name)} ${x.plannedPrice}`).join(' · ')}</div>` : ''}
+             </div>
+           </details>`
+        : ''
+    }
+  </div>`;
 }
 
 function hud() {
@@ -4289,7 +4607,7 @@ function render(rerender) {
       }
     </div>
 
-    ${selected ? detail(selected) : ''}
+    ${selected ? detail(selected) : mossaCard()}
     ${!selected && !state.auction.log.length ? readyCard() : ''}
     ${selected ? '' : repartoCard()}
     ${selected ? '' : targetsCard()}
@@ -4370,6 +4688,10 @@ function onAction(action, target, ev, rerender) {
     case 'reparto':
       reparto = null;
       buildReparto(rerender);
+      rerender();
+      return true;
+    case 'chiudi-mossa':
+      mossaChiusa = state.auction.log.length;
       rerender();
       return true;
     case 'goto':
@@ -4831,137 +5153,6 @@ function leggiElenco(testo, players, { gia = new Set() } = {}) {
 }
 
 return { chiave, indice, leggiRiga, abbina, leggiElenco };
-})();
-
-// ===== src/domain/strategia.js =====
-const __m_src_domain_strategia_js = (() => {
-// Quando salta il piano, non basta sapere chi prendere al posto di uno: serve capire
-// che la strada e' cambiata. Se i big di un reparto finiscono tutti, i crediti che avevi
-// messo da parte per loro vanno spostati, e conviene saperlo prima che sia troppo tardi.
-
-const { ROLES, ROLE_LABEL } = __m_src_domain_model_js;
-const { optimizeRoster } = __m_src_domain_optimizer_js;
-
-/** Quanti giocatori di prima fascia restano liberi, reparto per reparto. */
-function bigRimasti(players, { owned = new Map(), unavailable = new Set() } = {}) {
-  const out = {};
-  for (const role of ROLES) {
-    const liberi = players.filter((p) => p.role === role && p.isTop && !owned.has(p.id) && !unavailable.has(p.id));
-    const miei = [...owned.keys()]
-      .map((id) => players.find((p) => p.id === id))
-      .filter((p) => p && p.role === role && p.isTop).length;
-    out[role] = { liberi: liberi.length, miei, nomi: liberi.sort((a, b) => b.score - a.score).slice(0, 3).map((p) => p.name) };
-  }
-  return out;
-}
-
-/**
- * Il piano che resterebbe se tutti i big ancora liberi finissero agli avversari.
- * Se `role` e' indicato riguarda solo quel reparto, altrimenti tutti.
- */
-function scenarioSenzaBig({ players, settings, owned = new Map(), unavailable = new Set(), role = null }) {
-  const persi = new Set(unavailable);
-  for (const p of players) {
-    if (!p.isTop || owned.has(p.id)) continue;
-    if (role && p.role !== role) continue;
-    persi.add(p.id);
-  }
-  return optimizeRoster({ players, settings, owned, unavailable: persi, localSearch: false });
-}
-
-/** Chi entra e chi esce fra due piani, e come si spostano i crediti fra i reparti. */
-function confrontaPiani(prima, dopo) {
-  const a = new Map((prima?.picks || []).map((p) => [p.id, p]));
-  const b = new Map((dopo?.picks || []).map((p) => [p.id, p]));
-  const entrati = [...b.values()].filter((p) => !a.has(p.id)).sort((x, y) => y.plannedPrice - x.plannedPrice);
-  const usciti = [...a.values()].filter((p) => !b.has(p.id)).sort((x, y) => y.plannedPrice - x.plannedPrice);
-  const spostamenti = {};
-  for (const role of ROLES) {
-    spostamenti[role] = (dopo?.spentByRole?.[role] ?? 0) - (prima?.spentByRole?.[role] ?? 0);
-  }
-  return { entrati, usciti, spostamenti };
-}
-
-/**
- * Traduce il cambio di piano in frasi.
- * Si citano solo i movimenti che contano davvero: un riempitivo da un credito che ne sostituisce
- * un altro non e' una notizia, mentre venti crediti che passano dall'attacco al centrocampo si'.
- */
-function narrazione({ prima, dopo, settings, soglia = null }) {
-  if (!prima?.ok || !dopo?.ok) return [];
-  const { entrati, usciti, spostamenti } = confrontaPiani(prima, dopo);
-  const minimo = soglia ?? Math.max(6, Math.round((settings.budget || 500) * 0.02));
-  const frasi = [];
-
-  const mosse = ROLES.map((role) => ({ role, delta: spostamenti[role] }))
-    .filter((x) => Math.abs(x.delta) >= minimo)
-    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
-
-  if (mosse.length) {
-    const su = mosse.filter((m) => m.delta > 0);
-    const giu = mosse.filter((m) => m.delta < 0);
-    if (su.length && giu.length) {
-      frasi.push(
-        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
-          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
-      );
-    } else if (su.length) {
-      frasi.push(`Ora c'e' piu' budget per ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
-    }
-  }
-
-  const nuoviObiettivi = entrati.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 3);
-  if (nuoviObiettivi.length) {
-    frasi.push(`Nuovi obiettivi: ${nuoviObiettivi.map((p) => `${p.name} (${p.plannedPrice})`).join(', ')}.`);
-  }
-
-  const rinunce = usciti.filter((p) => p.plannedPrice >= Math.max(5, minimo / 2)).slice(0, 2);
-  if (rinunce.length && !nuoviObiettivi.length) {
-    frasi.push(`Esce dal piano ${rinunce.map((p) => p.name).join(' e ')}.`);
-  }
-
-  return frasi;
-}
-
-/**
- * Il consiglio strategico complessivo sullo stato attuale dell'asta.
- * Guarda quanti big restano e cosa succederebbe perdendoli tutti: se il piano regge, non c'e'
- * niente da dire; se crolla, conviene muoversi adesso invece di restare senza.
- */
-function consiglioStrategico({ players, settings, owned = new Map(), unavailable = new Set(), piano }) {
-  if (!piano?.ok) return null;
-  const big = bigRimasti(players, { owned, unavailable });
-  const avvisi = [];
-
-  for (const role of ROLES) {
-    const richiesti = Math.max(0, Math.round(settings.minTop?.[role] ?? 0));
-    if (!richiesti) continue;
-    const { liberi, miei, nomi } = big[role];
-    if (miei >= richiesti) continue;
-
-    if (liberi === 0) {
-      const scenario = scenarioSenzaBig({ players, settings, owned, unavailable, role });
-      const frasi = narrazione({ prima: piano, dopo: scenario, settings });
-      avvisi.push({
-        role,
-        gravita: 'finiti',
-        titolo: `I big in ${ROLE_LABEL[role].toLowerCase()} sono finiti.`,
-        testo: frasi.length ? frasi.join(' ') : 'Il piano si e\' gia\' adattato senza di loro.',
-      });
-    } else if (liberi <= richiesti - miei) {
-      avvisi.push({
-        role,
-        gravita: 'ultimi',
-        titolo: `Restano ${liberi} big in ${ROLE_LABEL[role].toLowerCase()}: ${nomi.join(', ')}.`,
-        testo: `Te ne serve ${richiesti - miei}. Se li perdi tutti devi cambiare strada.`,
-      });
-    }
-  }
-
-  return { big, avvisi };
-}
-
-return { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico };
 })();
 
 // ===== src/ui/mercato.js =====

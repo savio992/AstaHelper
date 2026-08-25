@@ -7,7 +7,7 @@ import { valuePlayers, rosterScore, depthWeights } from '../src/domain/valuation
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
 import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, CONFIG_ASTA } from '../src/domain/advisor.js';
-import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico } from '../src/domain/strategia.js';
+import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa } from '../src/domain/strategia.js';
 import { makeContext, makeListone } from './helpers.js';
 
 test('sniffDelimiter riconosce ; , e tab', () => {
@@ -598,4 +598,54 @@ test('chi era gia\' nel piano non viene spacciato per alternativa', () => {
   const planB = optimizeRoster({ players, settings, unavailable: new Set([caro.id]), ...CONFIG_ASTA });
   const idsB = new Set(planB.picks.map((p) => p.id));
   for (const a of alt) assert.equal(a.giaNelPiano, idsB.has(a.player.id));
+});
+
+test('ogni mossa viene raccontata: acquisto sopra il piano, e i crediti che devono uscire', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const prima = optimizeRoster({ players, settings, ...CONFIG_ASTA });
+  const obiettivo = prima.picks.filter((p) => p.role === 'A').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  const pagato = obiettivo.plannedPrice + 25;
+  const dopo = optimizeRoster({ players, settings, owned: new Map([[obiettivo.id, pagato]]), ...CONFIG_ASTA });
+  const sp = spiegaMossa({
+    prima,
+    dopo,
+    players,
+    settings,
+    evento: { id: obiettivo.id, kind: 'mine', price: pagato },
+  });
+  assert.ok(sp);
+  assert.equal(sp.mio, true);
+  assert.equal(sp.scarto, 25);
+  assert.match(sp.frasi[0], /sopra il piano/);
+  assert.ok(sp.frasi.length >= 2, 'deve dire anche cosa ne consegue');
+});
+
+test('perdere un obiettivo viene raccontato nominando il sostituto', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const prima = optimizeRoster({ players, settings, ...CONFIG_ASTA });
+  const obiettivo = prima.picks.filter((p) => p.role === 'C').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  const dopo = optimizeRoster({ players, settings, unavailable: new Set([obiettivo.id]), ...CONFIG_ASTA });
+  const sp = spiegaMossa({
+    prima,
+    dopo,
+    players,
+    settings,
+    evento: { id: obiettivo.id, kind: 'other', price: 40 },
+  });
+  assert.equal(sp.mio, false);
+  assert.equal(sp.eraObiettivo, true);
+  assert.match(sp.frasi[0], /Era un tuo obiettivo/);
+  // Il giocatore perso non puo' comparire fra quelli che "escono": e' la notizia stessa.
+  assert.ok(!sp.usciti.some((x) => x.id === obiettivo.id));
+});
+
+test('un giocatore che non mi interessava non genera allarmi', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const prima = optimizeRoster({ players, settings, ...CONFIG_ASTA });
+  const ids = new Set(prima.picks.map((p) => p.id));
+  const estraneo = players.find((p) => p.role === 'D' && !ids.has(p.id) && (p.expectedPrice ?? 0) <= 2);
+  const dopo = optimizeRoster({ players, settings, unavailable: new Set([estraneo.id]), ...CONFIG_ASTA });
+  const sp = spiegaMossa({ prima, dopo, players, settings, evento: { id: estraneo.id, kind: 'other', price: 2 } });
+  assert.equal(sp.eraObiettivo, false);
+  assert.match(sp.frasi[0], /Non era fra i tuoi obiettivi/);
 });

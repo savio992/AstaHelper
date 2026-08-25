@@ -86,6 +86,22 @@ finiscono i crediti che si liberano, quante scelte cambiano e quanto costa in pu
 solo dopo. Chi era gia' destinato a entrare anche senza il giocatore perso viene tenuto da parte
 e detto per quello che e': non un sostituto, ma la rosa che avresti comunque.
 
+**Ogni mossa viene raccontata.** Dopo ogni assegnazione il piano si rifa' da capo, e finora quel
+ricalcolo restava invisibile: un avviso di due secondi e la lista che cambiava sotto gli occhi
+senza spiegazione. Adesso la mossa si legge per intero — quanto e' costata rispetto a quanto era
+previsto, chi entra e chi esce, in che reparto finiscono i crediti — perche' e' proprio nel
+momento in cui il piano si muove che serve capire perche' si muove.
+
+Il caso che mancava del tutto e' lo scarto di prezzo: pagare ventuno crediti sopra il piano
+significa che ventuno crediti devono uscire da un altro reparto, e nessuno lo diceva.
+*"Dimarco e' tuo a 100. Hai pagato 21 sopra il piano, e quei crediti devono uscire da qualche
+altra parte. I crediti si spostano da centrocampisti verso difensori (+26). Entrano nel piano:
+Delprato (7). Escono: Taylor K., Ekkelenkamp."*
+
+Il racconto sopravvive anche alla riapertura dell'app, che in mezzo a un'asta capita: il piano
+precedente vive solo in memoria, ma il registro delle assegnazioni e' salvato, e rigiocarlo senza
+l'ultima voce restituisce esattamente il piano di prima.
+
 **Il solutore durante l'asta** e' lo stesso che calcola il piano. Sembra ovvio e non lo era: per
 risparmiare tempo l'offerta massima veniva calcolata saltando la ricerca locale, e su un listone
 vero l'errore arrivava al cinquanta per cento in entrambe le direzioni — diceva di lasciar perdere

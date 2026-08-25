@@ -74,6 +74,13 @@ try {
   const prezzo = 40;
   store.assign(target.id, 'mine', prezzo);
   check('crediti scalati', store.creditsLeft() === 500 - prezzo, `restano ${store.creditsLeft()}`);
+  // Ogni operazione deve essere raccontata: chi e' entrato, chi esce, dove vanno i crediti.
+  // Nell'app il pannello del giocatore si chiude da solo dopo l'assegnazione: qui lo replichiamo,
+  // altrimenti si sta guardando il dettaglio e non la schermata che vede l'utente.
+  store.state.ui.selectedId = null;
+  const dopoAcquisto = asta.render(noop);
+  check('l\'acquisto viene raccontato', dopoAcquisto.includes(target.name) && /tuo a \d+/.test(dopoAcquisto), 'card della mossa');
+  check('il racconto dice cosa ne consegue', /piano|crediti|obiettiv/i.test(dopoAcquisto));
   check('il giocatore entra in rosa', store.state.plan.owned.some((p) => p.id === target.id));
   check('il piano si ricalcola su 24 slot', store.state.plan.picks.length === 24);
   check('il budget totale resta rispettato', store.state.plan.cost <= 500, `${store.state.plan.cost}`);
@@ -82,6 +89,9 @@ try {
   const perso = store.state.plan.picks.filter((p) => p.role === 'D').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
   const puntiPrima = store.state.plan.score;
   store.assign(perso.id, 'other', 0);
+  store.state.ui.selectedId = null;
+  const dopoPerdita = asta.render(noop);
+  check('la perdita viene raccontata', /va a un avversario/.test(dopoPerdita), 'card della mossa');
   check('chi va agli altri esce dal piano', !store.state.plan.picks.some((p) => p.id === perso.id));
   check('il piano resta valido', store.state.plan.ok && store.state.plan.picks.length === 24);
   check('perdere un obiettivo non migliora la rosa', store.state.plan.score <= puntiPrima + 1e-6);

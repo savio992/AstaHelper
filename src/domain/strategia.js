@@ -123,3 +123,95 @@ export function consiglioStrategico({ players, settings, owned = new Map(), unav
 
   return { big, avvisi };
 }
+
+/**
+ * Che cosa e' appena successo, e cosa ne consegue.
+ *
+ * Dopo ogni assegnazione il piano si rifa' da capo, ma finora quel ricalcolo restava invisibile:
+ * un avviso di due secondi e la lista che cambiava sotto gli occhi senza spiegazione. Qui si
+ * racconta la mossa per intero — quanto e' costata rispetto a quanto era previsto, chi entra e
+ * chi esce, in che reparto finiscono i crediti — perche' e' proprio nel momento in cui il piano
+ * si muove che serve capire perche' si muove.
+ *
+ * Il caso che mancava del tutto e' lo scarto di prezzo: pagare sedici crediti sopra il piano
+ * significa che sedici crediti devono uscire da un altro reparto, e nessuno lo diceva.
+ */
+export function spiegaMossa({ prima, dopo, players, settings, evento }) {
+  if (!evento || !prima?.ok || !dopo?.ok) return null;
+  const p = players.find((x) => x.id === evento.id);
+  if (!p) return null;
+
+  const mio = evento.kind === 'mine';
+  const pianificato = prima.picks.find((x) => x.id === evento.id)?.plannedPrice ?? null;
+  const eraObiettivo = pianificato !== null;
+  const prezzo = Math.max(0, Math.round(Number(evento.price) || 0));
+  const scarto = mio && eraObiettivo ? prezzo - pianificato : null;
+
+  const { entrati, usciti, spostamenti } = confrontaPiani(prima, dopo);
+  const minimo = Math.max(4, Math.round((settings.budget || 500) * 0.015));
+  const mosse = ROLES.map((role) => ({ role, delta: spostamenti[role] }))
+    .filter((x) => Math.abs(x.delta) >= minimo)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  const titolo = mio
+    ? `${p.name} e' tuo${prezzo ? ` a ${prezzo}` : ''}.`
+    : `${p.name} va a un avversario${prezzo ? ` per ${prezzo}` : ''}.`;
+
+  const frasi = [];
+
+  if (mio) {
+    if (!eraObiettivo) {
+      frasi.push(`Non era fra gli obiettivi: il piano si rifa' attorno a lui.`);
+    } else if (scarto > 0) {
+      frasi.push(`Hai pagato ${scarto} sopra il piano, e quei crediti devono uscire da qualche altra parte.`);
+    } else if (scarto < 0) {
+      frasi.push(`Hai speso ${-scarto} meno del previsto: quei crediti tornano disponibili.`);
+    } else {
+      frasi.push(`Esattamente il prezzo previsto dal piano.`);
+    }
+  } else if (eraObiettivo) {
+    const sostituto = entrati.filter((x) => x.role === p.role).sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+    frasi.push(
+      sostituto
+        ? `Era un tuo obiettivo da ${pianificato}. Al suo posto entra ${sostituto.name} a ${sostituto.plannedPrice}.`
+        : `Era un tuo obiettivo da ${pianificato}. Il reparto si rifa' con quello che resta.`
+    );
+  } else {
+    frasi.push(`Non era fra i tuoi obiettivi.`);
+  }
+
+  if (mosse.length) {
+    const su = mosse.filter((m) => m.delta > 0);
+    const giu = mosse.filter((m) => m.delta < 0);
+    if (su.length && giu.length) {
+      frasi.push(
+        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
+          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+      );
+    } else if (su.length) {
+      frasi.push(`Piu' budget su ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+    } else if (giu.length) {
+      frasi.push(`Si taglia su ${giu.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (${m.delta})`).join(' e ')}.`);
+    }
+  }
+
+  const nuovi = entrati.filter((x) => x.plannedPrice >= Math.max(4, minimo / 2)).slice(0, 3);
+  const persi = usciti.filter((x) => x.id !== evento.id && x.plannedPrice >= Math.max(4, minimo / 2)).slice(0, 3);
+  if (nuovi.length) frasi.push(`Entrano nel piano: ${nuovi.map((x) => `${x.name} (${x.plannedPrice})`).join(', ')}.`);
+  if (persi.length) frasi.push(`Escono: ${persi.map((x) => x.name).join(', ')}.`);
+  if (!mosse.length && !nuovi.length && !persi.length) frasi.push(`Il resto del piano non cambia.`);
+
+  return {
+    player: p,
+    mio,
+    prezzo,
+    pianificato,
+    scarto,
+    eraObiettivo,
+    titolo,
+    entrati,
+    usciti: usciti.filter((x) => x.id !== evento.id),
+    mosse,
+    frasi,
+  };
+}

@@ -208,6 +208,34 @@ export function rebuildPlan(opts = {}) {
   return state.plan;
 }
 
+/**
+ * Il piano com'era prima dell'ultima assegnazione.
+ *
+ * Serve a raccontare cosa e' appena successo. Normalmente basta `prevPlan`, che resta in
+ * memoria, ma quello si perde a ogni riapertura dell'app — e riaprire l'app in mezzo a
+ * un'asta capita. Il registro delle assegnazioni invece e' salvato: si rigioca senza l'ultima
+ * voce e si riottiene esattamente il piano di prima, al costo di un'ottimizzazione.
+ */
+export function pianoPrimaDellUltimaMossa() {
+  const log = state.auction.log;
+  if (!log.length || !state.players.length) return null;
+  const owned = {};
+  const taken = {};
+  for (const voce of log.slice(0, -1)) {
+    delete owned[voce.id];
+    delete taken[voce.id];
+    if (voce.kind === 'mine') owned[voce.id] = voce.price;
+    else if (voce.kind === 'other') taken[voce.id] = voce.price;
+  }
+  return optimizeRoster({
+    players: state.players,
+    settings: state.settings,
+    owned: new Map(Object.entries(owned).map(([id, v]) => [id, Number(v)])),
+    unavailable: new Set(Object.keys(taken)),
+    ripartenze: 4,
+  });
+}
+
 /** Unisce le fonti importate in un unico listone e riordina le fasce. */
 function rebuildRoster() {
   const lists = state.sources.map((s) => annotatePriceShare(annotatePmaShare(annotateTierPct(s.players))));
