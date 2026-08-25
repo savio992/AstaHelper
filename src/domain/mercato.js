@@ -275,12 +275,24 @@ export function avversari({ settings, players = [], owned = new Map(), taken = n
     for (const role of ROLES) s.mancantiPerRuolo[role] = Math.max(0, (settings.slots?.[role] || 0) - s.perRuolo[role]);
   }
 
+  const venduti = normalizeTaken(taken).size;
   return {
     squadre,
     nonAttribuiti,
     creditiNonAttribuiti,
-    // Senza attribuzione i residui degli avversari sono sovrastimati: i numeri diventano
-    // un limite superiore, non una misura. Meglio dirlo che far credere a una precisione falsa.
+    venduti,
+    attribuiti: venduti - nonAttribuiti,
+    // Di quanto i tetti possono essere sovrastimati, in tutto.
+    //
+    // Un acquisto che non so a chi attribuire toglie dei crediti a un avversario senza che io
+    // lo veda: il suo residuo calcolato e' piu' alto del vero. Ma non di quanto si crederebbe,
+    // perche' non vedendolo conto anche una casella libera di troppo, e ogni casella libera
+    // costa un credito. Il saldo per ogni acquisto non attribuito e' (prezzo - 1), mai negativo.
+    //
+    // Da qui la proprieta' che tiene in piedi tutto il resto: il tetto calcolato e' sempre
+    // >= del tetto vero. Dire "nessuno puo' superare X" resta lecito anche con il tabellone
+    // mezzo vuoto — X e' solo piu' alto del vero, mai piu' basso.
+    scarto: Math.max(0, creditiNonAttribuiti - nonAttribuiti),
     attendibile: nonAttribuiti === 0,
   };
 }
@@ -301,6 +313,10 @@ export function concorrenza({ settings, players = [], owned = new Map(), taken =
     massimo: rivali.length ? rivali[0].massimo : 0,
     ricchi: rivali.slice(0, 3),
     attendibile: board.attendibile,
+    nonAttribuiti: board.nonAttribuiti,
+    attribuiti: board.attribuiti,
+    venduti: board.venduti,
+    scarto: board.scarto,
     slotRivali: rivali.reduce((a, s) => a + s.mancantiPerRuolo[role], 0),
   };
 }
@@ -311,19 +327,26 @@ export function concorrenza({ settings, players = [], owned = new Map(), taken =
  */
 export function verdettoConcorrenza({ mioMassimo, conc }) {
   if (!conc.quanti) {
-    return { esito: 'nessuno', prezzo: 1, testo: 'Nessun avversario ha ancora bisogno di questo ruolo: te lo prendi a 1.' };
+    return { esito: 'nessuno', prezzo: 1, nota: null, testo: 'Nessun avversario ha ancora bisogno di questo ruolo: te lo prendi a 1.' };
   }
-  if (!conc.attendibile) {
-    return {
-      esito: 'ignoto',
-      prezzo: null,
-      testo: `${conc.quanti} avversari hanno ancora slot liberi. Registra chi compra cosa per sapere fin dove possono spingersi.`,
-    };
-  }
+
+  // Il tabellone incompleto non fa tacere il verdetto.
+  //
+  // Per un anno intero questa funzione, davanti anche a un solo acquisto non attribuito, si
+  // rifiutava di dare il numero. In un'asta vera capita entro il primo minuto: il consiglio
+  // che nelle simulazioni valeva trecento crediti restava spento dall'inizio alla fine.
+  //
+  // Non serviva: i tetti calcolati sono limiti superiori (vedi `scarto` in avversari), quindi
+  // "nessuno puo' superare X" e' vero comunque. Si dice il numero e si dice da dove viene.
+  const nota = conc.attendibile
+    ? null
+    : `So a chi sono andati ${conc.attribuiti} giocatori su ${conc.venduti}: i tetti veri sono piu' bassi di questi, fino a ${conc.scarto} crediti in meno.`;
+
   if (conc.massimo < mioMassimo) {
     return {
       esito: 'tuo',
       prezzo: conc.massimo + 1,
+      nota,
       testo: `Nessuno puo' superare ${conc.massimo}: e' tuo a ${conc.massimo + 1}, non offrire di piu'.`,
     };
   }
@@ -333,6 +356,7 @@ export function verdettoConcorrenza({ mioMassimo, conc }) {
   return {
     esito: 'conteso',
     prezzo: null,
+    nota,
     testo:
       soli.length === 1
         ? `Solo ${top.nome} puo' battere la tua offerta (fino a ${top.massimo}). Gli altri si fermano a ${secondo ? secondo.massimo : 0}.`
@@ -349,7 +373,8 @@ export function momentoGiusto({ settings, players, owned, taken, player, tabello
   const conc = concorrenza({ settings, players, owned, taken, role: player.role, tabellone });
   const atteso = Math.max(1, Math.round(player.expectedPrice ?? 1));
   if (!conc.quanti) return { chiama: true, testo: "Chiamalo: nessuno puo' contenderlo." };
-  if (!conc.attendibile) return { chiama: null, testo: null };
+  // Anche qui il tetto e' un limite superiore: se nemmeno il massimo arriva al prezzo di
+  // mercato, a maggior ragione non ci arriva il residuo vero. Il consiglio regge lo stesso.
   if (conc.massimo < atteso) {
     return { chiama: true, testo: `Chiamalo ora: nessun avversario arriva al suo prezzo di mercato (${atteso}).` };
   }

@@ -1,6 +1,6 @@
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
-import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, contestoConsiglio } from '../store.js';
+import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, contestoConsiglio, attribuisci } from '../store.js';
 import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots, elenco } from '../domain/model.js';
 import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista } from '../domain/advisor.js';
 import { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } from '../domain/mercato.js';
@@ -16,7 +16,10 @@ function cacheKey() {
   return `${state.ui.selectedId}|${state.auction.log.length}|${JSON.stringify(state.settings)}`;
 }
 
-onReset(() => invalidate());
+onReset(() => {
+  invalidate();
+  chiediChiuso = null;
+});
 
 export function invalidate() {
   mossaChiusa = null;
@@ -135,6 +138,43 @@ function mossaCard() {
   </div>`;
 }
 
+/**
+ * "A chi e' andato?", chiesto dopo, non prima.
+ *
+ * La corsia veloce e' un tocco solo e deve restarlo: durante una chiamata non si sta a
+ * scegliere da un elenco. Ma senza sapere l'acquirente il tabellone degli avversari non
+ * impara niente, ed e' li' che nascono i consigli che valgono di piu'. Quindi la domanda si
+ * fa qui, sulla card di cosa e' appena successo, che resta a schermo finche' non arriva la
+ * mossa dopo: se c'e' un attimo si risponde con un tocco, altrimenti si ignora.
+ */
+function chiediChiCard() {
+  const log = state.auction.log;
+  const ultimo = log[log.length - 1];
+  if (!ultimo || ultimo.kind !== 'other' || ultimo.by != null) return '';
+  if (chiediChiuso === log.length) return '';
+  const p = playerById(ultimo.id);
+  const nomi = nomiSquadre(state.settings);
+  return `
+  <div class="card" style="border-left:3px solid var(--warn)">
+    <div class="row between" style="align-items:flex-start;margin-bottom:8px">
+      <div class="small"><b>${esc(p?.name || 'Il giocatore')}</b> a chi e' andato?</div>
+      <button class="btn ghost" style="padding:2px 8px" data-action="chiudi-chi" aria-label="Lascia perdere">✕</button>
+    </div>
+    <div class="row wrap" style="gap:6px">
+      ${nomi
+        .map((nome, i) =>
+          i === 0
+            ? ''
+            : `<button class="btn" style="flex:1 1 28%;min-width:84px;padding:9px 6px" data-action="attribuisci" data-id="${esc(ultimo.id)}" data-idx="${i}">${esc(nome)}</button>`
+        )
+        .join('')}
+    </div>
+    <div class="tiny muted" style="margin-top:8px">Un tocco, e so fin dove possono spingersi gli altri. Se non lo sai, chiudi pure.</div>
+  </div>`;
+}
+
+let chiediChiuso = null;
+
 function hud() {
   const left = creditsLeft();
   const budget = state.settings.budget || 500;
@@ -206,11 +246,10 @@ function climaCard(fase) {
   } else if (d.critico) {
     frase = `Restano ${d.liberi} nomi liberi e te ne servono ${d.servono}: non puoi permetterti di perderne.`;
     colore = 'danger';
-  } else if (!c.attendibile) {
-    frase = `${c.quanti} avversari ne cercano ancora. Segna a chi vanno i giocatori e ti dico fin dove possono spingersi.`;
-    colore = 'muted';
   } else {
-    frase = `${c.quanti} avversari ne cercano ancora, il piu' ricco puo' arrivare a ${c.massimo}. Nomi liberi: ${d.liberi}.`;
+    frase =
+      `${c.quanti} avversari ne cercano ancora, il piu' ricco puo' arrivare a ${c.massimo}. Nomi liberi: ${d.liberi}.` +
+      (c.attendibile ? '' : ` (so a chi sono andati ${c.attribuiti} su ${c.venduti}: il tetto vero e' piu' basso)`);
     colore = 'text';
   }
   return `<div class="small" style="margin-top:8px;color:var(--${colore})">${frase}</div>`;
@@ -429,6 +468,7 @@ function concorrenzaBox(p, bid) {
   const classe = v.esito === 'tuo' || v.esito === 'nessuno' ? 'go' : v.esito === 'conteso' ? 'edge' : '';
   return `<div class="verdict ${classe}" style="margin-top:10px;text-align:left">
     <div class="small" style="font-weight:600">${esc(v.testo)}</div>
+    ${v.nota ? `<div class="tiny" style="font-weight:500;margin-top:5px;opacity:.75">${esc(v.nota)}</div>` : ''}
   </div>`;
 }
 
@@ -918,7 +958,7 @@ export function render(rerender) {
       }
     </div>
 
-    ${selected ? detail(selected) : mossaCard()}
+    ${selected ? detail(selected) : mossaCard() + chiediChiCard()}
     ${!selected && !state.auction.log.length ? readyCard() : ''}
     ${selected ? '' : repartoCard()}
     ${selected ? '' : targetsCard()}
@@ -1029,10 +1069,21 @@ export function onAction(action, target, ev, rerender) {
       mossaChiusa = state.auction.log.length;
       rerender();
       return true;
+    case 'chiudi-chi':
+      chiediChiuso = state.auction.log.length;
+      rerender();
+      return true;
     case 'goto':
       state.ui.tab = target.dataset.tab;
       rerender();
       return true;
+    case 'attribuisci': {
+      const idx = Number(target.dataset.idx);
+      const p = playerById(id);
+      if (attribuisci(id, idx)) toast(`${p?.name} a ${nomiSquadre(state.settings)[idx]}.`);
+      rerender();
+      return true;
+    }
     case 'quick-gone': {
       const p = playerById(id);
       // La corsia veloce: un tocco, nessuna domanda. Il prezzo resta ignoto e il conto dei

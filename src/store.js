@@ -440,6 +440,38 @@ export function release(id) {
   notify();
 }
 
+/**
+ * Dire a chi e' andato un giocatore gia' segnato come perso.
+ *
+ * Non e' un'assegnazione nuova: era gia' fuori, il prezzo e' quello di prima e il piano non
+ * cambia di una virgola — l'attribuzione non entra in nessuna valutazione. Cambia solo il
+ * tabellone degli avversari, e con lui fin dove possono spingersi. Per questo non passa da
+ * `assign`: rivalutare il listone e rifare il piano per un'informazione che non li tocca
+ * costerebbe un paio di secondi in mezzo all'asta, e non e' il momento.
+ */
+export function attribuisci(id, indice) {
+  const voce = state.auction.taken[id];
+  if (!voce) return false;
+  const squadra = Number.isInteger(indice) && indice > 0 ? indice : null;
+  const prezzo = typeof voce === 'object' ? Number(voce.price) || 0 : Number(voce) || 0;
+  state.auction.taken[id] = { price: prezzo, by: squadra };
+  for (let i = state.auction.log.length - 1; i >= 0; i--) {
+    if (state.auction.log[i].id === id) {
+      state.auction.log[i] = { ...state.auction.log[i], by: squadra };
+      break;
+    }
+  }
+  state.tabellone = avversari({
+    settings: state.settings,
+    players: state.players,
+    owned: ownedMap(),
+    taken: takenMap(),
+  });
+  save();
+  notify();
+  return true;
+}
+
 export function undo() {
   const log = state.auction.log;
   if (!log.length) return;

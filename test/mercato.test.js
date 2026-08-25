@@ -203,3 +203,73 @@ test('il secondo portiere si consiglia nella squadra del titolare', () => {
     assert.equal(ab.coppia.role, 'P');
   }
 });
+
+test('un acquisto non attribuito alza il tetto di chi lo ha fatto, mai lo abbassa', () => {
+  const { players, settings } = ctx();
+  const compra = players.filter((p) => p.role === 'C').slice(0, 3);
+  const prezzi = [60, 25, 4];
+
+  // La verita': tutti e tre li ha comprati la squadra 1.
+  const vero = avversari({
+    settings,
+    players,
+    taken: new Map(compra.map((p, i) => [p.id, { price: prezzi[i], by: 1 }])),
+  });
+
+  // Quello che vedo io se di uno non so l'acquirente.
+  for (let salta = 0; salta < 3; salta++) {
+    const visto = avversari({
+      settings,
+      players,
+      taken: new Map(compra.map((p, i) => [p.id, { price: prezzi[i], by: i === salta ? null : 1 }])),
+    });
+    const differenza = visto.squadre[1].massimo - vero.squadre[1].massimo;
+    assert.ok(differenza >= 0, `il tetto visto (${visto.squadre[1].massimo}) non puo' stare sotto il vero (${vero.squadre[1].massimo})`);
+    // Un credito del prezzo lo stavo gia' contando come casella libera da riempire.
+    assert.equal(differenza, prezzi[salta] - 1, 'lo scarto e\' esattamente (prezzo - 1)');
+    assert.equal(visto.scarto, prezzi[salta] - 1, 'ed e\' quello che il tabellone dichiara');
+    assert.equal(visto.attribuiti, 2);
+    assert.equal(visto.venduti, 3);
+  }
+});
+
+test('con il tabellone mezzo vuoto il verdetto dice comunque il numero, e da dove viene', () => {
+  const conc = {
+    quanti: 2,
+    massimo: 18,
+    ricchi: [{ nome: 'Squadra 3', massimo: 18 }],
+    attendibile: false,
+    attribuiti: 12,
+    venduti: 20,
+    nonAttribuiti: 8,
+    scarto: 47,
+  };
+  const v = verdettoConcorrenza({ mioMassimo: 40, conc });
+  // Il tetto e' un limite superiore: se nessuno arriva a 18 nemmeno nel caso peggiore,
+  // non ci arriva a maggior ragione nel caso vero. Il consiglio si puo' dare.
+  assert.equal(v.esito, 'tuo');
+  assert.equal(v.prezzo, 19);
+  assert.match(v.nota, /12 giocatori su 20/);
+  assert.match(v.nota, /47/);
+});
+
+test('a tabellone completo il verdetto non ha niente da giustificare', () => {
+  const conc = { quanti: 2, massimo: 18, ricchi: [{ nome: 'Squadra 3', massimo: 18 }], attendibile: true };
+  assert.equal(verdettoConcorrenza({ mioMassimo: 40, conc }).nota, null);
+});
+
+test('anche il momento della chiamata smette di aspettare il tabellone perfetto', () => {
+  const { players, settings } = ctx();
+  const bersaglio = players.filter((p) => p.role === 'A').sort((a, b) => b.expectedPrice - a.expectedPrice)[0];
+  // Tutti gli avversari hanno speso quasi tutto, e di un acquisto non so l'acquirente.
+  const spesi = players.filter((p) => p.role === 'C').slice(0, 8);
+  const taken = new Map();
+  for (let i = 1; i < settings.participants; i++) taken.set(spesi[i].id, { price: settings.budget - 30, by: i });
+  taken.set(spesi[0].id, { price: 20, by: null });
+
+  const m = momentoGiusto({ settings, players, owned: new Map(), taken, player: bersaglio });
+  const conc = concorrenza({ settings, players, taken, role: 'A' });
+  assert.equal(conc.attendibile, false, 'il tabellone e\' incompleto per costruzione');
+  assert.ok(conc.massimo < Math.round(bersaglio.expectedPrice), 'e nessuno arriva al suo prezzo');
+  assert.equal(m.chiama, true, 'quindi il consiglio si puo\' dare lo stesso');
+});

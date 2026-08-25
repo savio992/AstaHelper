@@ -177,7 +177,7 @@ function concorrenzaCard() {
       ${
         state.tabellone?.attendibile
           ? 'Numeri esatti: ogni acquisto e&#39; attribuito a una squadra.'
-          : `${state.tabellone?.nonAttribuiti || 0} acquisti non sono attribuiti a nessuno, quindi questi massimi sono un limite superiore. Segnando anche la squadra che compra diventano esatti.`
+          : `So a chi sono andati ${state.tabellone?.attribuiti || 0} giocatori su ${state.tabellone?.venduti || 0}. I massimi qui sopra restano validi — un acquisto che non vedo puo&#39; solo aver tolto crediti a qualcuno — ma sono un limite superiore: quelli veri sono piu&#39; bassi, fino a ${state.tabellone?.scarto || 0} crediti in meno.`
       }
     </div>
   </div>`;

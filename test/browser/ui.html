@@ -118,6 +118,19 @@ try {
   check('il piano resta valido', store.state.plan.ok && store.state.plan.picks.length === 24);
   check('perdere un obiettivo non migliora la rosa', store.state.plan.score <= puntiPrima + 1e-6);
 
+  // --- a chi e' andato ----------------------------------------------------------------
+  // La corsia veloce non chiede l'acquirente, ma senza acquirente il tabellone non impara.
+  // La domanda arriva dopo, e rispondere non deve costare un ricalcolo del piano.
+  check('dopo una perdita l\'app chiede a chi e\' andato', /a chi e&#39; andato\?|a chi e' andato\?/.test(dopoPerdita), 'card di attribuzione');
+  const primaDellAttribuzione = store.state.plan;
+  const tettoPrima = store.state.tabellone.squadre[3].massimo;
+  asta.onAction('attribuisci', { dataset: { id: perso.id, idx: '3' } }, null, noop);
+  check('l\'acquisto finisce alla squadra giusta', store.state.auction.taken[perso.id].by === 3, `by=${store.state.auction.taken[perso.id].by}`);
+  check('il tabellone impara', store.state.tabellone.squadre[3].massimo < tettoPrima, `${tettoPrima} → ${store.state.tabellone.squadre[3].massimo}`);
+  check('il tabellone e\' completo', store.state.tabellone.attendibile === true);
+  check('e il piano non e\' stato rifatto', store.state.plan === primaDellAttribuzione, 'stessa identica istanza');
+  check('la domanda sparisce', !/a chi e&#39; andato\?|a chi e' andato\?/.test(asta.render(noop)));
+
   // --- annullo -----------------------------------------------------------------------
   store.undo();
   check("l'annulla riporta il giocatore disponibile", store.state.auction.taken[perso.id] === undefined);
