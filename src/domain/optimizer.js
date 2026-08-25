@@ -132,12 +132,28 @@ export function optimizeRoster({
   prune = true,
   localSearch = true,
   ripartenze = 0,
+  obbligati = new Set(),
 } = {}) {
   const byId = new Map(players.map((p) => [p.id, p]));
+
+  // I giocatori che l'utente ha deciso di volere si trattano come gia' in rosa al loro prezzo
+  // di mercato: e' l'unico modo di farli entrare nel conto in modo esatto, perche' il solutore
+  // sa gia' come un giocatore in rosa sposta i pesi di profondita' degli altri del suo ruolo.
+  // Alla fine tornano fra gli obiettivi da comprare, che e' quello che sono davvero.
+  const forzati = new Set();
+  const ownedEffettivo = new Map(owned);
+  for (const id of obbligati) {
+    if (owned.has(id) || unavailable.has(id)) continue;
+    const p = byId.get(id);
+    if (!p) continue;
+    ownedEffettivo.set(id, Math.max(1, Math.round(priceOverride.get(id) ?? p.expectedPrice ?? 1)));
+    forzati.add(id);
+  }
+
   const ownedPlayers = [];
   let ownedCost = 0;
   const ownedByRole = { P: 0, D: 0, C: 0, A: 0 };
-  for (const [id, price] of owned) {
+  for (const [id, price] of ownedEffettivo) {
     const p = byId.get(id);
     if (!p) continue;
     ownedPlayers.push({ ...p, paid: price });
@@ -176,7 +192,7 @@ export function optimizeRoster({
     const richiesti = Math.max(0, Math.round(settings.minTop?.[role] ?? 0));
     const gia = ownedPlayers.filter((p) => p.role === role && p.isTop).length;
     const disponibili = players.filter(
-      (p) => p.role === role && p.isTop && !owned.has(p.id) && !unavailable.has(p.id)
+      (p) => p.role === role && p.isTop && !ownedEffettivo.has(p.id) && !unavailable.has(p.id)
     ).length;
     topNeed[role] = Math.max(0, Math.min(need[role], disponibili, richiesti - gia));
   }
@@ -191,7 +207,7 @@ export function optimizeRoster({
     const weights = depthWeights(settings, role);
     const wAt = (i) => weights[Math.min(Math.max(0, i), weights.length - 1)] ?? 0.05;
     let cands = players
-      .filter((p) => p.role === role && !owned.has(p.id) && !unavailable.has(p.id))
+      .filter((p) => p.role === role && !ownedEffettivo.has(p.id) && !unavailable.has(p.id))
       .map((p) => ({
         id: p.id,
         score: p.score || 0,
@@ -326,7 +342,7 @@ export function optimizeRoster({
   }
 
   if (localSearch) {
-    const ctx = { ownedPlayers, players, settings, owned, unavailable, priceOverride, budgetLeft };
+    const ctx = { ownedPlayers, players, settings, owned: ownedEffettivo, unavailable, priceOverride, budgetLeft };
     picks = improveWithSynergy({ picks, ...ctx });
     // Il DP non sa nulla di club: se e' andato oltre il tetto di concentrazione si ripara qui.
     picks = enforceClubCap({ picks, ...ctx });
@@ -336,14 +352,23 @@ export function optimizeRoster({
 
   const cost = ownedCost + picks.reduce((s, p) => s + p.plannedPrice, 0);
   const full = [...ownedPlayers.map((p) => ({ ...p, plannedPrice: p.paid })), ...picks];
+
+  // I forzati tornano fra gli obiettivi: non sono comprati, sono scelti. Il totale non cambia,
+  // ma cosi' il budget di fase li conta fra le spese ancora da fare e l'elenco li mostra
+  // come quello che sono.
+  const daComprare = forzati.size
+    ? [...picks, ...ownedPlayers.filter((p) => forzati.has(p.id)).map((p) => ({ ...p, plannedPrice: p.paid, bloccato: true }))]
+    : picks;
+  const davveroMiei = forzati.size ? ownedPlayers.filter((p) => !forzati.has(p.id)) : ownedPlayers;
+
   const risultato = {
     ok: true,
-    picks,
-    owned: ownedPlayers,
+    picks: daComprare,
+    owned: davveroMiei,
     all: full,
     cost,
     score: rosterScore(full, settings),
-    spentByRole: spendByRole(ownedPlayers, picks),
+    spentByRole: spendByRole(davveroMiei, daComprare),
     leftover: (settings.budget || 500) - cost,
     budgetCurve,
     budgetLeft,
@@ -362,7 +387,10 @@ export function optimizeRoster({
   // rosa migliore. Non garantisce l'ottimo — quello richiederebbe un modello non separabile —
   // ma recupera proprio i casi in cui una singola scelta cara sbarra la strada a un blocco.
   let migliore = risultato;
-  const candidate = picks.slice().sort((a, b) => b.plannedPrice - a.plannedPrice).slice(0, ripartenze);
+  const candidate = daComprare
+    .filter((c) => !obbligati.has(c.id))
+    .sort((a, b) => b.plannedPrice - a.plannedPrice)
+    .slice(0, ripartenze);
   for (const c of candidate) {
     const escluso = new Set(unavailable);
     escluso.add(c.id);
@@ -375,6 +403,7 @@ export function optimizeRoster({
       prune,
       localSearch,
       ripartenze: 0,
+      obbligati,
     });
     if (alt.ok && alt.score > migliore.score) migliore = alt;
   }

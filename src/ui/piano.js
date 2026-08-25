@@ -1,11 +1,32 @@
 // Il piano: la miglior rosa possibile con i crediti che restano, e come sono distribuiti.
 
-import { state, rebuildPlan } from '../store.js';
+import { state, rebuildPlan, blocca, scarta, liberaScelta, statoScelta, obbligatiSet } from '../store.js';
 import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
 import { tierBudgetReport, maxBid, alternatives } from '../domain/advisor.js';
 import { clubExposure } from '../domain/valuation.js';
 import { ownedMap, unavailableSet, onReset } from '../store.js';
 import { esc, roleChip, emptyState, playerRow, edgeBadge } from './common.js';
+
+/**
+ * Il piano non e' un verdetto: e' una proposta.
+ *
+ * Il lucchetto impone un giocatore e il solutore ricalcola tutto il resto attorno a lui, con i
+ * crediti che restano; la crocetta lo toglie di mezzo per sempre. Sono le due cose che
+ * un'ottimizzazione non puo' sapere da sola — che quel portiere lo vuoi comunque, o che di
+ * quell'attaccante non ti fidi.
+ */
+function sceltaBottoni(p) {
+  const stato = statoScelta(p.id);
+  return `<div class="row" style="gap:4px">
+    <button class="btn ${stato === 'bloccato' ? 'primary' : 'ghost'}" style="padding:8px 10px;min-width:40px"
+      data-action="${stato === 'bloccato' ? 'libera' : 'blocca'}" data-id="${esc(p.id)}"
+      aria-label="${stato === 'bloccato' ? 'Lascia decidere al piano' : 'Voglio questo giocatore'}"
+      title="${stato === 'bloccato' ? 'Lascia decidere al piano' : 'Voglio questo giocatore'}">${stato === 'bloccato' ? '🔒' : '🔓'}</button>
+    <button class="btn ${stato === 'escluso' ? 'danger' : 'ghost'}" style="padding:8px 10px;min-width:40px"
+      data-action="${stato === 'escluso' ? 'libera' : 'scarta'}" data-id="${esc(p.id)}"
+      aria-label="Non lo voglio" title="Non lo voglio">✕</button>
+  </div>`;
+}
 
 function roleBlock(role, plan) {
   const owned = plan.owned.filter((p) => p.role === role).map((p) => ({ ...p, plannedPrice: p.paid, mine: true }));
@@ -23,15 +44,37 @@ function roleBlock(role, plan) {
     <div class="listwrap">
       <ul class="plist">
         ${all
-          .map((p) =>
-            playerRow(p, {
-              price: p.plannedPrice,
-              priceLabel: p.mine ? 'pagato' : 'stima',
-              status: p.mine ? 'mine' : null,
-            })
+          .map(
+            (p) => `<li>
+              ${roleChip(p.role)}
+              <div class="grow">
+                <div class="nm">${esc(p.name)}${p.bloccato ? ' <span class="chip plan">scelto da te</span>' : ''}</div>
+                <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+              </div>
+              <div class="pr mono">${p.plannedPrice}<small>${p.mine ? 'pagato' : 'stima'}</small></div>
+              ${p.mine ? '' : sceltaBottoni(p)}
+            </li>`
           )
           .join('')}
       </ul>
+    </div>
+  </div>`;
+}
+
+/** Chi ho scartato a mano: deve restare visibile, altrimenti sparisce senza spiegazione. */
+function scartatiCard() {
+  const ids = Object.keys(state.auction.esclusi || {});
+  if (!ids.length) return '';
+  const scartati = ids.map((id) => state.players.find((p) => p.id === id)).filter(Boolean);
+  if (!scartati.length) return '';
+  return `
+  <div class="card">
+    <h2>Scartati da te</h2>
+    <div class="tiny muted" style="margin-bottom:10px">Il piano non li propone piu'. Tocca per rimetterli in gioco.</div>
+    <div class="row wrap" style="gap:6px">
+      ${scartati
+        .map((p) => `<button class="chip" data-action="libera" data-id="${esc(p.id)}">${roleChip(p.role)} ${esc(p.name)} ↩︎</button>`)
+        .join('')}
     </div>
   </div>`;
 }
@@ -81,7 +124,7 @@ function buildScheda(rerender) {
   schedaInCorso = true;
   setTimeout(() => {
     try {
-      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet() };
+      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet(), obbligati: obbligatiSet() };
       scheda = (state.plan?.picks || [])
         .slice()
         .sort((a, b) => b.plannedPrice - a.plannedPrice)
@@ -215,18 +258,29 @@ export function render() {
     ${schedaCard()}
     ${ROLES.map((r) => roleBlock(r, plan)).join('')}
     ${tiersCard(plan)}
+    ${scartatiCard()}
     ${exposureCard(plan)}
 
     <div class="card">
       <div class="small muted">
         Il piano tiene conto di chi hai gia' preso, di chi e' stato preso dagli altri e dei crediti che ti restano.
         Si aggiorna da solo dopo ogni assegnazione durante l'asta.
+        Con <b>🔓</b> imponi un giocatore e il resto si ricalcola attorno a lui; con <b>✕</b> lo togli di mezzo.
       </div>
     </div>
   </div>`;
 }
 
 export function onAction(action, target, ev, rerender) {
+  if (action === 'blocca' || action === 'scarta' || action === 'libera') {
+    const id = target.dataset.id;
+    if (action === 'blocca') blocca(id);
+    else if (action === 'scarta') scarta(id);
+    else liberaScelta(id);
+    scheda = null;
+    rerender();
+    return true;
+  }
   if (action === 'replan') {
     rebuildPlan();
     scheda = null;

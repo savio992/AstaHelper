@@ -690,3 +690,69 @@ test('quando prezzo e valore coincidono non si dice niente', () => {
   const sp = spiegaOfferta({ players, settings, playerId: p.id, offerta: p.expectedPrice });
   assert.equal(sp.frasi.length, 0);
 });
+
+test('un giocatore imposto entra nel piano e ci resta', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const libero = optimizeRoster({ players, settings, ripartenze: 4 });
+  const dentro = new Set(libero.picks.map((p) => p.id));
+  // Un portiere che il solutore non aveva scelto: il caso vero, "il portiere lo scelgo io".
+  const voluto = players
+    .filter((p) => p.role === 'P' && !dentro.has(p.id) && (p.expectedPrice ?? 0) > 5)
+    .sort((a, b) => (b.expectedPrice ?? 0) - (a.expectedPrice ?? 0))[0];
+  assert.ok(voluto, 'serve un portiere fuori dal piano per provare il vincolo');
+
+  const imposto = optimizeRoster({ players, settings, obbligati: new Set([voluto.id]), ripartenze: 4 });
+  assert.equal(imposto.ok, true);
+  const scelto = imposto.picks.find((p) => p.id === voluto.id);
+  assert.ok(scelto, `${voluto.name} deve comparire fra gli obiettivi`);
+  assert.equal(scelto.bloccato, true, 'e va marcato come scelta imposta');
+  // Il resto della rosa resta valido: slot esatti, nessun doppione, budget rispettato.
+  // Contare gli slot non basta: il giocatore imposto era rimasto anche nel serbatoio dei
+  // candidati e il solutore lo sceglieva una seconda volta, con il conto che tornava lo stesso.
+  const ids = imposto.picks.map((p) => p.id);
+  assert.equal(new Set(ids).size, ids.length, 'nessun giocatore puo\' comparire due volte');
+  for (const role of ROLES) {
+    const n = imposto.picks.filter((p) => p.role === role).length;
+    assert.equal(n, settings.slots[role], `slot ${role}`);
+  }
+  assert.ok(imposto.cost <= settings.budget);
+  // Imporre una scelta non puo' migliorare la rosa: al massimo la lascia uguale.
+  assert.ok(imposto.score <= libero.score + 1e-9);
+});
+
+test('imporre un giocatore sposta i crediti, non li fa sparire', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const libero = optimizeRoster({ players, settings, ripartenze: 4 });
+  const dentro = new Set(libero.picks.map((p) => p.id));
+  const caro = players
+    .filter((p) => p.role === 'A' && !dentro.has(p.id))
+    .sort((a, b) => (b.expectedPrice ?? 0) - (a.expectedPrice ?? 0))[0];
+  const imposto = optimizeRoster({ players, settings, obbligati: new Set([caro.id]), ripartenze: 4 });
+  // Il totale per reparto deve continuare a contare la scelta imposta.
+  const spesaA = imposto.picks.filter((p) => p.role === 'A').reduce((a, p) => a + p.plannedPrice, 0);
+  assert.equal(imposto.spentByRole.A, spesaA);
+  assert.ok(imposto.cost <= settings.budget);
+});
+
+test('un giocatore scartato non viene mai proposto', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const libero = optimizeRoster({ players, settings, ripartenze: 4 });
+  const daScartare = libero.picks.filter((p) => p.role === 'C').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  const dopo = optimizeRoster({ players, settings, unavailable: new Set([daScartare.id]), ripartenze: 4 });
+  assert.ok(!dopo.picks.some((p) => p.id === daScartare.id));
+  assert.equal(dopo.picks.filter((p) => p.role === 'C').length, settings.slots.C);
+});
+
+test('imporre un giocatore non lo rende comprabile se e\' gia\' andato ad altri', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const p = players.find((x) => x.role === 'D');
+  const piano = optimizeRoster({
+    players,
+    settings,
+    unavailable: new Set([p.id]),
+    obbligati: new Set([p.id]),
+    ripartenze: 4,
+  });
+  assert.equal(piano.ok, true);
+  assert.ok(!piano.picks.some((x) => x.id === p.id), 'chi e\' stato venduto non torna nel piano');
+});

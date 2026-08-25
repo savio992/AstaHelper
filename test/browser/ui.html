@@ -148,6 +148,33 @@ try {
   check('lo stato si ricarica dal telefono', ok && store.state.players.length === 540 && store.creditsLeft() === primaDelReload);
   check("l'asta in corso sopravvive alla chiusura", store.state.auction.owned[target.id] === prezzo);
 
+  // --- il piano si puo' correggere a mano ------------------------------------------
+  store.state.ui.tab = 'piano';
+  // load() ricalcola i giocatori ma non il piano: e' rebuildPlan a farlo, come all'avvio.
+  store.rebuildPlan();
+  const pianoPrima = store.state.plan;
+  const giaDentro = new Set(pianoPrima.picks.map((x) => x.id));
+  const portiereVoluto = store.state.players
+    .filter((x) => x.role === 'P' && !giaDentro.has(x.id) && !store.state.auction.taken[x.id])
+    .sort((a, b) => b.expectedPrice - a.expectedPrice)[0];
+  piano.onAction('blocca', { dataset: { id: portiereVoluto.id } }, null, noop);
+  const scelto = store.state.plan.picks.find((x) => x.id === portiereVoluto.id);
+  check('il portiere scelto a mano entra nel piano', !!scelto && scelto.bloccato === true, portiereVoluto.name);
+  const idsPiano = store.state.plan.picks.map((x) => x.id);
+  check('e non compare due volte', new Set(idsPiano).size === idsPiano.length);
+  check('il piano resta completo', ROLES.every((r) => store.state.plan.picks.filter((x) => x.role === r).length === store.state.settings.slots[r] - Object.keys(store.state.auction.owned).filter((id) => store.state.players.find((p) => p.id === id)?.role === r).length));
+  check('il piano lo mostra come scelta tua', piano.render(noop).includes('scelto da te'));
+
+  piano.onAction('libera', { dataset: { id: portiereVoluto.id } }, null, noop);
+  check('si puo\' restituire la scelta al solutore', !store.state.plan.picks.some((x) => x.id === portiereVoluto.id && x.bloccato));
+
+  const daScartare = store.state.plan.picks.filter((x) => x.role === 'C').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  piano.onAction('scarta', { dataset: { id: daScartare.id } }, null, noop);
+  check('lo scartato sparisce dal piano', !store.state.plan.picks.some((x) => x.id === daScartare.id), daScartare.name);
+  check('e resta visibile per poterlo recuperare', piano.render(noop).includes('Scartati da te'));
+  piano.onAction('libera', { dataset: { id: daScartare.id } }, null, noop);
+  check('si puo\' recuperare', !piano.render(noop).includes('Scartati da te'));
+
   // --- cancella tutto ----------------------------------------------------------------
   // Il tasto usava confirm(), che dentro un iframe con sandbox viene ignorato in silenzio:
   // la conferma deve stare nella pagina, e l'azzeramento deve ripulire anche le memorie

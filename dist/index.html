@@ -1694,12 +1694,28 @@ function optimizeRoster({
   prune = true,
   localSearch = true,
   ripartenze = 0,
+  obbligati = new Set(),
 } = {}) {
   const byId = new Map(players.map((p) => [p.id, p]));
+
+  // I giocatori che l'utente ha deciso di volere si trattano come gia' in rosa al loro prezzo
+  // di mercato: e' l'unico modo di farli entrare nel conto in modo esatto, perche' il solutore
+  // sa gia' come un giocatore in rosa sposta i pesi di profondita' degli altri del suo ruolo.
+  // Alla fine tornano fra gli obiettivi da comprare, che e' quello che sono davvero.
+  const forzati = new Set();
+  const ownedEffettivo = new Map(owned);
+  for (const id of obbligati) {
+    if (owned.has(id) || unavailable.has(id)) continue;
+    const p = byId.get(id);
+    if (!p) continue;
+    ownedEffettivo.set(id, Math.max(1, Math.round(priceOverride.get(id) ?? p.expectedPrice ?? 1)));
+    forzati.add(id);
+  }
+
   const ownedPlayers = [];
   let ownedCost = 0;
   const ownedByRole = { P: 0, D: 0, C: 0, A: 0 };
-  for (const [id, price] of owned) {
+  for (const [id, price] of ownedEffettivo) {
     const p = byId.get(id);
     if (!p) continue;
     ownedPlayers.push({ ...p, paid: price });
@@ -1738,7 +1754,7 @@ function optimizeRoster({
     const richiesti = Math.max(0, Math.round(settings.minTop?.[role] ?? 0));
     const gia = ownedPlayers.filter((p) => p.role === role && p.isTop).length;
     const disponibili = players.filter(
-      (p) => p.role === role && p.isTop && !owned.has(p.id) && !unavailable.has(p.id)
+      (p) => p.role === role && p.isTop && !ownedEffettivo.has(p.id) && !unavailable.has(p.id)
     ).length;
     topNeed[role] = Math.max(0, Math.min(need[role], disponibili, richiesti - gia));
   }
@@ -1753,7 +1769,7 @@ function optimizeRoster({
     const weights = depthWeights(settings, role);
     const wAt = (i) => weights[Math.min(Math.max(0, i), weights.length - 1)] ?? 0.05;
     let cands = players
-      .filter((p) => p.role === role && !owned.has(p.id) && !unavailable.has(p.id))
+      .filter((p) => p.role === role && !ownedEffettivo.has(p.id) && !unavailable.has(p.id))
       .map((p) => ({
         id: p.id,
         score: p.score || 0,
@@ -1888,7 +1904,7 @@ function optimizeRoster({
   }
 
   if (localSearch) {
-    const ctx = { ownedPlayers, players, settings, owned, unavailable, priceOverride, budgetLeft };
+    const ctx = { ownedPlayers, players, settings, owned: ownedEffettivo, unavailable, priceOverride, budgetLeft };
     picks = improveWithSynergy({ picks, ...ctx });
     // Il DP non sa nulla di club: se e' andato oltre il tetto di concentrazione si ripara qui.
     picks = enforceClubCap({ picks, ...ctx });
@@ -1898,14 +1914,23 @@ function optimizeRoster({
 
   const cost = ownedCost + picks.reduce((s, p) => s + p.plannedPrice, 0);
   const full = [...ownedPlayers.map((p) => ({ ...p, plannedPrice: p.paid })), ...picks];
+
+  // I forzati tornano fra gli obiettivi: non sono comprati, sono scelti. Il totale non cambia,
+  // ma cosi' il budget di fase li conta fra le spese ancora da fare e l'elenco li mostra
+  // come quello che sono.
+  const daComprare = forzati.size
+    ? [...picks, ...ownedPlayers.filter((p) => forzati.has(p.id)).map((p) => ({ ...p, plannedPrice: p.paid, bloccato: true }))]
+    : picks;
+  const davveroMiei = forzati.size ? ownedPlayers.filter((p) => !forzati.has(p.id)) : ownedPlayers;
+
   const risultato = {
     ok: true,
-    picks,
-    owned: ownedPlayers,
+    picks: daComprare,
+    owned: davveroMiei,
     all: full,
     cost,
     score: rosterScore(full, settings),
-    spentByRole: spendByRole(ownedPlayers, picks),
+    spentByRole: spendByRole(davveroMiei, daComprare),
     leftover: (settings.budget || 500) - cost,
     budgetCurve,
     budgetLeft,
@@ -1924,7 +1949,10 @@ function optimizeRoster({
   // rosa migliore. Non garantisce l'ottimo — quello richiederebbe un modello non separabile —
   // ma recupera proprio i casi in cui una singola scelta cara sbarra la strada a un blocco.
   let migliore = risultato;
-  const candidate = picks.slice().sort((a, b) => b.plannedPrice - a.plannedPrice).slice(0, ripartenze);
+  const candidate = daComprare
+    .filter((c) => !obbligati.has(c.id))
+    .sort((a, b) => b.plannedPrice - a.plannedPrice)
+    .slice(0, ripartenze);
   for (const c of candidate) {
     const escluso = new Set(unavailable);
     escluso.add(c.id);
@@ -1937,6 +1965,7 @@ function optimizeRoster({
       prune,
       localSearch,
       ripartenze: 0,
+      obbligati,
     });
     if (alt.ok && alt.score > migliore.score) migliore = alt;
   }
@@ -2709,6 +2738,9 @@ const state = {
     owned: {}, // id -> prezzo pagato da me
     taken: {}, // id -> { price, by } : prezzo pagato da altri e da quale squadra
     log: [], // { id, kind, price, by, at }
+    // Scelte imposte a mano: chi voglio in rosa comunque, e chi non voglio mai vedere nel piano.
+    bloccati: {},
+    esclusi: {},
   },
   // Il conto del mercato: slot residui, crediti ancora in circolazione, inflazione osservata.
   mercato: null,
@@ -2777,7 +2809,7 @@ function load() {
     state.settings.minTop = { ...defaultSettings().minTop, ...(data.settings?.minTop || {}) };
     state.sources = data.sources || (data.roster ? [{ name: 'listone', players: data.roster }] : []);
     state.roster = rebuildRoster();
-    state.auction = { owned: {}, taken: {}, log: [], ...(data.auction || {}) };
+    state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {}, ...(data.auction || {}) };
     state.importMeta = data.importMeta || null;
     state.formData = data.formData || null;
     if (data.ui?.tab) state.ui.tab = data.ui.tab;
@@ -2802,7 +2834,7 @@ function resetAll() {
   state.formData = null;
   state.players = [];
   state.importMeta = null;
-  state.auction = { owned: {}, taken: {}, log: [] };
+  state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {} };
   state.mercato = null;
   state.tabellone = null;
   state.plan = null;
@@ -2877,8 +2909,51 @@ function ownedMap() {
   return new Map(Object.entries(state.auction.owned).map(([id, price]) => [id, Number(price)]));
 }
 
+/**
+ * Chi il piano non puo' scegliere: chi e' andato agli avversari e chi ho scartato a mano.
+ * Le esclusioni valgono solo per me e non entrano nel conto del mercato, che misura la lega.
+ */
 function unavailableSet() {
-  return new Set(Object.keys(state.auction.taken));
+  return new Set([...Object.keys(state.auction.taken), ...Object.keys(state.auction.esclusi || {})]);
+}
+
+/** I giocatori che voglio in rosa comunque: il piano si ricalcola attorno a loro. */
+function obbligatiSet() {
+  return new Set(Object.keys(state.auction.bloccati || {}).filter((id) => !state.auction.owned[id] && !state.auction.taken[id]));
+}
+
+/** Voglio questo giocatore, qualunque cosa dica il solutore. */
+function blocca(id) {
+  if (state.auction.taken[id]) return;
+  state.auction.bloccati[id] = true;
+  delete state.auction.esclusi[id];
+  rebuildPlan();
+  save();
+  notify();
+}
+
+/** Questo non lo voglio mai vedere nel piano. */
+function scarta(id) {
+  state.auction.esclusi[id] = true;
+  delete state.auction.bloccati[id];
+  rebuildPlan();
+  save();
+  notify();
+}
+
+/** Torna a lasciar decidere al solutore. */
+function liberaScelta(id) {
+  delete state.auction.bloccati[id];
+  delete state.auction.esclusi[id];
+  rebuildPlan();
+  save();
+  notify();
+}
+
+function statoScelta(id) {
+  if (state.auction.bloccati?.[id]) return 'bloccato';
+  if (state.auction.esclusi?.[id]) return 'escluso';
+  return null;
 }
 
 /** Le assegnazioni agli avversari, con prezzo e squadra quando registrati. */
@@ -2907,6 +2982,7 @@ function rebuildPlan(opts = {}) {
     settings: state.settings,
     owned: ownedMap(),
     unavailable: unavailableSet(),
+    obbligati: obbligatiSet(),
     // Il piano che si guarda vale qualche decimo di secondo in piu': senza ripartenze il
     // solutore resta bloccato su una scelta cara che sbarra la strada a un blocco migliore.
     ripartenze: 4,
@@ -2983,6 +3059,7 @@ function assign(id, kind, price, by = null) {
   delete state.auction.taken[id];
   if (kind === 'mine') state.auction.owned[id] = p;
   else if (kind === 'other') state.auction.taken[id] = { price: p, by: squadra };
+  delete state.auction.bloccati[id];
   state.auction.log.push({ id, kind, price: p, by: squadra, at: Date.now() });
   // Ogni assegnazione cambia quanti giocatori e quanti crediti restano: i prezzi attesi
   // vanno rifatti prima del piano, altrimenti il piano ottimizza su un mercato scaduto.
@@ -3007,6 +3084,7 @@ function assegnaMolti(voci) {
     delete state.auction.taken[id];
     if (kind === 'mine') state.auction.owned[id] = p;
     else state.auction.taken[id] = { price: p, by: squadra };
+    delete state.auction.bloccati[id];
     state.auction.log.push({ id, kind, price: p, by: squadra, at: Date.now() });
   }
   recompute();
@@ -3061,7 +3139,7 @@ function creditsLeft() {
   return (state.settings.budget || 500) - spentTotal();
 }
 
-return { onReset, subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, undo, updateSettings, spentTotal, creditsLeft, state };
+return { onReset, subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, obbligatiSet, blocca, scarta, liberaScelta, statoScelta, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, undo, updateSettings, spentTotal, creditsLeft, state };
 })();
 
 // ===== src/domain/advisor.js =====
@@ -3168,13 +3246,14 @@ function budgetDiFase({ settings, players, owned, plan, role = null }) {
  * E' il prezzo oltre il quale la rosa che ottengo prendendolo vale meno della rosa
  * che ottengo lasciandolo andare e ridistribuendo i crediti. Il vero limite dell'asta.
  */
-function maxBid({ players, settings, owned = new Map(), unavailable = new Set(), playerId }) {
+function maxBid({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId }) {
   const hard = maxSpendableNow(settings, owned);
   if (hard < 1) return { maxBid: 0, planB: null, reason: 'Crediti esauriti per i vincoli di rosa.' };
 
   const withoutSet = new Set(unavailable);
   withoutSet.add(playerId);
-  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST });
+  const senzaVincolo = new Set([...obbligati].filter((id) => id !== playerId));
+  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST, obbligati: senzaVincolo });
   if (!planB.ok) {
     // Se senza di lui non esiste una rosa valida, e' incedibile: si arriva al tetto tecnico.
     return { maxBid: hard, planB, hard, breakEven: hard, reason: 'Senza di lui non chiudi la rosa.' };
@@ -3183,7 +3262,7 @@ function maxBid({ players, settings, owned = new Map(), unavailable = new Set(),
   const scoreAt = (price) => {
     const o = new Map(owned);
     o.set(playerId, price);
-    const plan = optimizeRoster({ players, settings, owned: o, unavailable, ...FAST });
+    const plan = optimizeRoster({ players, settings, owned: o, unavailable, ...FAST, obbligati });
     return plan.ok ? plan.score : -Infinity;
   };
 
@@ -3215,6 +3294,7 @@ function alternatives({
   settings,
   owned = new Map(),
   unavailable = new Set(),
+  obbligati = new Set(),
   playerId,
   limit = 5,
   shortlist = 14,
@@ -3225,11 +3305,12 @@ function alternatives({
 
   const withoutSet = new Set(unavailable);
   withoutSet.add(playerId);
-  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST });
+  const senzaVincolo = new Set([...obbligati].filter((id) => id !== playerId));
+  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST, obbligati: senzaVincolo });
   const planWith = (() => {
     const o = new Map(owned);
     o.set(playerId, Math.max(1, Math.round(target.expectedPrice ?? 1)));
-    return optimizeRoster({ players, settings, owned: o, unavailable, ...FAST });
+    return optimizeRoster({ players, settings, owned: o, unavailable, ...FAST, obbligati });
   })();
 
   const budgetNow = maxSpendableNow(settings, owned);
@@ -3260,7 +3341,7 @@ function alternatives({
     // riottenere lo stesso identico risultato, ed erano la maggioranza dei candidati.
     const plan = inPlanB.has(p.id)
       ? planB
-      : optimizeRoster({ players, settings, owned: new Map([...owned, [p.id, price]]), unavailable: withoutSet, ...FAST });
+      : optimizeRoster({ players, settings, owned: new Map([...owned, [p.id, price]]), unavailable: withoutSet, ...FAST, obbligati });
     if (!plan.ok) continue;
     results.push({
       player: p,
@@ -3346,11 +3427,11 @@ function tierBudgetReport({ plan, settings, players, owned = new Map() }) {
  * pronto prima: obiettivo, tetto, primo ripiego, secondo ripiego. E in fondo lo scenario nero,
  * quello in cui saltano tutti gli obiettivi del reparto, con la destinazione dei crediti.
  */
-function pianoDiReparto({ players, settings, owned = new Map(), unavailable = new Set(), plan, role = null, rami = 2 }) {
+function pianoDiReparto({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), plan, role = null, rami = 2 }) {
   const fase = role || faseCorrente(settings, players, owned);
   if (!fase) return null;
   const budget = budgetDiFase({ settings, players, owned, plan, role: fase });
-  const args = { players, settings, owned, unavailable };
+  const args = { players, settings, owned, unavailable, obbligati };
 
   const scelti = (plan?.picks || [])
     .filter((p) => p.role === fase)
@@ -3381,7 +3462,7 @@ function pianoDiReparto({ players, settings, owned = new Map(), unavailable = ne
   if (obiettivi.length) {
     const persi = new Set(unavailable);
     for (const o of obiettivi) persi.add(o.player.id);
-    const dopo = optimizeRoster({ players, settings, owned, unavailable: persi, ...FAST });
+    const dopo = optimizeRoster({ players, settings, owned, unavailable: persi, ...FAST, obbligati });
     if (dopo.ok) {
       const nuovi = dopo.picks.filter((p) => p.role === fase).sort((a, b) => b.plannedPrice - a.plannedPrice).slice(0, 3);
       const spesaPrima = (plan?.picks || []).filter((p) => p.role === fase).reduce((a, p) => a + p.plannedPrice, 0);
@@ -3450,14 +3531,17 @@ function abbinamentoPortiere({ players, settings, plan, owned = new Map(), unava
  * su uno da venti: significa che quei crediti si ridistribuiscono, e il piano puo' rifare
  * l'attacco intero e portarsi dietro difesa e centrocampo.
  */
-function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), playerId, piano = null, limite = 4 }) {
+function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, piano = null, limite = 4 }) {
   const perso = players.find((p) => p.id === playerId);
   if (!perso) return null;
 
-  const prima = piano?.ok ? piano : optimizeRoster({ players, settings, owned, unavailable, ...FAST });
+  const prima = piano?.ok ? piano : optimizeRoster({ players, settings, owned, unavailable, ...FAST, obbligati });
   const senza = new Set(unavailable);
   senza.add(playerId);
-  const dopo = optimizeRoster({ players, settings, owned, unavailable: senza, ...FAST });
+  // Se era un giocatore che avevo imposto, perderlo scioglie il vincolo: altrimenti il piano
+  // resterebbe legato a qualcuno che non e' piu' comprabile.
+  const vincoli = new Set([...obbligati].filter((id) => id !== playerId));
+  const dopo = optimizeRoster({ players, settings, owned, unavailable: senza, ...FAST, obbligati: vincoli });
   if (!dopo.ok) {
     return { perso, dopo, impossibile: true, frasi: ['Senza di lui non si chiude una rosa valida: e\' incedibile.'] };
   }
@@ -3925,7 +4009,7 @@ return { esc, n, roleChip, toast, matches, playerRow, edgeBadge, altVerdict, emp
 const __m_src_ui_asta_js = (() => {
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
-const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset } = __m_src_store_js;
+const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } = __m_src_domain_model_js;
 const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta } = __m_src_domain_advisor_js;
 const { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } = __m_src_domain_mercato_js;
@@ -3962,6 +4046,7 @@ function ensureAdvice(rerender) {
         settings: state.settings,
         owned: ownedMap(),
         unavailable: unavailableSet(),
+        obbligati: obbligatiSet(),
         playerId: state.ui.selectedId,
       };
       cache = {
@@ -4270,7 +4355,8 @@ function detail(p) {
         : `<div class="grid2" style="margin-top:12px">
              <button class="btn primary" data-action="take-mine" data-id="${esc(p.id)}">L'ho preso io</button>
              <button class="btn danger" data-action="take-other" data-id="${esc(p.id)}">Preso da altri</button>
-           </div>`
+           </div>
+           ${sceltaRiga(p)}`
     }`
     }
   </div>
@@ -4319,6 +4405,33 @@ function ripiego(alts, bid) {
       ? `lascialo andare: se ti serve il ruolo, <b>${esc(first.player.name)}</b> a ${first.price}`
       : `se lo superi, meglio <b>${esc(first.player.name)}</b> a ${first.price}`;
   return `<div class="small muted" style="margin-top:8px">${testo}</div>`;
+}
+
+/**
+ * Imporre o scartare un giocatore.
+ *
+ * Il piano e' una proposta, non un verdetto: qui si dice al solutore che quel portiere lo si
+ * vuole comunque, e lui ricalcola tutto il resto con i crediti che restano. Il contrario vale
+ * per chi non si vuole vedere proposto mai piu'.
+ */
+function sceltaRiga(p) {
+  const stato = statoScelta(p.id);
+  if (stato === 'bloccato') {
+    return `<div class="verdict edge" style="margin-top:10px;text-align:left">
+      <div class="small" style="font-weight:600">Lo vuoi comunque: il piano e' costruito attorno a lui.</div>
+      <button class="btn ghost block" style="margin-top:8px" data-action="libera" data-id="${esc(p.id)}">Lascia decidere al piano</button>
+    </div>`;
+  }
+  if (stato === 'escluso') {
+    return `<div class="verdict stop" style="margin-top:10px;text-align:left">
+      <div class="small" style="font-weight:600">L'hai scartato: il piano non lo propone.</div>
+      <button class="btn ghost block" style="margin-top:8px" data-action="libera" data-id="${esc(p.id)}">Rimettilo in gioco</button>
+    </div>`;
+  }
+  return `<div class="grid2" style="margin-top:8px">
+    <button class="btn ghost" data-action="blocca" data-id="${esc(p.id)}">🔓 Lo voglio comunque</button>
+    <button class="btn ghost" data-action="scarta" data-id="${esc(p.id)}">✕ Non lo voglio</button>
+  </div>`;
 }
 
 /** Perche' l'offerta massima e' cosi' distante dal prezzo di mercato. */
@@ -4504,7 +4617,7 @@ function buildReparto(rerender) {
   repartoInCorso = true;
   setTimeout(() => {
     try {
-      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet() };
+      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet(), obbligati: obbligatiSet() };
       const piano = pianoDiReparto({ ...args, plan: state.plan });
       reparto = piano
         ? {
@@ -4840,6 +4953,17 @@ function onAction(action, target, ev, rerender) {
       buildReparto(rerender);
       rerender();
       return true;
+    case 'blocca':
+    case 'scarta':
+    case 'libera': {
+      if (action === 'blocca') blocca(id);
+      else if (action === 'scarta') scarta(id);
+      else liberaScelta(id);
+      invalidate();
+      toast(action === 'blocca' ? 'Il piano si costruisce attorno a lui.' : action === 'scarta' ? 'Non te lo propongo piu\'.' : 'Decide di nuovo il piano.');
+      rerender();
+      return true;
+    }
     case 'chiudi-mossa':
       mossaChiusa = state.auction.log.length;
       rerender();
@@ -4896,12 +5020,33 @@ return { invalidate, render, onAction, onInput };
 const __m_src_ui_piano_js = (() => {
 // Il piano: la miglior rosa possibile con i crediti che restano, e come sono distribuiti.
 
-const { state, rebuildPlan } = __m_src_store_js;
+const { state, rebuildPlan, blocca, scarta, liberaScelta, statoScelta, obbligatiSet } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
 const { tierBudgetReport, maxBid, alternatives } = __m_src_domain_advisor_js;
 const { clubExposure } = __m_src_domain_valuation_js;
 const { ownedMap, unavailableSet, onReset } = __m_src_store_js;
 const { esc, roleChip, emptyState, playerRow, edgeBadge } = __m_src_ui_common_js;
+
+/**
+ * Il piano non e' un verdetto: e' una proposta.
+ *
+ * Il lucchetto impone un giocatore e il solutore ricalcola tutto il resto attorno a lui, con i
+ * crediti che restano; la crocetta lo toglie di mezzo per sempre. Sono le due cose che
+ * un'ottimizzazione non puo' sapere da sola — che quel portiere lo vuoi comunque, o che di
+ * quell'attaccante non ti fidi.
+ */
+function sceltaBottoni(p) {
+  const stato = statoScelta(p.id);
+  return `<div class="row" style="gap:4px">
+    <button class="btn ${stato === 'bloccato' ? 'primary' : 'ghost'}" style="padding:8px 10px;min-width:40px"
+      data-action="${stato === 'bloccato' ? 'libera' : 'blocca'}" data-id="${esc(p.id)}"
+      aria-label="${stato === 'bloccato' ? 'Lascia decidere al piano' : 'Voglio questo giocatore'}"
+      title="${stato === 'bloccato' ? 'Lascia decidere al piano' : 'Voglio questo giocatore'}">${stato === 'bloccato' ? '🔒' : '🔓'}</button>
+    <button class="btn ${stato === 'escluso' ? 'danger' : 'ghost'}" style="padding:8px 10px;min-width:40px"
+      data-action="${stato === 'escluso' ? 'libera' : 'scarta'}" data-id="${esc(p.id)}"
+      aria-label="Non lo voglio" title="Non lo voglio">✕</button>
+  </div>`;
+}
 
 function roleBlock(role, plan) {
   const owned = plan.owned.filter((p) => p.role === role).map((p) => ({ ...p, plannedPrice: p.paid, mine: true }));
@@ -4919,15 +5064,37 @@ function roleBlock(role, plan) {
     <div class="listwrap">
       <ul class="plist">
         ${all
-          .map((p) =>
-            playerRow(p, {
-              price: p.plannedPrice,
-              priceLabel: p.mine ? 'pagato' : 'stima',
-              status: p.mine ? 'mine' : null,
-            })
+          .map(
+            (p) => `<li>
+              ${roleChip(p.role)}
+              <div class="grow">
+                <div class="nm">${esc(p.name)}${p.bloccato ? ' <span class="chip plan">scelto da te</span>' : ''}</div>
+                <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+              </div>
+              <div class="pr mono">${p.plannedPrice}<small>${p.mine ? 'pagato' : 'stima'}</small></div>
+              ${p.mine ? '' : sceltaBottoni(p)}
+            </li>`
           )
           .join('')}
       </ul>
+    </div>
+  </div>`;
+}
+
+/** Chi ho scartato a mano: deve restare visibile, altrimenti sparisce senza spiegazione. */
+function scartatiCard() {
+  const ids = Object.keys(state.auction.esclusi || {});
+  if (!ids.length) return '';
+  const scartati = ids.map((id) => state.players.find((p) => p.id === id)).filter(Boolean);
+  if (!scartati.length) return '';
+  return `
+  <div class="card">
+    <h2>Scartati da te</h2>
+    <div class="tiny muted" style="margin-bottom:10px">Il piano non li propone piu'. Tocca per rimetterli in gioco.</div>
+    <div class="row wrap" style="gap:6px">
+      ${scartati
+        .map((p) => `<button class="chip" data-action="libera" data-id="${esc(p.id)}">${roleChip(p.role)} ${esc(p.name)} ↩︎</button>`)
+        .join('')}
     </div>
   </div>`;
 }
@@ -4977,7 +5144,7 @@ function buildScheda(rerender) {
   schedaInCorso = true;
   setTimeout(() => {
     try {
-      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet() };
+      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet(), obbligati: obbligatiSet() };
       scheda = (state.plan?.picks || [])
         .slice()
         .sort((a, b) => b.plannedPrice - a.plannedPrice)
@@ -5111,18 +5278,29 @@ function render() {
     ${schedaCard()}
     ${ROLES.map((r) => roleBlock(r, plan)).join('')}
     ${tiersCard(plan)}
+    ${scartatiCard()}
     ${exposureCard(plan)}
 
     <div class="card">
       <div class="small muted">
         Il piano tiene conto di chi hai gia' preso, di chi e' stato preso dagli altri e dei crediti che ti restano.
         Si aggiorna da solo dopo ogni assegnazione durante l'asta.
+        Con <b>🔓</b> imponi un giocatore e il resto si ricalcola attorno a lui; con <b>✕</b> lo togli di mezzo.
       </div>
     </div>
   </div>`;
 }
 
 function onAction(action, target, ev, rerender) {
+  if (action === 'blocca' || action === 'scarta' || action === 'libera') {
+    const id = target.dataset.id;
+    if (action === 'blocca') blocca(id);
+    else if (action === 'scarta') scarta(id);
+    else liberaScelta(id);
+    scheda = null;
+    rerender();
+    return true;
+  }
   if (action === 'replan') {
     rebuildPlan();
     scheda = null;

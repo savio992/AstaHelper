@@ -1,6 +1,6 @@
 // La schermata che uso durante l'asta: crediti, offerta massima, alternative.
 
-import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset } from '../store.js';
+import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet } from '../store.js';
 import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots } from '../domain/model.js';
 import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta } from '../domain/advisor.js';
 import { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } from '../domain/mercato.js';
@@ -37,6 +37,7 @@ function ensureAdvice(rerender) {
         settings: state.settings,
         owned: ownedMap(),
         unavailable: unavailableSet(),
+        obbligati: obbligatiSet(),
         playerId: state.ui.selectedId,
       };
       cache = {
@@ -345,7 +346,8 @@ function detail(p) {
         : `<div class="grid2" style="margin-top:12px">
              <button class="btn primary" data-action="take-mine" data-id="${esc(p.id)}">L'ho preso io</button>
              <button class="btn danger" data-action="take-other" data-id="${esc(p.id)}">Preso da altri</button>
-           </div>`
+           </div>
+           ${sceltaRiga(p)}`
     }`
     }
   </div>
@@ -394,6 +396,33 @@ function ripiego(alts, bid) {
       ? `lascialo andare: se ti serve il ruolo, <b>${esc(first.player.name)}</b> a ${first.price}`
       : `se lo superi, meglio <b>${esc(first.player.name)}</b> a ${first.price}`;
   return `<div class="small muted" style="margin-top:8px">${testo}</div>`;
+}
+
+/**
+ * Imporre o scartare un giocatore.
+ *
+ * Il piano e' una proposta, non un verdetto: qui si dice al solutore che quel portiere lo si
+ * vuole comunque, e lui ricalcola tutto il resto con i crediti che restano. Il contrario vale
+ * per chi non si vuole vedere proposto mai piu'.
+ */
+function sceltaRiga(p) {
+  const stato = statoScelta(p.id);
+  if (stato === 'bloccato') {
+    return `<div class="verdict edge" style="margin-top:10px;text-align:left">
+      <div class="small" style="font-weight:600">Lo vuoi comunque: il piano e' costruito attorno a lui.</div>
+      <button class="btn ghost block" style="margin-top:8px" data-action="libera" data-id="${esc(p.id)}">Lascia decidere al piano</button>
+    </div>`;
+  }
+  if (stato === 'escluso') {
+    return `<div class="verdict stop" style="margin-top:10px;text-align:left">
+      <div class="small" style="font-weight:600">L'hai scartato: il piano non lo propone.</div>
+      <button class="btn ghost block" style="margin-top:8px" data-action="libera" data-id="${esc(p.id)}">Rimettilo in gioco</button>
+    </div>`;
+  }
+  return `<div class="grid2" style="margin-top:8px">
+    <button class="btn ghost" data-action="blocca" data-id="${esc(p.id)}">🔓 Lo voglio comunque</button>
+    <button class="btn ghost" data-action="scarta" data-id="${esc(p.id)}">✕ Non lo voglio</button>
+  </div>`;
 }
 
 /** Perche' l'offerta massima e' cosi' distante dal prezzo di mercato. */
@@ -579,7 +608,7 @@ function buildReparto(rerender) {
   repartoInCorso = true;
   setTimeout(() => {
     try {
-      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet() };
+      const args = { players: state.players, settings: state.settings, owned: ownedMap(), unavailable: unavailableSet(), obbligati: obbligatiSet() };
       const piano = pianoDiReparto({ ...args, plan: state.plan });
       reparto = piano
         ? {
@@ -915,6 +944,17 @@ export function onAction(action, target, ev, rerender) {
       buildReparto(rerender);
       rerender();
       return true;
+    case 'blocca':
+    case 'scarta':
+    case 'libera': {
+      if (action === 'blocca') blocca(id);
+      else if (action === 'scarta') scarta(id);
+      else liberaScelta(id);
+      invalidate();
+      toast(action === 'blocca' ? 'Il piano si costruisce attorno a lui.' : action === 'scarta' ? 'Non te lo propongo piu\'.' : 'Decide di nuovo il piano.');
+      rerender();
+      return true;
+    }
     case 'chiudi-mossa':
       mossaChiusa = state.auction.log.length;
       rerender();

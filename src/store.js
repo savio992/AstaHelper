@@ -24,6 +24,9 @@ export const state = {
     owned: {}, // id -> prezzo pagato da me
     taken: {}, // id -> { price, by } : prezzo pagato da altri e da quale squadra
     log: [], // { id, kind, price, by, at }
+    // Scelte imposte a mano: chi voglio in rosa comunque, e chi non voglio mai vedere nel piano.
+    bloccati: {},
+    esclusi: {},
   },
   // Il conto del mercato: slot residui, crediti ancora in circolazione, inflazione osservata.
   mercato: null,
@@ -92,7 +95,7 @@ export function load() {
     state.settings.minTop = { ...defaultSettings().minTop, ...(data.settings?.minTop || {}) };
     state.sources = data.sources || (data.roster ? [{ name: 'listone', players: data.roster }] : []);
     state.roster = rebuildRoster();
-    state.auction = { owned: {}, taken: {}, log: [], ...(data.auction || {}) };
+    state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {}, ...(data.auction || {}) };
     state.importMeta = data.importMeta || null;
     state.formData = data.formData || null;
     if (data.ui?.tab) state.ui.tab = data.ui.tab;
@@ -117,7 +120,7 @@ export function resetAll() {
   state.formData = null;
   state.players = [];
   state.importMeta = null;
-  state.auction = { owned: {}, taken: {}, log: [] };
+  state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {} };
   state.mercato = null;
   state.tabellone = null;
   state.plan = null;
@@ -192,8 +195,51 @@ export function ownedMap() {
   return new Map(Object.entries(state.auction.owned).map(([id, price]) => [id, Number(price)]));
 }
 
+/**
+ * Chi il piano non puo' scegliere: chi e' andato agli avversari e chi ho scartato a mano.
+ * Le esclusioni valgono solo per me e non entrano nel conto del mercato, che misura la lega.
+ */
 export function unavailableSet() {
-  return new Set(Object.keys(state.auction.taken));
+  return new Set([...Object.keys(state.auction.taken), ...Object.keys(state.auction.esclusi || {})]);
+}
+
+/** I giocatori che voglio in rosa comunque: il piano si ricalcola attorno a loro. */
+export function obbligatiSet() {
+  return new Set(Object.keys(state.auction.bloccati || {}).filter((id) => !state.auction.owned[id] && !state.auction.taken[id]));
+}
+
+/** Voglio questo giocatore, qualunque cosa dica il solutore. */
+export function blocca(id) {
+  if (state.auction.taken[id]) return;
+  state.auction.bloccati[id] = true;
+  delete state.auction.esclusi[id];
+  rebuildPlan();
+  save();
+  notify();
+}
+
+/** Questo non lo voglio mai vedere nel piano. */
+export function scarta(id) {
+  state.auction.esclusi[id] = true;
+  delete state.auction.bloccati[id];
+  rebuildPlan();
+  save();
+  notify();
+}
+
+/** Torna a lasciar decidere al solutore. */
+export function liberaScelta(id) {
+  delete state.auction.bloccati[id];
+  delete state.auction.esclusi[id];
+  rebuildPlan();
+  save();
+  notify();
+}
+
+export function statoScelta(id) {
+  if (state.auction.bloccati?.[id]) return 'bloccato';
+  if (state.auction.esclusi?.[id]) return 'escluso';
+  return null;
 }
 
 /** Le assegnazioni agli avversari, con prezzo e squadra quando registrati. */
@@ -222,6 +268,7 @@ export function rebuildPlan(opts = {}) {
     settings: state.settings,
     owned: ownedMap(),
     unavailable: unavailableSet(),
+    obbligati: obbligatiSet(),
     // Il piano che si guarda vale qualche decimo di secondo in piu': senza ripartenze il
     // solutore resta bloccato su una scelta cara che sbarra la strada a un blocco migliore.
     ripartenze: 4,
@@ -298,6 +345,7 @@ export function assign(id, kind, price, by = null) {
   delete state.auction.taken[id];
   if (kind === 'mine') state.auction.owned[id] = p;
   else if (kind === 'other') state.auction.taken[id] = { price: p, by: squadra };
+  delete state.auction.bloccati[id];
   state.auction.log.push({ id, kind, price: p, by: squadra, at: Date.now() });
   // Ogni assegnazione cambia quanti giocatori e quanti crediti restano: i prezzi attesi
   // vanno rifatti prima del piano, altrimenti il piano ottimizza su un mercato scaduto.
@@ -322,6 +370,7 @@ export function assegnaMolti(voci) {
     delete state.auction.taken[id];
     if (kind === 'mine') state.auction.owned[id] = p;
     else state.auction.taken[id] = { price: p, by: squadra };
+    delete state.auction.bloccati[id];
     state.auction.log.push({ id, kind, price: p, by: squadra, at: Date.now() });
   }
   recompute();

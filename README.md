@@ -124,6 +124,18 @@ valeva centoventitre. La ricerca locale e' obbligatoria; il pruning invece non c
 risultato e a conti fatti rallenta. Il conto ora sta sotto il secondo, e nel frattempo si vede
 girare la rotella.
 
+**Il piano e' una proposta, non un verdetto.** Nella scheda Piano ogni obiettivo ha due comandi:
+il lucchetto lo impone e il solutore ricalcola tutto il resto attorno a lui con i crediti che
+restano, la crocetta lo toglie di mezzo per sempre. Sono le due cose che un'ottimizzazione non
+puo' sapere da sola — che quel portiere lo vuoi comunque, o che di quell'attaccante non ti fidi.
+Gli stessi due comandi stanno sulla scheda di ogni giocatore durante l'asta, e chi e' stato
+scartato resta elencato per poterlo rimettere in gioco invece di sparire senza spiegazione.
+
+Dentro, un giocatore imposto viene trattato come se fosse gia' in rosa al suo prezzo di mercato:
+e' l'unico modo di farlo entrare nel conto in modo esatto, perche' il solutore sa gia' come un
+giocatore in rosa sposta i pesi di profondita' degli altri del suo ruolo. Alla fine torna fra gli
+obiettivi da comprare, che e' quello che e' davvero.
+
 **Le ripartenze.** La programmazione dinamica e' esatta sulla parte del punteggio che si puo'
 scrivere come somma di contributi individuali, ma e' cieca alla sinergia, che dipende da quali
 giocatori stanno insieme. Il risultato e' che il piano puo' comprare chi massimizza la somma e
