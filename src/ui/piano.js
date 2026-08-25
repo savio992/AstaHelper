@@ -5,7 +5,68 @@ import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
 import { tierBudgetReport, maxBid, alternatives } from '../domain/advisor.js';
 import { clubExposure } from '../domain/valuation.js';
 import { ownedMap, unavailableSet, onReset } from '../store.js';
-import { esc, roleChip, emptyState, playerRow, edgeBadge } from './common.js';
+import { spiegaModifica } from '../domain/strategia.js';
+import { esc, roleChip, emptyState, playerRow, edgeBadge, toast } from './common.js';
+
+/**
+ * L'effetto di una correzione fatta a mano.
+ *
+ * Il piano si rifa' per intero a ogni blocco o scarto, ma senza dirlo sembra che non sia
+ * successo niente. E la differenza fra i due casi va vista: scartare il terzo portiere cambia
+ * davvero solo il terzo portiere, scartare il primo puo' spostare settanta crediti in difesa.
+ */
+function modificaCard() {
+  const mod = state.ultimaModifica;
+  if (!mod || modificaChiusa === mod.at) return '';
+  const p = state.players.find((x) => x.id === mod.id);
+  if (!p) return '';
+
+  if (mod.rifiutata) {
+    return `
+    <div class="card" style="border-left:3px solid var(--danger)">
+      <div class="row between" style="align-items:flex-start;margin-bottom:6px">
+        <b>Non posso: ${esc(p.name)} resta come prima.</b>
+        <button class="btn ghost" style="padding:2px 8px" data-action="chiudi-modifica" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="small">${esc(mod.motivo)}</div>
+    </div>`;
+  }
+
+  const sp = spiegaModifica({
+    prima: state.prevPlan,
+    dopo: state.plan,
+    players: state.players,
+    settings: state.settings,
+    id: mod.id,
+    azione: mod.azione,
+  });
+  if (!sp) return '';
+
+  return `
+  <div class="card" style="border-left:3px solid var(--${sp.azione === 'scarta' ? 'danger' : 'accent'})">
+    <div class="row between" style="align-items:flex-start;margin-bottom:6px">
+      <b>${esc(sp.titolo)}</b>
+      <button class="btn ghost" style="padding:2px 8px" data-action="chiudi-modifica" aria-label="Chiudi">✕</button>
+    </div>
+    <div class="small" style="line-height:1.6">${sp.frasi.map((f) => esc(f)).join(' ')}</div>
+    ${
+      sp.mosse.length
+        ? `<div class="row wrap" style="gap:6px;margin-top:10px">
+             ${sp.mosse
+               .map(
+                 (m) =>
+                   `<span class="chip">${esc(ROLE_LABEL[m.role])} <b class="mono" style="color:var(--${
+                     m.delta > 0 ? 'accent' : 'danger'
+                   })">${m.delta > 0 ? '+' : ''}${m.delta}</b></span>`
+               )
+               .join('')}
+           </div>`
+        : ''
+    }
+  </div>`;
+}
+
+let modificaChiusa = null;
 
 /**
  * Il piano non e' un verdetto: e' una proposta.
@@ -118,6 +179,7 @@ let schedaInCorso = false;
 onReset(() => {
   scheda = null;
   schedaInCorso = false;
+  modificaChiusa = null;
 });
 
 function buildScheda(rerender) {
@@ -236,6 +298,7 @@ export function render() {
   const filled = plan.owned.length;
   return `
   <div class="view">
+    ${modificaCard()}
     <div class="card">
       <div class="row between">
         <div>
@@ -274,10 +337,15 @@ export function render() {
 export function onAction(action, target, ev, rerender) {
   if (action === 'blocca' || action === 'scarta' || action === 'libera') {
     const id = target.dataset.id;
-    if (action === 'blocca') blocca(id);
-    else if (action === 'scarta') scarta(id);
-    else liberaScelta(id);
+    const ok = action === 'blocca' ? blocca(id) : action === 'scarta' ? scarta(id) : liberaScelta(id);
+    if (ok === false) toast('Con questo scarto la rosa non si chiude piu\'.');
     scheda = null;
+    modificaChiusa = null;
+    rerender();
+    return true;
+  }
+  if (action === 'chiudi-modifica') {
+    modificaChiusa = state.ultimaModifica?.at ?? null;
     rerender();
     return true;
   }

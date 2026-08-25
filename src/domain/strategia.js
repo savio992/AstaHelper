@@ -215,3 +215,70 @@ export function spiegaMossa({ prima, dopo, players, settings, evento }) {
     frasi,
   };
 }
+
+/**
+ * Che effetto ha avuto una correzione fatta a mano sul piano.
+ *
+ * Imporre o scartare un giocatore rifa' il piano per intero, ma senza dirlo sembra che non sia
+ * successo niente, o che si sia limitato a sostituire quel nome. Scartare il terzo portiere
+ * cambia davvero solo il terzo portiere, ed e' giusto cosi'; scartare il primo puo' spostare
+ * settanta crediti in difesa e cambiare sei scelte su quattro reparti. La differenza fra i due
+ * casi va vista, altrimenti non si sa mai se il ricalcolo e' avvenuto.
+ */
+export function spiegaModifica({ prima, dopo, players, settings, id, azione }) {
+  if (!prima?.ok || !dopo?.ok) return null;
+  const p = players.find((x) => x.id === id);
+  if (!p) return null;
+
+  const { entrati, usciti, spostamenti } = confrontaPiani(prima, dopo);
+  const minimo = Math.max(4, Math.round((settings.budget || 500) * 0.015));
+  const mosse = ROLES.map((role) => ({ role, delta: spostamenti[role] }))
+    .filter((x) => Math.abs(x.delta) >= minimo)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  const costo = Math.round((prima.score - dopo.score) * 10) / 10;
+  const titolo =
+    azione === 'blocca'
+      ? `${p.name} e' un tuo obbligo: il piano si rifa' attorno a lui.`
+      : azione === 'scarta'
+        ? `${p.name} scartato.`
+        : `${p.name} torna in gioco.`;
+
+  const frasi = [];
+  const altri = entrati.filter((x) => x.id !== id);
+  const sostituto = azione === 'scarta' ? entrati.filter((x) => x.role === p.role).sort((a, b) => b.plannedPrice - a.plannedPrice)[0] : null;
+
+  if (azione === 'scarta' && sostituto && altri.length <= 1) {
+    frasi.push(`Cambia solo lui: al suo posto ${sostituto.name} a ${sostituto.plannedPrice}. Il resto del piano era gia' quello giusto.`);
+  } else if (entrati.length >= 3) {
+    frasi.push(`Si riorganizzano ${entrati.length} scelte su ${new Set(entrati.map((x) => x.role)).size} reparti.`);
+  } else if (sostituto) {
+    frasi.push(`Al suo posto entra ${sostituto.name} a ${sostituto.plannedPrice}.`);
+  }
+
+  if (mosse.length) {
+    const su = mosse.filter((m) => m.delta > 0);
+    const giu = mosse.filter((m) => m.delta < 0);
+    if (su.length && giu.length) {
+      frasi.push(
+        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
+          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+      );
+    } else if (su.length) {
+      frasi.push(`Piu' budget su ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+    }
+  }
+
+  const notevoli = entrati.filter((x) => x.plannedPrice >= Math.max(4, minimo / 2) && x.id !== id).slice(0, 3);
+  if (notevoli.length) frasi.push(`Entrano: ${notevoli.map((x) => `${x.name} (${x.plannedPrice})`).join(', ')}.`);
+
+  frasi.push(
+    costo > 0.5
+      ? `Ti costa ${costo} punti attesi.`
+      : costo < -0.5
+        ? `Il piano ci guadagna ${-costo} punti.`
+        : `Non cambia il valore della rosa.`
+  );
+
+  return { player: p, azione, titolo, frasi, entrati, usciti, mosse, costo, soloLui: entrati.length <= 1 };
+}

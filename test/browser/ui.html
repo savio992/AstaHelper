@@ -168,6 +168,17 @@ try {
   piano.onAction('libera', { dataset: { id: portiereVoluto.id } }, null, noop);
   check('si puo\' restituire la scelta al solutore', !store.state.plan.picks.some((x) => x.id === portiereVoluto.id && x.bloccato));
 
+  // Scartare il terzo portiere: il posto si deve riempire da solo, e l'app deve dirlo.
+  const terzoPortiere = store.state.plan.picks.filter((x) => x.role === 'P').sort((a, b) => a.plannedPrice - b.plannedPrice)[0];
+  piano.onAction('scarta', { dataset: { id: terzoPortiere.id } }, null, noop);
+  const portieriDopo = store.state.plan.picks.filter((x) => x.role === 'P');
+  const miei = Object.keys(store.state.auction.owned).filter((id) => store.state.players.find((p) => p.id === id)?.role === 'P').length;
+  check('il posto lasciato libero si riempie', portieriDopo.length === store.state.settings.slots.P - miei, `${portieriDopo.length} portieri a piano`);
+  check('lo scartato non c\'e\' piu\'', !portieriDopo.some((x) => x.id === terzoPortiere.id));
+  const raccontoScarto = piano.render(noop);
+  check('lo scarto viene raccontato', raccontoScarto.includes(terzoPortiere.name + ' scartato'), 'card della modifica');
+  piano.onAction('libera', { dataset: { id: terzoPortiere.id } }, null, noop);
+
   const daScartare = store.state.plan.picks.filter((x) => x.role === 'C').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
   piano.onAction('scarta', { dataset: { id: daScartare.id } }, null, noop);
   check('lo scartato sparisce dal piano', !store.state.plan.picks.some((x) => x.id === daScartare.id), daScartare.name);

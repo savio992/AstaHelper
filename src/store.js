@@ -35,6 +35,8 @@ export const state = {
   plan: null,
   // Il piano precedente, per poter raccontare cosa e' cambiato dopo l'ultima assegnazione.
   prevPlan: null,
+  // L'ultima correzione fatta a mano al piano, per poterne raccontare l'effetto.
+  ultimaModifica: null,
   ui: {
     tab: 'asta',
     query: '',
@@ -124,6 +126,7 @@ export function resetAll() {
   state.mercato = null;
   state.tabellone = null;
   state.plan = null;
+  state.ultimaModifica = null;
   state.ui = { ...state.ui, tab: 'listone', query: '', listQuery: '', selectedId: null, bidPrice: null, chiediSquadra: null, prezzoAltri: null, roleFilter: 'ALL', listRole: 'ALL' };
   for (const fn of ripuliture) {
     try {
@@ -208,32 +211,57 @@ export function obbligatiSet() {
   return new Set(Object.keys(state.auction.bloccati || {}).filter((id) => !state.auction.owned[id] && !state.auction.taken[id]));
 }
 
-/** Voglio questo giocatore, qualunque cosa dica il solutore. */
-export function blocca(id) {
-  if (state.auction.taken[id]) return;
-  state.auction.bloccati[id] = true;
-  delete state.auction.esclusi[id];
-  rebuildPlan();
+/**
+ * Applica una correzione al piano e la tiene solo se il piano regge.
+ *
+ * Scartare abbastanza giocatori di un ruolo puo' rendere la rosa impossibile da chiudere, e
+ * lasciare l'utente davanti a un piano rotto senza spiegazione sarebbe il peggiore dei modi di
+ * dirglielo: meglio rifiutare la correzione e dire perche'.
+ */
+function correggiPiano(id, azione, applica) {
+  const prima = state.plan;
+  const bloccatiPrima = { ...state.auction.bloccati };
+  const esclusiPrima = { ...state.auction.esclusi };
+  applica();
+  const nuovo = rebuildPlan({ ricorda: true });
+  if (!nuovo?.ok) {
+    state.auction.bloccati = bloccatiPrima;
+    state.auction.esclusi = esclusiPrima;
+    state.plan = prima;
+    state.prevPlan = null;
+    state.ultimaModifica = { id, azione, rifiutata: true, motivo: nuovo?.reason || 'Il piano non si chiude piu\'.', at: Date.now() };
+    notify();
+    return false;
+  }
+  state.ultimaModifica = { id, azione, rifiutata: false, at: Date.now() };
   save();
   notify();
+  return true;
+}
+
+/** Voglio questo giocatore, qualunque cosa dica il solutore. */
+export function blocca(id) {
+  if (state.auction.taken[id]) return false;
+  return correggiPiano(id, 'blocca', () => {
+    state.auction.bloccati[id] = true;
+    delete state.auction.esclusi[id];
+  });
 }
 
 /** Questo non lo voglio mai vedere nel piano. */
 export function scarta(id) {
-  state.auction.esclusi[id] = true;
-  delete state.auction.bloccati[id];
-  rebuildPlan();
-  save();
-  notify();
+  return correggiPiano(id, 'scarta', () => {
+    state.auction.esclusi[id] = true;
+    delete state.auction.bloccati[id];
+  });
 }
 
 /** Torna a lasciar decidere al solutore. */
 export function liberaScelta(id) {
-  delete state.auction.bloccati[id];
-  delete state.auction.esclusi[id];
-  rebuildPlan();
-  save();
-  notify();
+  return correggiPiano(id, 'libera', () => {
+    delete state.auction.bloccati[id];
+    delete state.auction.esclusi[id];
+  });
 }
 
 export function statoScelta(id) {
@@ -346,6 +374,7 @@ export function assign(id, kind, price, by = null) {
   if (kind === 'mine') state.auction.owned[id] = p;
   else if (kind === 'other') state.auction.taken[id] = { price: p, by: squadra };
   delete state.auction.bloccati[id];
+  state.ultimaModifica = null;
   state.auction.log.push({ id, kind, price: p, by: squadra, at: Date.now() });
   // Ogni assegnazione cambia quanti giocatori e quanti crediti restano: i prezzi attesi
   // vanno rifatti prima del piano, altrimenti il piano ottimizza su un mercato scaduto.

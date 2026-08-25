@@ -947,11 +947,24 @@ export function onAction(action, target, ev, rerender) {
     case 'blocca':
     case 'scarta':
     case 'libera': {
-      if (action === 'blocca') blocca(id);
-      else if (action === 'scarta') scarta(id);
-      else liberaScelta(id);
+      const prima = state.plan;
+      const ok = action === 'blocca' ? blocca(id) : action === 'scarta' ? scarta(id) : liberaScelta(id);
       invalidate();
-      toast(action === 'blocca' ? 'Il piano si costruisce attorno a lui.' : action === 'scarta' ? 'Non te lo propongo piu\'.' : 'Decide di nuovo il piano.');
+      if (ok === false) {
+        toast('Cosi\' la rosa non si chiude piu\': lascio le cose come stanno.');
+      } else {
+        // Anche qui l'effetto va detto: un blocco puo' costare punti, e vale la pena saperlo
+        // prima di rilanciare invece di scoprirlo guardando il piano.
+        const costo = prima?.ok && state.plan?.ok ? Math.round(prima.score - state.plan.score) : 0;
+        const nome = playerById(id)?.name || '';
+        toast(
+          action === 'libera'
+            ? 'Decide di nuovo il piano.'
+            : action === 'blocca'
+              ? `Il piano si costruisce attorno a ${nome}${costo > 0 ? `: ti costa ${costo} punti` : ''}.`
+              : `${nome} scartato${costo > 0 ? `: ti costa ${costo} punti` : ', senza perdite'}.`
+        );
+      }
       rerender();
       return true;
     }

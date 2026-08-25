@@ -7,7 +7,7 @@ import { valuePlayers, rosterScore, depthWeights } from '../src/domain/valuation
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
 import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, CONFIG_ASTA } from '../src/domain/advisor.js';
-import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa } from '../src/domain/strategia.js';
+import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa, spiegaModifica } from '../src/domain/strategia.js';
 import { makeContext, makeListone } from './helpers.js';
 
 test('sniffDelimiter riconosce ; , e tab', () => {
@@ -755,4 +755,41 @@ test('imporre un giocatore non lo rende comprabile se e\' gia\' andato ad altri'
   });
   assert.equal(piano.ok, true);
   assert.ok(!piano.picks.some((x) => x.id === p.id), 'chi e\' stato venduto non torna nel piano');
+});
+
+test('scartare il terzo portiere cambia solo il terzo portiere', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const prima = optimizeRoster({ players, settings, ripartenze: 4 });
+  const ultimo = prima.picks.filter((p) => p.role === 'P').sort((a, b) => a.plannedPrice - b.plannedPrice)[0];
+  const dopo = optimizeRoster({ players, settings, unavailable: new Set([ultimo.id]), ripartenze: 4 });
+  const idsPrima = new Set(prima.picks.map((p) => p.id));
+  const entrati = dopo.picks.filter((p) => !idsPrima.has(p.id));
+  // Il posto si riempie sempre: e' il punto della segnalazione.
+  assert.equal(dopo.picks.filter((p) => p.role === 'P').length, settings.slots.P);
+  assert.ok(!dopo.picks.some((p) => p.id === ultimo.id));
+  assert.ok(entrati.length >= 1, 'qualcuno deve prendere il suo posto');
+
+  const sp = spiegaModifica({ prima, dopo, players, settings, id: ultimo.id, azione: 'scarta' });
+  assert.ok(sp);
+  assert.match(sp.frasi.join(' '), /al suo posto|Al suo posto/i);
+});
+
+test('scartare il primo portiere riorganizza piu\' reparti, e lo dice', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const prima = optimizeRoster({ players, settings, ripartenze: 4 });
+  const primo = prima.picks.filter((p) => p.role === 'P').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  const dopo = optimizeRoster({ players, settings, unavailable: new Set([primo.id]), ripartenze: 4 });
+  assert.equal(dopo.picks.filter((p) => p.role === 'P').length, settings.slots.P);
+  const sp = spiegaModifica({ prima, dopo, players, settings, id: primo.id, azione: 'scarta' });
+  assert.ok(sp.frasi.length >= 2);
+  assert.ok(sp.costo >= -0.001, 'scartare non puo\' migliorare la rosa');
+});
+
+test('la spiegazione distingue il caso in cui non cambia nulla d\'altro', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const prima = optimizeRoster({ players, settings, ripartenze: 4 });
+  const dopo = prima; // nessun cambiamento
+  const qualsiasi = prima.picks[0];
+  const sp = spiegaModifica({ prima, dopo, players, settings, id: qualsiasi.id, azione: 'libera' });
+  assert.match(sp.frasi.join(' '), /Non cambia il valore/);
 });

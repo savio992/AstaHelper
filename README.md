@@ -131,6 +131,16 @@ puo' sapere da sola — che quel portiere lo vuoi comunque, o che di quell'attac
 Gli stessi due comandi stanno sulla scheda di ogni giocatore durante l'asta, e chi e' stato
 scartato resta elencato per poterlo rimettere in gioco invece di sparire senza spiegazione.
 
+Ogni correzione rifa' il piano per intero, non solo la riga toccata, e l'effetto viene raccontato
+perche' altrimenti sembra che non sia successo niente. La differenza fra i due casi va vista:
+scartare il terzo portiere cambia davvero solo il terzo portiere, e l'app lo dice — *"cambia solo
+lui: al suo posto Gollini a 2, il resto del piano era gia' quello giusto"*; scartare il primo
+sposta settanta crediti in difesa e cambia sei scelte su quattro reparti. In entrambi i casi il
+posto lasciato libero si riempie da solo e il costo in punti e' dichiarato.
+
+Una correzione che rende la rosa impossibile da chiudere viene rifiutata invece di essere
+applicata: restare davanti a un piano rotto senza spiegazione sarebbe il peggior modo di scoprirlo.
+
 Dentro, un giocatore imposto viene trattato come se fosse gia' in rosa al suo prezzo di mercato:
 e' l'unico modo di farlo entrare nel conto in modo esatto, perche' il solutore sa gia' come un
 giocatore in rosa sposta i pesi di profondita' degli altri del suo ruolo. Alla fine torna fra gli

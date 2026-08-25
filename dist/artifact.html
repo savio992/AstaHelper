@@ -2737,6 +2737,8 @@ const state = {
   plan: null,
   // Il piano precedente, per poter raccontare cosa e' cambiato dopo l'ultima assegnazione.
   prevPlan: null,
+  // L'ultima correzione fatta a mano al piano, per poterne raccontare l'effetto.
+  ultimaModifica: null,
   ui: {
     tab: 'asta',
     query: '',
@@ -2826,6 +2828,7 @@ function resetAll() {
   state.mercato = null;
   state.tabellone = null;
   state.plan = null;
+  state.ultimaModifica = null;
   state.ui = { ...state.ui, tab: 'listone', query: '', listQuery: '', selectedId: null, bidPrice: null, chiediSquadra: null, prezzoAltri: null, roleFilter: 'ALL', listRole: 'ALL' };
   for (const fn of ripuliture) {
     try {
@@ -2910,32 +2913,57 @@ function obbligatiSet() {
   return new Set(Object.keys(state.auction.bloccati || {}).filter((id) => !state.auction.owned[id] && !state.auction.taken[id]));
 }
 
-/** Voglio questo giocatore, qualunque cosa dica il solutore. */
-function blocca(id) {
-  if (state.auction.taken[id]) return;
-  state.auction.bloccati[id] = true;
-  delete state.auction.esclusi[id];
-  rebuildPlan();
+/**
+ * Applica una correzione al piano e la tiene solo se il piano regge.
+ *
+ * Scartare abbastanza giocatori di un ruolo puo' rendere la rosa impossibile da chiudere, e
+ * lasciare l'utente davanti a un piano rotto senza spiegazione sarebbe il peggiore dei modi di
+ * dirglielo: meglio rifiutare la correzione e dire perche'.
+ */
+function correggiPiano(id, azione, applica) {
+  const prima = state.plan;
+  const bloccatiPrima = { ...state.auction.bloccati };
+  const esclusiPrima = { ...state.auction.esclusi };
+  applica();
+  const nuovo = rebuildPlan({ ricorda: true });
+  if (!nuovo?.ok) {
+    state.auction.bloccati = bloccatiPrima;
+    state.auction.esclusi = esclusiPrima;
+    state.plan = prima;
+    state.prevPlan = null;
+    state.ultimaModifica = { id, azione, rifiutata: true, motivo: nuovo?.reason || 'Il piano non si chiude piu\'.', at: Date.now() };
+    notify();
+    return false;
+  }
+  state.ultimaModifica = { id, azione, rifiutata: false, at: Date.now() };
   save();
   notify();
+  return true;
+}
+
+/** Voglio questo giocatore, qualunque cosa dica il solutore. */
+function blocca(id) {
+  if (state.auction.taken[id]) return false;
+  return correggiPiano(id, 'blocca', () => {
+    state.auction.bloccati[id] = true;
+    delete state.auction.esclusi[id];
+  });
 }
 
 /** Questo non lo voglio mai vedere nel piano. */
 function scarta(id) {
-  state.auction.esclusi[id] = true;
-  delete state.auction.bloccati[id];
-  rebuildPlan();
-  save();
-  notify();
+  return correggiPiano(id, 'scarta', () => {
+    state.auction.esclusi[id] = true;
+    delete state.auction.bloccati[id];
+  });
 }
 
 /** Torna a lasciar decidere al solutore. */
 function liberaScelta(id) {
-  delete state.auction.bloccati[id];
-  delete state.auction.esclusi[id];
-  rebuildPlan();
-  save();
-  notify();
+  return correggiPiano(id, 'libera', () => {
+    delete state.auction.bloccati[id];
+    delete state.auction.esclusi[id];
+  });
 }
 
 function statoScelta(id) {
@@ -3048,6 +3076,7 @@ function assign(id, kind, price, by = null) {
   if (kind === 'mine') state.auction.owned[id] = p;
   else if (kind === 'other') state.auction.taken[id] = { price: p, by: squadra };
   delete state.auction.bloccati[id];
+  state.ultimaModifica = null;
   state.auction.log.push({ id, kind, price: p, by: squadra, at: Date.now() });
   // Ogni assegnazione cambia quanti giocatori e quanti crediti restano: i prezzi attesi
   // vanno rifatti prima del piano, altrimenti il piano ottimizza su un mercato scaduto.
@@ -3891,7 +3920,74 @@ function spiegaMossa({ prima, dopo, players, settings, evento }) {
   };
 }
 
-return { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa };
+/**
+ * Che effetto ha avuto una correzione fatta a mano sul piano.
+ *
+ * Imporre o scartare un giocatore rifa' il piano per intero, ma senza dirlo sembra che non sia
+ * successo niente, o che si sia limitato a sostituire quel nome. Scartare il terzo portiere
+ * cambia davvero solo il terzo portiere, ed e' giusto cosi'; scartare il primo puo' spostare
+ * settanta crediti in difesa e cambiare sei scelte su quattro reparti. La differenza fra i due
+ * casi va vista, altrimenti non si sa mai se il ricalcolo e' avvenuto.
+ */
+function spiegaModifica({ prima, dopo, players, settings, id, azione }) {
+  if (!prima?.ok || !dopo?.ok) return null;
+  const p = players.find((x) => x.id === id);
+  if (!p) return null;
+
+  const { entrati, usciti, spostamenti } = confrontaPiani(prima, dopo);
+  const minimo = Math.max(4, Math.round((settings.budget || 500) * 0.015));
+  const mosse = ROLES.map((role) => ({ role, delta: spostamenti[role] }))
+    .filter((x) => Math.abs(x.delta) >= minimo)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  const costo = Math.round((prima.score - dopo.score) * 10) / 10;
+  const titolo =
+    azione === 'blocca'
+      ? `${p.name} e' un tuo obbligo: il piano si rifa' attorno a lui.`
+      : azione === 'scarta'
+        ? `${p.name} scartato.`
+        : `${p.name} torna in gioco.`;
+
+  const frasi = [];
+  const altri = entrati.filter((x) => x.id !== id);
+  const sostituto = azione === 'scarta' ? entrati.filter((x) => x.role === p.role).sort((a, b) => b.plannedPrice - a.plannedPrice)[0] : null;
+
+  if (azione === 'scarta' && sostituto && altri.length <= 1) {
+    frasi.push(`Cambia solo lui: al suo posto ${sostituto.name} a ${sostituto.plannedPrice}. Il resto del piano era gia' quello giusto.`);
+  } else if (entrati.length >= 3) {
+    frasi.push(`Si riorganizzano ${entrati.length} scelte su ${new Set(entrati.map((x) => x.role)).size} reparti.`);
+  } else if (sostituto) {
+    frasi.push(`Al suo posto entra ${sostituto.name} a ${sostituto.plannedPrice}.`);
+  }
+
+  if (mosse.length) {
+    const su = mosse.filter((m) => m.delta > 0);
+    const giu = mosse.filter((m) => m.delta < 0);
+    if (su.length && giu.length) {
+      frasi.push(
+        `I crediti si spostano da ${giu.map((m) => ROLE_LABEL[m.role].toLowerCase()).join(' e ')} ` +
+          `verso ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`
+      );
+    } else if (su.length) {
+      frasi.push(`Piu' budget su ${su.map((m) => `${ROLE_LABEL[m.role].toLowerCase()} (+${m.delta})`).join(' e ')}.`);
+    }
+  }
+
+  const notevoli = entrati.filter((x) => x.plannedPrice >= Math.max(4, minimo / 2) && x.id !== id).slice(0, 3);
+  if (notevoli.length) frasi.push(`Entrano: ${notevoli.map((x) => `${x.name} (${x.plannedPrice})`).join(', ')}.`);
+
+  frasi.push(
+    costo > 0.5
+      ? `Ti costa ${costo} punti attesi.`
+      : costo < -0.5
+        ? `Il piano ci guadagna ${-costo} punti.`
+        : `Non cambia il valore della rosa.`
+  );
+
+  return { player: p, azione, titolo, frasi, entrati, usciti, mosse, costo, soloLui: entrati.length <= 1 };
+}
+
+return { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa, spiegaModifica };
 })();
 
 // ===== src/ui/common.js =====
@@ -4944,11 +5040,24 @@ function onAction(action, target, ev, rerender) {
     case 'blocca':
     case 'scarta':
     case 'libera': {
-      if (action === 'blocca') blocca(id);
-      else if (action === 'scarta') scarta(id);
-      else liberaScelta(id);
+      const prima = state.plan;
+      const ok = action === 'blocca' ? blocca(id) : action === 'scarta' ? scarta(id) : liberaScelta(id);
       invalidate();
-      toast(action === 'blocca' ? 'Il piano si costruisce attorno a lui.' : action === 'scarta' ? 'Non te lo propongo piu\'.' : 'Decide di nuovo il piano.');
+      if (ok === false) {
+        toast('Cosi\' la rosa non si chiude piu\': lascio le cose come stanno.');
+      } else {
+        // Anche qui l'effetto va detto: un blocco puo' costare punti, e vale la pena saperlo
+        // prima di rilanciare invece di scoprirlo guardando il piano.
+        const costo = prima?.ok && state.plan?.ok ? Math.round(prima.score - state.plan.score) : 0;
+        const nome = playerById(id)?.name || '';
+        toast(
+          action === 'libera'
+            ? 'Decide di nuovo il piano.'
+            : action === 'blocca'
+              ? `Il piano si costruisce attorno a ${nome}${costo > 0 ? `: ti costa ${costo} punti` : ''}.`
+              : `${nome} scartato${costo > 0 ? `: ti costa ${costo} punti` : ', senza perdite'}.`
+        );
+      }
       rerender();
       return true;
     }
@@ -5013,7 +5122,68 @@ const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
 const { tierBudgetReport, maxBid, alternatives } = __m_src_domain_advisor_js;
 const { clubExposure } = __m_src_domain_valuation_js;
 const { ownedMap, unavailableSet, onReset } = __m_src_store_js;
-const { esc, roleChip, emptyState, playerRow, edgeBadge } = __m_src_ui_common_js;
+const { spiegaModifica } = __m_src_domain_strategia_js;
+const { esc, roleChip, emptyState, playerRow, edgeBadge, toast } = __m_src_ui_common_js;
+
+/**
+ * L'effetto di una correzione fatta a mano.
+ *
+ * Il piano si rifa' per intero a ogni blocco o scarto, ma senza dirlo sembra che non sia
+ * successo niente. E la differenza fra i due casi va vista: scartare il terzo portiere cambia
+ * davvero solo il terzo portiere, scartare il primo puo' spostare settanta crediti in difesa.
+ */
+function modificaCard() {
+  const mod = state.ultimaModifica;
+  if (!mod || modificaChiusa === mod.at) return '';
+  const p = state.players.find((x) => x.id === mod.id);
+  if (!p) return '';
+
+  if (mod.rifiutata) {
+    return `
+    <div class="card" style="border-left:3px solid var(--danger)">
+      <div class="row between" style="align-items:flex-start;margin-bottom:6px">
+        <b>Non posso: ${esc(p.name)} resta come prima.</b>
+        <button class="btn ghost" style="padding:2px 8px" data-action="chiudi-modifica" aria-label="Chiudi">✕</button>
+      </div>
+      <div class="small">${esc(mod.motivo)}</div>
+    </div>`;
+  }
+
+  const sp = spiegaModifica({
+    prima: state.prevPlan,
+    dopo: state.plan,
+    players: state.players,
+    settings: state.settings,
+    id: mod.id,
+    azione: mod.azione,
+  });
+  if (!sp) return '';
+
+  return `
+  <div class="card" style="border-left:3px solid var(--${sp.azione === 'scarta' ? 'danger' : 'accent'})">
+    <div class="row between" style="align-items:flex-start;margin-bottom:6px">
+      <b>${esc(sp.titolo)}</b>
+      <button class="btn ghost" style="padding:2px 8px" data-action="chiudi-modifica" aria-label="Chiudi">✕</button>
+    </div>
+    <div class="small" style="line-height:1.6">${sp.frasi.map((f) => esc(f)).join(' ')}</div>
+    ${
+      sp.mosse.length
+        ? `<div class="row wrap" style="gap:6px;margin-top:10px">
+             ${sp.mosse
+               .map(
+                 (m) =>
+                   `<span class="chip">${esc(ROLE_LABEL[m.role])} <b class="mono" style="color:var(--${
+                     m.delta > 0 ? 'accent' : 'danger'
+                   })">${m.delta > 0 ? '+' : ''}${m.delta}</b></span>`
+               )
+               .join('')}
+           </div>`
+        : ''
+    }
+  </div>`;
+}
+
+let modificaChiusa = null;
 
 /**
  * Il piano non e' un verdetto: e' una proposta.
@@ -5126,6 +5296,7 @@ let schedaInCorso = false;
 onReset(() => {
   scheda = null;
   schedaInCorso = false;
+  modificaChiusa = null;
 });
 
 function buildScheda(rerender) {
@@ -5244,6 +5415,7 @@ function render() {
   const filled = plan.owned.length;
   return `
   <div class="view">
+    ${modificaCard()}
     <div class="card">
       <div class="row between">
         <div>
@@ -5282,10 +5454,15 @@ function render() {
 function onAction(action, target, ev, rerender) {
   if (action === 'blocca' || action === 'scarta' || action === 'libera') {
     const id = target.dataset.id;
-    if (action === 'blocca') blocca(id);
-    else if (action === 'scarta') scarta(id);
-    else liberaScelta(id);
+    const ok = action === 'blocca' ? blocca(id) : action === 'scarta' ? scarta(id) : liberaScelta(id);
+    if (ok === false) toast('Con questo scarto la rosa non si chiude piu\'.');
     scheda = null;
+    modificaChiusa = null;
+    rerender();
+    return true;
+  }
+  if (action === 'chiudi-modifica') {
+    modificaChiusa = state.ultimaModifica?.at ?? null;
     rerender();
     return true;
   }
