@@ -165,13 +165,21 @@ export function optimizeRoster({
     forzati.add(id);
   }
 
+  // In modalita' "scelgo io" la lista non e' un vincolo da aggirare: e' la rosa. Chi ci sta
+  // dentro gioca, e le caselle libere si completano attorno a lui. Senza questo, scegliere un
+  // portiere da 43 crediti faceva comprare al piano anche il portiere da 52 che lo mandava in
+  // panchina: novantasette crediti per un posto dove ne gioca uno solo.
+  // In modalita' automatica il lucchetto resta quello che e' sempre stato — "questo lo voglio
+  // in rosa" — e il solutore e' libero di costruirgli intorno la rosa migliore.
+  const sceltiTitolari = settings.modalita === 'mia';
+
   const ownedPlayers = [];
   let ownedCost = 0;
   const ownedByRole = { P: 0, D: 0, C: 0, A: 0 };
   for (const [id, price] of ownedEffettivo) {
     const p = byId.get(id);
     if (!p) continue;
-    ownedPlayers.push({ ...p, paid: price });
+    ownedPlayers.push(sceltiTitolari && forzati.has(id) ? { ...p, paid: price, scelto: true } : { ...p, paid: price });
     ownedCost += price;
     ownedByRole[p.role] = (ownedByRole[p.role] || 0) + 1;
   }
@@ -215,10 +223,14 @@ export function optimizeRoster({
   // Candidati per ruolo
   const roleData = {};
   for (const role of ROLES) {
-    const ownedScores = ownedPlayers
+    // Stesso ordine di profondita' che usa il punteggio della rosa: prima i giocatori scelti a
+    // mano, poi gli altri per punteggio. Se qui e' diverso, il DP e la valutazione finale
+    // parlano di due rose diverse e la ricerca locale passa il tempo a disfare le sue scelte.
+    const ownedRuolo = ownedPlayers
       .filter((p) => p.role === role)
-      .map((p) => p.score || 0)
-      .sort((a, b) => b - a);
+      .map((p) => ({ score: p.score || 0, scelto: !!p.scelto }))
+      .sort((a, b) => (b.scelto ? 1 : 0) - (a.scelto ? 1 : 0) || b.score - a.score);
+    const ownedScores = ownedRuolo.map((o) => o.score);
     const weights = depthWeights(settings, role);
     const wAt = (i) => weights[Math.min(Math.max(0, i), weights.length - 1)] ?? 0.05;
     let cands = players
@@ -237,7 +249,8 @@ export function optimizeRoster({
     // senza questo termine l'ottimizzatore ti fa comprare cinque attaccanti sopra quello che hai gia'.
     const needRole = need[role] || 1;
     for (const cand of cands) {
-      const above = ownedScores.filter((s) => s >= cand.score).length;
+      // Quanti gia' in rosa restano davanti a lui: tutti gli scelti a mano, piu' i piu' forti.
+      const above = ownedRuolo.filter((o) => o.scelto || o.score >= cand.score).length;
       cand.weighted = new Float64Array(needRole);
       for (let k = 1; k <= needRole; k++) {
         let v = cand.score * wAt(k - 1 + above);

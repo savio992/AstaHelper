@@ -31,8 +31,21 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
  * A parita' di punteggio decide l'identificativo: senza questo, due giocatori equivalenti
  * di club diversi darebbero punteggi di rosa differenti a seconda dell'ordine dell'elenco.
  */
-function sortByStrength(list) {
-  return [...list].sort((a, b) => (b.score || 0) - (a.score || 0) || String(a.id).localeCompare(String(b.id)));
+/**
+ * L'ordine di profondita' dentro un ruolo: chi gioca, chi e' il primo cambio, chi riempie.
+ *
+ * Di norma decide il punteggio. Ma un giocatore scelto a mano viene prima comunque: quando
+ * uno dice "il mio portiere e' questo" non sta dicendo "mettimelo in panchina se ne trovi uno
+ * piu' forte". Senza questo termine il piano compra sopra la scelta dell'utente e in porta,
+ * dove ne gioca uno solo, si ritrova a spendere due volte per un posto.
+ */
+export function sortByStrength(list) {
+  return [...list].sort(
+    (a, b) =>
+      (b.scelto ? 1 : 0) - (a.scelto ? 1 : 0) ||
+      (b.score || 0) - (a.score || 0) ||
+      String(a.id).localeCompare(String(b.id))
+  );
 }
 
 /** Frazione di stagione che ci si aspetta di avere da lui, fra 0 e 1. */
@@ -276,7 +289,11 @@ export function synergyBonus(selected, settings) {
   if (settings.cleanSheetModifier) {
     const gks = selected.filter((p) => p.role === 'P');
     if (gks.length >= 2) {
-      const starter = gks.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+      // Il titolare e' quello che gioca davvero: se il portiere l'ha scelto l'utente,
+      // l'abbinamento deve seguire lui e non un altro. A parita' di punteggio resta l'ordine
+      // di arrivo, come prima: spareggiare qui sull'id cambierebbe il club del titolare e con
+      // lui il bonus della difesa, e allora perdere un difensore potrebbe far salire la rosa.
+      const starter = gks.slice().sort((a, b) => (b.scelto ? 1 : 0) - (a.scelto ? 1 : 0) || (b.score || 0) - (a.score || 0))[0];
       const sameClub = gks.filter((p) => p.id !== starter.id && p.team && p.team === starter.team).length;
       if (sameClub >= 1) bonus += (starter.score || 0) * 0.08;
       const defsSameClub = selected.filter((p) => p.role === 'D' && p.team && p.team === starter.team).length;

@@ -2,8 +2,8 @@
 
 import { state, rebuildPlan, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, updateSettings } from '../store.js';
 import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
-import { tierBudgetReport, maxBid, alternatives, tettoSullaLista, costoDellaLista } from '../domain/advisor.js';
-import { clubExposure } from '../domain/valuation.js';
+import { tierBudgetReport, maxBid, alternatives, tettoSullaLista, costoDellaLista, sceltiInPanchina } from '../domain/advisor.js';
+import { clubExposure, depthWeights, sortByStrength } from '../domain/valuation.js';
 import { ownedMap, unavailableSet, onReset } from '../store.js';
 import { spiegaModifica } from '../domain/strategia.js';
 import { esc, roleChip, emptyState, playerRow, edgeBadge, toast, matches } from './common.js';
@@ -89,9 +89,19 @@ function sceltaBottoni(p) {
   </div>`;
 }
 
+// Sotto questo peso il giocatore in campo non ci va quasi mai: e' una casella da riempire, non
+// un titolare. Vale la pena dirlo solo li' — segnare "panchina" sul quarto difensore, che entra
+// una domenica su due, sarebbe rumore.
+const PESO_PANCHINA = 0.2;
+
 function roleBlock(role, plan) {
   const owned = plan.owned.filter((p) => p.role === role).map((p) => ({ ...p, plannedPrice: p.paid, mine: true }));
   const picks = plan.picks.filter((p) => p.role === role);
+  // L'ordine di profondita' non e' quello del prezzo: dice chi di questi giocherebbe davvero.
+  const pesi = depthWeights(state.settings, role);
+  const profondita = new Map(
+    sortByStrength([...owned, ...picks]).map((p, i) => [p.id, pesi[i] ?? pesi[pesi.length - 1] ?? 0])
+  );
   const all = [...owned, ...picks].sort((a, b) => b.plannedPrice - a.plannedPrice);
   const spent = plan.spentByRole[role] || 0;
   const cap = state.settings.roleBudget?.[role];
@@ -109,7 +119,9 @@ function roleBlock(role, plan) {
             (p) => `<li>
               ${roleChip(p.role)}
               <div class="grow">
-                <div class="nm">${esc(p.name)}${p.bloccato ? ' <span class="chip plan">scelto da te</span>' : ''}</div>
+                <div class="nm">${esc(p.name)}${p.bloccato ? ' <span class="chip plan">scelto da te</span>' : ''}${
+                  (profondita.get(p.id) ?? 1) < PESO_PANCHINA ? ' <span class="chip">panchina</span>' : ''
+                }</div>
                 <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
               </div>
               <div class="pr mono">${p.plannedPrice}<small>${p.mine ? 'pagato' : 'stima'}</small></div>
@@ -120,6 +132,40 @@ function roleBlock(role, plan) {
       </ul>
     </div>
   </div>`;
+}
+
+/**
+ * Quando una scelta a mano finisce in panchina.
+ *
+ * Il piano non sta sbagliando: dato per speso il portiere che hai imposto, comprarne uno piu'
+ * forte si ripaga davvero. Ma la conclusione utile non e' "compra anche l'altro", e' che quella
+ * scelta ti costa dei crediti che in campo non vanno. Va detto, con il numero davanti.
+ */
+function panchinaCard() {
+  const casi = sceltiInPanchina({ plan: state.plan, settings: state.settings });
+  if (!casi.length) return '';
+  return casi
+    .map(
+      (c) => `
+  <div class="card" style="border-left:3px solid var(--warn)">
+    <b>${esc(c.player.name)} a ${c.prezzo} crediti non gioca.</b>
+    <div class="small" style="margin-top:6px;line-height:1.6">
+      L'hai scelto tu, ma nel piano il posto e' di ${esc(c.titolare?.name || 'un altro')}${
+        c.titolare?.plannedPrice ? ` a ${c.titolare.plannedPrice}` : ''
+      }, piu' forte di lui${c.role === 'P' ? ', e in porta ne gioca uno solo' : ''}.
+      Sono ${c.prezzo} crediti comprati per stare in panchina.
+    </div>
+    <div class="row wrap" style="gap:6px;margin-top:10px">
+      <button class="btn ghost" data-action="libera" data-id="${esc(c.player.id)}">Togli la scelta</button>
+      ${
+        state.settings.modalita === 'mia'
+          ? ''
+          : `<button class="btn ghost" data-action="modalita" data-v="mia">Passa a «Scelgo io»: la rosa la fai tu</button>`
+      }
+    </div>
+  </div>`
+    )
+    .join('');
 }
 
 /** Chi ho scartato a mano: deve restare visibile, altrimenti sparisce senza spiegazione. */
@@ -299,8 +345,10 @@ function modalitaCard() {
     <div class="tiny muted" style="margin-top:8px">
       ${
         mia
-          ? `La rosa e' la tua lista: ${lista.size} nomi scelti. Le caselle che lasci vuote le completo io,
-             e per ogni giocatore ti dico quanto puoi pagarlo continuando a permetterti tutti gli altri.`
+          ? `La rosa e' la tua lista: ${lista.size} nomi scelti. Chi ci metti gioca — non compro
+             nessuno che lo mandi in panchina — e le caselle che lasci vuote le completo io, in porta
+             cercando l'abbinamento giusto. Per ogni giocatore ti dico quanto puoi pagarlo continuando
+             a permetterti tutti gli altri.`
           : `Costruisco io la miglior rosa possibile coi crediti che restano. Col lucchetto imponi
              un nome e ricalcolo il resto attorno a lui.`
       }
@@ -453,6 +501,20 @@ function confrontoCard() {
     <div class="small" style="font-weight:500;margin-top:4px">
       Non e' un rimprovero: a volte si sa qualcosa che il listone non sa. Serve solo a sapere quanto sta costando.
     </div>
+    ${
+      (confronto.perRuolo || []).filter((r) => Math.abs(r.differenza) >= 1).length
+        ? `<div class="tiny" style="margin-top:10px;line-height:1.7">
+             ${confronto.perRuolo
+               .filter((r) => Math.abs(r.differenza) >= 1)
+               .map(
+                 (r) =>
+                   `${esc(ROLE_LABEL[r.role])}: <b>${r.differenza > 0 ? '−' : '+'}${Math.abs(r.differenza)}</b> punti` +
+                   (r.spesaTua !== r.spesaMia ? ` <span class="muted">(tu ${r.spesaTua} cr, io ${r.spesaMia})</span>` : '')
+               )
+               .join(' · ')}
+           </div>`
+        : ''
+    }
   </div>`;
 }
 
@@ -498,6 +560,7 @@ export function render() {
       </div>
     </div>
 
+    ${panchinaCard()}
     ${schedaCard()}
     ${ROLES.map((r) => roleBlock(r, plan)).join('')}
     ${tiersCard(plan)}

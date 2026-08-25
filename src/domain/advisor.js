@@ -1,7 +1,7 @@
 // L'assistente d'asta: quanto posso offrire davvero, e chi prendo se questo giocatore me lo soffiano.
 
 import { ROLES, ROLE_LABEL, tierKey, totalSlots, elenco } from './model.js';
-import { expectedShare } from './valuation.js';
+import { expectedShare, depthWeights, sortByStrength } from './valuation.js';
 import { optimizeRoster, creditShadowPrice, CONFIG_SOLUTORE } from './optimizer.js';
 
 /**
@@ -367,7 +367,7 @@ export function abbinamentoPortiere({ players, settings, plan, owned = new Map()
   if (!plan?.ok) return null;
   const miei = [...plan.owned.filter((p) => p.role === 'P'), ...plan.picks.filter((p) => p.role === 'P')];
   if (!miei.length) return null;
-  const titolare = miei.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+  const titolare = miei.slice().sort((a, b) => (b.scelto ? 1 : 0) - (a.scelto ? 1 : 0) || (b.score || 0) - (a.score || 0))[0];
   if (!titolare.team) return null;
   const gia = miei.some((p) => p.id !== titolare.id && p.team === titolare.team);
   if (gia) return { titolare, coppia: null, fatto: true };
@@ -602,10 +602,62 @@ export function costoDellaLista({ players, settings, owned = new Map(), unavaila
   const libero = optimizeRoster({ players, settings, owned, unavailable, ...FAST });
   const mia = optimizeRoster({ players, settings, owned, unavailable, obbligati: lista, ...FAST });
   if (!libero.ok || !mia.ok) return null;
+
+  // Dove costa, non solo quanto. Un totale di centosettanta punti non dice niente: sapere che
+  // centocinquanta arrivano dalla porta si', perche' e' li' che c'e' una scelta da rivedere.
+  // Un'ottimizzazione per reparto in cui ci sia qualcosa di scelto, e non di piu'.
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const perRuolo = [];
+  for (const role of ROLES) {
+    const suoi = [...lista].filter((id) => byId.get(id)?.role === role);
+    if (!suoi.length) continue;
+    const senzaQuelReparto = new Set([...lista].filter((id) => !suoi.includes(id)));
+    const alt = optimizeRoster({ players, settings, owned, unavailable, obbligati: senzaQuelReparto, ...FAST });
+    if (!alt.ok) continue;
+    perRuolo.push({
+      role,
+      scelti: suoi.length,
+      differenza: Math.round((alt.score - mia.score) * 10) / 10,
+      spesaTua: mia.spentByRole[role] || 0,
+      spesaMia: alt.spentByRole[role] || 0,
+    });
+  }
+
   return {
     libero,
     mia,
     differenza: Math.round((libero.score - mia.score) * 10) / 10,
     percentuale: libero.score > 0 ? Math.round(((libero.score - mia.score) / libero.score) * 1000) / 10 : 0,
+    perRuolo: perRuolo.sort((a, b) => b.differenza - a.differenza),
   };
+}
+
+// Sotto i cinque crediti si e' comprato un riempitivo, e un riempitivo in panchina ci sta:
+// e' esattamente il suo mestiere. Sopra, si stanno pagando dei crediti per non giocare.
+const PREZZO_RIEMPITIVO = 5;
+
+/**
+ * I giocatori scelti a mano che nella rosa finita non giocano.
+ *
+ * E' il caso che ha fatto sembrare rotto il piano: imponendo un portiere da quarantatre'
+ * crediti il solutore ne comprava un altro da cinquantadue, perche' era piu' forte e in porta
+ * gioca il piu' forte. Novantasette crediti per un posto solo, e il portiere scelto in panchina.
+ * Il conto era giusto — dato per speso il primo, il secondo si ripaga — ma la conclusione da
+ * trarne non era "compra anche l'altro", era "quella scelta ti costa".
+ */
+export function sceltiInPanchina({ plan, settings }) {
+  if (!plan?.ok) return [];
+  const tutti = [...plan.owned.map((p) => ({ ...p, plannedPrice: p.paid })), ...plan.picks];
+  const out = [];
+  for (const role of ROLES) {
+    const pesi = depthWeights(settings, role);
+    const gruppo = sortByStrength(tutti.filter((p) => p.role === role));
+    gruppo.forEach((p, i) => {
+      const peso = pesi[i] ?? pesi[pesi.length - 1] ?? 0;
+      if (peso >= 1 || !p.bloccato) return;
+      if ((p.plannedPrice || 0) < PREZZO_RIEMPITIVO) return;
+      out.push({ player: p, role, peso, prezzo: p.plannedPrice || 0, titolare: gruppo[0] || null });
+    });
+  }
+  return out.sort((a, b) => b.prezzo - a.prezzo);
 }

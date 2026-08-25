@@ -6,7 +6,7 @@ import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domai
 import { valuePlayers, rosterScore, depthWeights } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
-import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, CONFIG_ASTA } from '../src/domain/advisor.js';
+import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, CONFIG_ASTA } from '../src/domain/advisor.js';
 import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa, spiegaModifica } from '../src/domain/strategia.js';
 import { makeContext, makeListone } from './helpers.js';
 
@@ -877,4 +877,95 @@ test('scegliere la propria lista ha un costo misurabile, e viene detto', () => {
   assert.ok(c);
   assert.ok(c.differenza >= -0.001, 'imporre una lista non puo\' battere il piano libero');
   assert.equal(typeof c.percentuale, 'number');
+});
+
+test('in "scelgo io" il portiere scelto e\' il titolare: il piano non ne compra uno piu\' forte sopra di lui', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  // Un portiere di mezza classifica: forte abbastanza da costare, non il migliore del listone.
+  const portieri = players.filter((p) => p.role === 'P').sort((a, b) => (b.score || 0) - (a.score || 0));
+  const scelto = portieri[Math.floor(portieri.length * 0.15)];
+  assert.ok(portieri[0].score > scelto.score, 'il fixture deve avere un portiere piu\' forte di quello scelto');
+
+  const lista = new Set([scelto.id]);
+  const mia = optimizeRoster({ players, settings: { ...settings, modalita: 'mia' }, obbligati: lista, ...CONFIG_ASTA });
+  assert.ok(mia.ok);
+  const inPorta = [...mia.owned, ...mia.picks].filter((p) => p.role === 'P');
+  assert.ok(inPorta.some((p) => p.id === scelto.id), 'il portiere scelto deve esserci');
+  for (const p of inPorta) {
+    if (p.id === scelto.id) continue;
+    assert.ok(
+      (p.score || 0) <= (scelto.score || 0),
+      `${p.name} (${p.score}) e' piu' forte del portiere scelto ${scelto.name} (${scelto.score}): lo manderebbe in panchina`
+    );
+  }
+});
+
+test('in automatica il lucchetto resta un vincolo, non una promessa di titolarita\'', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const portieri = players.filter((p) => p.role === 'P').sort((a, b) => (b.score || 0) - (a.score || 0));
+  const scelto = portieri[Math.floor(portieri.length * 0.15)];
+  const lista = new Set([scelto.id]);
+
+  const auto = optimizeRoster({ players, settings, obbligati: lista, ...CONFIG_ASTA });
+  const mia = optimizeRoster({ players, settings: { ...settings, modalita: 'mia' }, obbligati: lista, ...CONFIG_ASTA });
+  assert.ok(auto.ok && mia.ok);
+  assert.ok([...auto.owned, ...auto.picks].some((p) => p.id === scelto.id));
+  // "Scelgo io" e' un vincolo in piu' sopra lo stesso problema: non puo' produrre una rosa migliore.
+  assert.ok(
+    auto.score >= mia.score - 0.001,
+    `l'automatica (${auto.score}) non puo' valere meno della lista imposta (${mia.score})`
+  );
+});
+
+test('un giocatore scelto che finisce in panchina viene detto, con il prezzo davanti', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const portieri = players.filter((p) => p.role === 'P').sort((a, b) => (b.score || 0) - (a.score || 0));
+  const titolare = portieri[0];
+  const scelto = portieri[3];
+  assert.ok(titolare.score > scelto.score);
+
+  // Il caso patologico in forma pura: due portieri veri in rosa, e quello scelto e' il secondo.
+  const piano = {
+    ok: true,
+    owned: [],
+    picks: [
+      { ...titolare, plannedPrice: 50 },
+      { ...scelto, plannedPrice: 30, bloccato: true },
+      { ...portieri[portieri.length - 1], plannedPrice: 1 },
+    ],
+  };
+  const casi = sceltiInPanchina({ plan: piano, settings });
+  assert.equal(casi.length, 1, 'un solo caso: il portiere scelto dietro a uno piu\' forte');
+  assert.equal(casi[0].player.id, scelto.id);
+  assert.equal(casi[0].prezzo, 30);
+  assert.equal(casi[0].titolare.id, titolare.id);
+
+  // Un riempitivo da un credito in panchina e' il suo mestiere: non e' un caso da segnalare.
+  const innocuo = {
+    ok: true,
+    owned: [],
+    picks: [
+      { ...titolare, plannedPrice: 50 },
+      { ...scelto, plannedPrice: 30 },
+      { ...portieri[portieri.length - 1], plannedPrice: 1, bloccato: true },
+    ],
+  };
+  assert.equal(sceltiInPanchina({ plan: innocuo, settings }).length, 0);
+});
+
+test('il costo della lista si sa anche reparto per reparto', () => {
+  const { players, settings } = makeContext({ projected: true }, 11);
+  const scelto = players
+    .filter((p) => p.role === 'P')
+    .sort((a, b) => (b.score || 0) - (a.score || 0))[Math.floor(players.filter((p) => p.role === 'P').length * 0.3)];
+  const c = costoDellaLista({ players, settings: { ...settings, modalita: 'mia' }, lista: new Set([scelto.id]) });
+  assert.ok(c);
+  assert.equal(c.perRuolo.length, 1, 'un solo reparto ha delle scelte dentro');
+  assert.equal(c.perRuolo[0].role, 'P');
+  assert.ok(c.perRuolo[0].differenza >= -0.001, 'togliere il vincolo non puo' + "'" + ' peggiorare la rosa');
+  // Con una sola scelta, quel reparto spiega tutta la differenza.
+  assert.ok(
+    Math.abs(c.perRuolo[0].differenza - c.differenza) < 0.001,
+    `il reparto dice ${c.perRuolo[0].differenza}, il totale ${c.differenza}`
+  );
 });

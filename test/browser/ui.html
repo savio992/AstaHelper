@@ -226,6 +226,18 @@ try {
   const conUnNome = piano.render(noop);
   check('il nome scelto entra in lista', conUnNome.includes('1 nomi') || conUnNome.includes('scelto da te'));
 
+  // Il portiere scelto e' il portiere: il piano non deve comprarne uno piu' forte sopra di lui.
+  const liberi = store.state.players.filter((x) => x.role === 'P' && !store.state.auction.taken[x.id] && !store.state.auction.owned[x.id]).sort((a, b) => b.score - a.score);
+  const mioPortiere = liberi[Math.floor(liberi.length * 0.2)];
+  piano.onAction('blocca', { dataset: { id: mioPortiere.id } }, null, noop);
+  const inPorta = [...store.state.plan.owned, ...store.state.plan.picks].filter((x) => x.role === 'P');
+  const sopra = inPorta.filter((x) => x.id !== mioPortiere.id && (x.score || 0) > (mioPortiere.score || 0));
+  check('il portiere che scelgo io e\' il titolare', inPorta.some((x) => x.id === mioPortiere.id) && sopra.length === 0,
+    `${mioPortiere.name} · in porta: ${inPorta.map((x) => x.name).join(' + ')}`);
+  const conPortiere = piano.render(noop);
+  check('e il piano dice chi di loro non gioca', conPortiere.includes('panchina'));
+  piano.onAction('libera', { dataset: { id: mioPortiere.id } }, null, noop);
+
   // In modalita' "scelgo io" il numerone dell'asta cambia domanda.
   store.state.ui.tab = 'asta';
   store.state.ui.selectedId = daMettere.id;
