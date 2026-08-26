@@ -280,26 +280,27 @@ export function onAction(action, target, ev, rerender) {
     }
     case 'esporta': {
       const testo = esporta();
-      const nome = nomeBackup();
-      try {
-        const url = URL.createObjectURL(new Blob([testo], { type: 'application/json' }));
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = nome;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        // Revocare subito interrompe il download su alcuni browser: si lascia un attimo.
-        setTimeout(() => URL.revokeObjectURL(url), 4000);
-        toast(`Salvato ${nome}.`);
-      } catch (err) {
-        // Dentro un iframe con sandbox il download e' inerte: meglio gli appunti che niente.
-        console.warn('Download non riuscito', err);
+      // Dentro un iframe il download non parte e non solleva niente: il tasto sembrerebbe
+      // funzionare e non farebbe assolutamente nulla, come il vecchio confirm(). Si guarda
+      // dove si sta girando invece di aspettare un errore che non arriva mai.
+      if (window.self !== window.top) {
         navigator.clipboard
           ?.writeText(testo)
-          .then(() => toast('Download bloccato: l\'asta e\' negli appunti, incollala in un file.'))
-          .catch(() => toast('Non riesco a salvare il file da qui.'));
+          .then(() => toast('Qui il download e\' bloccato: l\'asta e\' negli appunti, incollala in un file.'))
+          .catch(() => toast('Da questa finestra non posso salvare: apri l\'app dal suo indirizzo.'));
+        return true;
       }
+      const nome = nomeBackup();
+      const url = URL.createObjectURL(new Blob([testo], { type: 'application/json' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = nome;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revocare subito interrompe il download su alcuni browser: si lascia un attimo.
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast(`Salvato ${nome}.`);
       return true;
     }
     case 'importa-chiedi':

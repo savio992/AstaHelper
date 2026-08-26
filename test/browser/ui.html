@@ -311,6 +311,24 @@ try {
   store.state.ui.tab = 'setup';
   check('la scheda Lega offre il backup', setup.render(noop).includes('Backup dell\'asta'));
 
+  // Il tasto non deve mai fingere: dentro un iframe il download e' inerte e non solleva
+  // niente, quindi la scelta si fa guardando dove si gira, non aspettando un errore.
+  const inCornice = window.self !== window.top;
+  let salvato = null;
+  const clipVera = navigator.clipboard && navigator.clipboard.writeText;
+  if (navigator.clipboard) navigator.clipboard.writeText = (t) => { salvato = t; return Promise.resolve(); };
+  const click = HTMLAnchorElement.prototype.click;
+  let scaricato = null;
+  HTMLAnchorElement.prototype.click = function () { if (this.download) scaricato = this.download; else click.call(this); };
+  setup.onAction('esporta', { dataset: {} }, null, noop);
+  HTMLAnchorElement.prototype.click = click;
+  if (navigator.clipboard && clipVera) navigator.clipboard.writeText = clipVera;
+  check(
+    inCornice ? 'in una cornice l\'export passa dagli appunti' : 'in pagina piena l\'export scarica un file',
+    inCornice ? typeof salvato === 'string' && salvato.length > 100 : /^astahelper-\d{8}-\d{4}\.json$/.test(scaricato || ''),
+    inCornice ? `${Math.round((salvato || '').length / 1024)} KB negli appunti` : String(scaricato)
+  );
+
   const backup = store.esporta();
   let payload = null;
   try { payload = JSON.parse(backup); } catch (e) { payload = null; }
