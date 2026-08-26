@@ -6,6 +6,7 @@
 // destrutturazioni dell'oggetto del modulo corrispondente.
 
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -131,3 +132,21 @@ ${js}
 `;
 fs.writeFileSync(path.join(root, 'dist/artifact.html'), artifact);
 console.log(`dist/artifact.html — ${(Buffer.byteLength(artifact) / 1024).toFixed(0)} KB`);
+
+// Gli statici che fanno dell'app una cosa installabile: manifest, worker, icone.
+//
+// Il worker porta l'impronta di dist/index.html al posto del segnaposto. E' l'unico modo perche'
+// la cache scada quando serve e mai quando non serve: se calcolassimo la versione dalla data del
+// build cambierebbe a ogni compilazione anche a codice identico, e ogni telefono si riscaricherebbe
+// trecento kilobyte per niente.
+const impronta = crypto.createHash('sha1').update(html).digest('hex').slice(0, 12);
+for (const nome of fs.readdirSync(path.join(root, 'web'))) {
+  const da = path.join(root, 'web', nome);
+  const a = path.join(root, 'dist', nome);
+  if (nome === 'sw.js') {
+    fs.writeFileSync(a, fs.readFileSync(da, 'utf8').replace('__VERSIONE__', impronta));
+  } else {
+    fs.copyFileSync(da, a);
+  }
+}
+console.log(`dist/ — manifest, service worker (versione ${impronta}) e icone`);

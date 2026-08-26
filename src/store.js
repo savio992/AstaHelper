@@ -68,17 +68,43 @@ export function notify() {
   for (const fn of listeners) fn();
 }
 
+/** Tutto quello che vale la pena conservare, in una forma sola: la usano la memoria e il backup. */
+function istantanea() {
+  return {
+    settings: state.settings,
+    sources: state.sources,
+    formData: state.formData,
+    auction: state.auction,
+    importMeta: state.importMeta ? { headers: state.importMeta.headers, mapping: state.importMeta.mapping, fileName: state.importMeta.fileName, count: state.roster.length } : null,
+    ui: { tab: state.ui.tab },
+  };
+}
+
+/**
+ * Rimette in piedi lo stato da un'istantanea.
+ *
+ * Sta in una funzione sola perche' la memoria del telefono e un file di backup sono la stessa
+ * cosa scritta in due posti: se le due strade divergessero, un'asta ripresa da file non
+ * sarebbe la stessa asta ripresa dal telefono.
+ */
+function applica(data) {
+  state.settings = { ...defaultSettings(), ...(data.settings || {}) };
+  state.settings.slots = { ...defaultSettings().slots, ...(data.settings?.slots || {}) };
+  state.settings.starters = { ...defaultSettings().starters, ...(data.settings?.starters || {}) };
+  state.settings.tierOrder = { ...defaultSettings().tierOrder, ...(data.settings?.tierOrder || {}) };
+  state.settings.roleBudget = { ...defaultSettings().roleBudget, ...(data.settings?.roleBudget || {}) };
+  state.settings.minTop = { ...defaultSettings().minTop, ...(data.settings?.minTop || {}) };
+  state.sources = data.sources || (data.roster ? [{ name: 'listone', players: data.roster }] : []);
+  state.roster = rebuildRoster();
+  state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {}, ...(data.auction || {}) };
+  state.importMeta = data.importMeta || null;
+  state.formData = data.formData || null;
+  recompute();
+}
+
 export function save() {
   try {
-    const payload = {
-      settings: state.settings,
-      sources: state.sources,
-      formData: state.formData,
-      auction: state.auction,
-      importMeta: state.importMeta ? { headers: state.importMeta.headers, mapping: state.importMeta.mapping, fileName: state.importMeta.fileName, count: state.roster.length } : null,
-      ui: { tab: state.ui.tab },
-    };
-    localStorage.setItem(KEY, JSON.stringify(payload));
+    localStorage.setItem(KEY, JSON.stringify(istantanea()));
   } catch (err) {
     console.warn('Salvataggio non riuscito', err);
   }
@@ -89,23 +115,67 @@ export function load() {
     const raw = localStorage.getItem(KEY);
     if (!raw) return false;
     const data = JSON.parse(raw);
-    state.settings = { ...defaultSettings(), ...(data.settings || {}) };
-    state.settings.slots = { ...defaultSettings().slots, ...(data.settings?.slots || {}) };
-    state.settings.starters = { ...defaultSettings().starters, ...(data.settings?.starters || {}) };
-    state.settings.tierOrder = { ...defaultSettings().tierOrder, ...(data.settings?.tierOrder || {}) };
-    state.settings.roleBudget = { ...defaultSettings().roleBudget, ...(data.settings?.roleBudget || {}) };
-    state.settings.minTop = { ...defaultSettings().minTop, ...(data.settings?.minTop || {}) };
-    state.sources = data.sources || (data.roster ? [{ name: 'listone', players: data.roster }] : []);
-    state.roster = rebuildRoster();
-    state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {}, ...(data.auction || {}) };
-    state.importMeta = data.importMeta || null;
-    state.formData = data.formData || null;
+    applica(data);
     if (data.ui?.tab) state.ui.tab = data.ui.tab;
-    recompute();
     return true;
   } catch (err) {
     console.warn('Caricamento non riuscito', err);
     return false;
+  }
+}
+
+const FORMATO = 1;
+
+/**
+ * L'asta in un file.
+ *
+ * La memoria del browser non e' un posto sicuro dove tenere una serata: basta una finestra in
+ * incognito, un "cancella dati dei siti", un telefono cambiato. E non c'e' altro modo di
+ * passare l'asta dal telefono al computer. Il file contiene esattamente quello che contiene la
+ * memoria — listone compreso, altrimenti riaprendolo altrove ci sarebbe un'asta senza giocatori.
+ */
+export function esporta() {
+  return JSON.stringify({ app: 'astahelper', formato: FORMATO, salvatoIl: new Date().toISOString(), ...istantanea() }, null, 1);
+}
+
+/** Nome del file: leggibile e ordinabile, cosi' due backup della stessa sera non si confondono. */
+export function nomeBackup() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `astahelper-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
+}
+
+/**
+ * Ripristina un'asta da un file.
+ *
+ * Rifiuta prima di toccare qualsiasi cosa: importare un file sbagliato in mezzo a un'asta e
+ * ritrovarsi senza rosa sarebbe il danno peggiore che questa funzione possa fare, e sarebbe un
+ * danno causato proprio dalla funzione che dovrebbe proteggerla.
+ */
+export function importa(testo) {
+  let data;
+  try {
+    data = JSON.parse(testo);
+  } catch {
+    return { ok: false, motivo: 'Non e\' un file di backup: non si legge come JSON.' };
+  }
+  if (!data || typeof data !== 'object') return { ok: false, motivo: 'Il file e\' vuoto o non ha la forma giusta.' };
+  if (!data.settings || !data.auction) {
+    return { ok: false, motivo: 'Manca l\'asta o la configurazione: questo file non viene da AstaHelper.' };
+  }
+  if (data.formato && data.formato > FORMATO) {
+    return { ok: false, motivo: 'Questo backup viene da una versione piu' + "'" + ' recente dell\'app.' };
+  }
+  try {
+    applica(data);
+    rebuildPlan({ ricorda: false });
+    save();
+    notify();
+    const presi = Object.keys(state.auction.owned || {}).length;
+    return { ok: true, giocatori: state.players.length, presi, salvatoIl: data.salvatoIl || null };
+  } catch (err) {
+    console.warn('Ripristino non riuscito', err);
+    return { ok: false, motivo: 'Il file si legge ma non si riesce a ricostruire l\'asta.' };
   }
 }
 

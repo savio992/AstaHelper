@@ -305,6 +305,47 @@ try {
   store.state.ui.selectedId = null;
   asta.invalidate();
 
+  // --- backup dell'asta ---------------------------------------------------------------
+  // Tutto vive nella memoria del browser, che puo' sparire. Il file deve bastare da solo a
+  // rimettere in piedi la stessa asta, listone compreso.
+  store.state.ui.tab = 'setup';
+  check('la scheda Lega offre il backup', setup.render(noop).includes('Backup dell\'asta'));
+
+  const backup = store.esporta();
+  let payload = null;
+  try { payload = JSON.parse(backup); } catch (e) { payload = null; }
+  check('il backup e\' JSON valido e si dichiara', !!payload && payload.app === 'astahelper' && payload.formato >= 1);
+  check('e contiene listone, impostazioni e asta',
+    !!payload?.settings && !!payload?.auction && (payload?.sources || []).length === 1,
+    `${(payload?.sources?.[0]?.players || []).length} giocatori nel file`);
+
+  // Un file sbagliato non deve fare danni: e' il momento in cui si sta gia' rischiando.
+  const primaDelDanno = { giocatori: store.state.players.length, crediti: store.creditsLeft() };
+  const rifiuti = [
+    ['testo che non e\' JSON', 'questo non e un file'],
+    ['JSON senza asta dentro', '{"app":"astahelper","settings":{}}'],
+    ['backup di una versione futura', JSON.stringify({ ...payload, formato: 99 })],
+  ];
+  for (const [nome, cattivo] of rifiuti) {
+    const esito = store.importa(cattivo);
+    check(`rifiuta ${nome}`, esito.ok === false && !!esito.motivo, esito.motivo || '');
+  }
+  check('e rifiutando non ha toccato niente',
+    store.state.players.length === primaDelDanno.giocatori && store.creditsLeft() === primaDelDanno.crediti);
+
+  // Andata e ritorno: si compra qualcuno, si ripristina, si deve tornare a prima.
+  const cavia = store.state.plan.picks.filter((p) => p.role === 'C')[0];
+  store.assign(cavia.id, 'mine', 33);
+  check('lo stato e\' cambiato', store.creditsLeft() !== primaDelDanno.crediti);
+  const tornato = store.importa(backup);
+  check('il ripristino riesce', tornato.ok === true, tornato.motivo || `${tornato.giocatori} giocatori`);
+  check('e riporta l\'asta esattamente a prima',
+    store.creditsLeft() === primaDelDanno.crediti && store.state.auction.owned[cavia.id] === undefined,
+    `${store.creditsLeft()} crediti`);
+  check('il piano viene rifatto sul listone ripristinato', store.state.plan?.ok === true && store.state.players.length === 540);
+  check('e il backup e\' finito anche nella memoria del telefono',
+    JSON.parse(localStorage.getItem('astahelper:v1')).auction.owned[cavia.id] === undefined);
+
   // --- cancella tutto ----------------------------------------------------------------
   // Il tasto usava confirm(), che dentro un iframe con sandbox viene ignorato in silenzio:
   // la conferma deve stare nella pagina, e l'azzeramento deve ripulire anche le memorie

@@ -26,8 +26,41 @@ const IS_SHELL = CHROME.endsWith('headless_shell');
 
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 
+// Un pixel da tenere in sospeso, per far aspettare l'evento load. Vedi dumpDom piu' sotto.
+const PIXEL = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+  'base64'
+);
+let rilasciaAttesa = null;
+
 const server = http.createServer((req, res) => {
-  const file = path.join(root, decodeURIComponent(req.url.split('?')[0]));
+  const percorso = decodeURIComponent(req.url.split('?')[0]);
+
+  // Il pixel resta appeso finche' la pagina non dice di aver finito: cosi' l'evento load
+  // aspetta il lavoro asincrono invece di precederlo.
+  if (percorso === '/dist/attendi.png') {
+    rilasciaAttesa = () => {
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(PIXEL);
+    };
+    return;
+  }
+  if (percorso === '/dist/fatto') {
+    res.writeHead(200).end('ok');
+    if (rilasciaAttesa) rilasciaAttesa();
+    rilasciaAttesa = null;
+    return;
+  }
+
+  // Il service worker vale solo per la cartella da cui viene servito: la pagina che lo prova
+  // deve stare dentro dist/. La si mappa qui invece di scriverla nella cartella pubblicata.
+  let file =
+    percorso === '/dist/prova-sw.html'
+      ? path.join(root, 'test/browser/sw.html')
+      : path.join(root, percorso);
+  // Una cartella risponde con il suo index.html, come fa qualunque hosting statico. Senza,
+  // il precache di './' fallirebbe qui e passerebbe in produzione.
+  if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, 'index.html');
   if (!file.startsWith(root) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     res.writeHead(404).end('no');
     return;
@@ -41,13 +74,21 @@ const port = server.address().port;
 
 // Deve restare asincrona: il server statico vive in questo stesso processo e una
 // chiamata sincrona bloccherebbe l'event loop lasciando il browser senza risposte.
+/**
+ * `budget` a null spegne il tempo virtuale.
+ *
+ * Serve per il service worker: con il tempo virtuale i timer scattano subito in tempo reale, e
+ * la registrazione — che aspetta I/O vero — non fa in tempo a concludersi. Senza tempo virtuale
+ * pero' --dump-dom stampa all'evento load, quindi la pagina lo tiene aperto con il pixel
+ * appeso qui sopra e lo rilascia quando ha finito.
+ */
 async function dumpDom(url, budget = 20000) {
   const args = [
     ...(IS_SHELL ? [] : ['--headless']),
     '--disable-gpu',
     '--no-sandbox',
     '--disable-dev-shm-usage',
-    `--virtual-time-budget=${budget}`,
+    ...(budget === null ? [] : [`--virtual-time-budget=${budget}`]),
     '--dump-dom',
     url,
   ];
@@ -95,6 +136,35 @@ try {
     console.log(`${ok ? '  ok  ' : ' FAIL '} ${line.replace(/^(PASS|FAIL) /, '')}`);
   }
   expect('il fuoco nei campi e\' stato verificato', fuocoOut.trim().length > 0);
+
+  console.log('\ninstallabile e offline:');
+  const distFiles = fs.readdirSync(path.join(root, 'dist'));
+  for (const atteso of ['manifest.webmanifest', 'sw.js', 'icona-180.png', 'icona-192.png', 'icona-512.png']) {
+    expect(`dist/ contiene ${atteso}`, distFiles.includes(atteso));
+  }
+  const distIndex = fs.readFileSync(path.join(root, 'dist/index.html'), 'utf8');
+  expect('la pagina dichiara il manifest', distIndex.includes('rel="manifest"'));
+  expect("la pagina dichiara l'icona per iOS", distIndex.includes('rel="apple-touch-icon"'));
+  expect('e registra il service worker', distIndex.includes("register('./sw.js')"));
+  expect(
+    'il segnaposto della versione e\' stato sostituito',
+    !fs.readFileSync(path.join(root, 'dist/sw.js'), 'utf8').includes('__VERSIONE__')
+  );
+  // La pagina ospitata gira dentro un iframe con sandbox: li' un service worker non funziona,
+  // e registrarlo lascerebbe solo un errore in console.
+  expect(
+    "la versione ospitata non registra niente",
+    !fs.readFileSync(path.join(root, 'dist/artifact.html'), 'utf8').includes('serviceWorker')
+  );
+
+  const sw = await dumpDom(`http://127.0.0.1:${port}/dist/prova-sw.html`, null);
+  const swOut = (sw.match(/<pre id="out">([\s\S]*?)<\/pre>/) || [])[1] || '';
+  for (const line of decode(swOut).split('\n').filter(Boolean)) {
+    const ok = line.startsWith('PASS');
+    if (!ok) failures++;
+    console.log(`${ok ? '  ok  ' : ' FAIL '} ${line.replace(/^(PASS|FAIL) /, '')}`);
+  }
+  expect('il service worker e\' stato messo alla prova', swOut.trim().length > 0);
 
   console.log('\napp in sviluppo:');
   const dev = await dumpDom(`http://127.0.0.1:${port}/index.html`);

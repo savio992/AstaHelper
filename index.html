@@ -9,11 +9,66 @@
 <meta name="theme-color" content="#0a7d3f">
 <meta name="color-scheme" content="light dark">
 <title>AstaHelper</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icona-180.png">
+<link rel="icon" href="./icona.svg" type="image/svg+xml">
 <link rel="stylesheet" href="src/styles.css">
 </head>
 <body>
 <main id="app"></main>
 <nav class="tabbar" id="tabbar"></nav>
 <script type="module" src="src/app.js"></script>
+<script>
+// Installazione e aggiornamenti. Sta qui e non dentro l'app di proposito: e' impianto della
+// pagina, non logica d'asta, e cosi' l'avviso di versione nuova funziona anche se l'app non
+// dovesse partire.
+(function () {
+  // Il worker vuole un contesto sicuro. In sviluppo su file:// e dentro l'anteprima ospitata
+  // non c'e', e registrarlo darebbe solo un errore in console.
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').then(function (reg) {
+      // Alla prima visita non c'e' niente da annunciare: il worker si installa e basta.
+      // L'avviso serve solo quando una versione stava gia' girando.
+      function guarda(sw) {
+        if (!sw) return;
+        sw.addEventListener('statechange', function () {
+          if (sw.state === 'installed' && navigator.serviceWorker.controller) avvisa(reg);
+        });
+      }
+      if (reg.waiting && navigator.serviceWorker.controller) avvisa(reg);
+      guarda(reg.installing);
+      reg.addEventListener('updatefound', function () { guarda(reg.installing); });
+    }).catch(function (err) {
+      console.warn('Service worker non registrato', err);
+    });
+
+    // Ricaricare da soli mentre si sta rilanciando su un giocatore sarebbe il momento
+    // peggiore possibile: la pagina si ricarica solo dopo che l'utente ha toccato il tasto.
+    var ricarico = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (!ricarico) { ricarico = true; window.location.reload(); }
+    });
+  });
+
+  function avvisa(reg) {
+    if (document.getElementById('nuova-versione')) return;
+    var bar = document.createElement('div');
+    bar.id = 'nuova-versione';
+    bar.setAttribute('role', 'status');
+    bar.innerHTML =
+      '<span>C\'e\' una versione nuova.</span>' +
+      '<button type="button" id="nuova-versione-si">Ricarica</button>' +
+      '<button type="button" id="nuova-versione-no" aria-label="Non ora">&#10005;</button>';
+    document.body.appendChild(bar);
+    document.getElementById('nuova-versione-si').onclick = function () {
+      if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      else window.location.reload();
+    };
+    document.getElementById('nuova-versione-no').onclick = function () { bar.remove(); };
+  }
+})();
+</script>
 </body>
 </html>

@@ -322,6 +322,42 @@ table.tiers td.r { text-align: right; }
 .spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* L'avviso di versione nuova. Sta sopra la barra delle schede e sotto tutto il resto: non deve
+   coprire niente di cliccabile mentre si e' in mezzo a un rilancio. */
+#nuova-versione {
+  position: fixed;
+  left: 50%;
+  bottom: calc(78px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--text);
+  color: var(--bg);
+  padding: 8px 10px 8px 16px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 650;
+  z-index: 55;
+  box-shadow: var(--shadow);
+  max-width: 92vw;
+}
+#nuova-versione button {
+  font: inherit;
+  border: 0;
+  cursor: pointer;
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: var(--accent);
+  color: #fff;
+}
+#nuova-versione #nuova-versione-no {
+  background: transparent;
+  color: var(--bg);
+  opacity: 0.6;
+  padding: 6px 8px;
+}
+
 </style>
 <main id="app"></main>
 <nav class="tabbar" id="tabbar"></nav>
@@ -2850,17 +2886,43 @@ function notify() {
   for (const fn of listeners) fn();
 }
 
+/** Tutto quello che vale la pena conservare, in una forma sola: la usano la memoria e il backup. */
+function istantanea() {
+  return {
+    settings: state.settings,
+    sources: state.sources,
+    formData: state.formData,
+    auction: state.auction,
+    importMeta: state.importMeta ? { headers: state.importMeta.headers, mapping: state.importMeta.mapping, fileName: state.importMeta.fileName, count: state.roster.length } : null,
+    ui: { tab: state.ui.tab },
+  };
+}
+
+/**
+ * Rimette in piedi lo stato da un'istantanea.
+ *
+ * Sta in una funzione sola perche' la memoria del telefono e un file di backup sono la stessa
+ * cosa scritta in due posti: se le due strade divergessero, un'asta ripresa da file non
+ * sarebbe la stessa asta ripresa dal telefono.
+ */
+function applica(data) {
+  state.settings = { ...defaultSettings(), ...(data.settings || {}) };
+  state.settings.slots = { ...defaultSettings().slots, ...(data.settings?.slots || {}) };
+  state.settings.starters = { ...defaultSettings().starters, ...(data.settings?.starters || {}) };
+  state.settings.tierOrder = { ...defaultSettings().tierOrder, ...(data.settings?.tierOrder || {}) };
+  state.settings.roleBudget = { ...defaultSettings().roleBudget, ...(data.settings?.roleBudget || {}) };
+  state.settings.minTop = { ...defaultSettings().minTop, ...(data.settings?.minTop || {}) };
+  state.sources = data.sources || (data.roster ? [{ name: 'listone', players: data.roster }] : []);
+  state.roster = rebuildRoster();
+  state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {}, ...(data.auction || {}) };
+  state.importMeta = data.importMeta || null;
+  state.formData = data.formData || null;
+  recompute();
+}
+
 function save() {
   try {
-    const payload = {
-      settings: state.settings,
-      sources: state.sources,
-      formData: state.formData,
-      auction: state.auction,
-      importMeta: state.importMeta ? { headers: state.importMeta.headers, mapping: state.importMeta.mapping, fileName: state.importMeta.fileName, count: state.roster.length } : null,
-      ui: { tab: state.ui.tab },
-    };
-    localStorage.setItem(KEY, JSON.stringify(payload));
+    localStorage.setItem(KEY, JSON.stringify(istantanea()));
   } catch (err) {
     console.warn('Salvataggio non riuscito', err);
   }
@@ -2871,23 +2933,67 @@ function load() {
     const raw = localStorage.getItem(KEY);
     if (!raw) return false;
     const data = JSON.parse(raw);
-    state.settings = { ...defaultSettings(), ...(data.settings || {}) };
-    state.settings.slots = { ...defaultSettings().slots, ...(data.settings?.slots || {}) };
-    state.settings.starters = { ...defaultSettings().starters, ...(data.settings?.starters || {}) };
-    state.settings.tierOrder = { ...defaultSettings().tierOrder, ...(data.settings?.tierOrder || {}) };
-    state.settings.roleBudget = { ...defaultSettings().roleBudget, ...(data.settings?.roleBudget || {}) };
-    state.settings.minTop = { ...defaultSettings().minTop, ...(data.settings?.minTop || {}) };
-    state.sources = data.sources || (data.roster ? [{ name: 'listone', players: data.roster }] : []);
-    state.roster = rebuildRoster();
-    state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {}, ...(data.auction || {}) };
-    state.importMeta = data.importMeta || null;
-    state.formData = data.formData || null;
+    applica(data);
     if (data.ui?.tab) state.ui.tab = data.ui.tab;
-    recompute();
     return true;
   } catch (err) {
     console.warn('Caricamento non riuscito', err);
     return false;
+  }
+}
+
+const FORMATO = 1;
+
+/**
+ * L'asta in un file.
+ *
+ * La memoria del browser non e' un posto sicuro dove tenere una serata: basta una finestra in
+ * incognito, un "cancella dati dei siti", un telefono cambiato. E non c'e' altro modo di
+ * passare l'asta dal telefono al computer. Il file contiene esattamente quello che contiene la
+ * memoria — listone compreso, altrimenti riaprendolo altrove ci sarebbe un'asta senza giocatori.
+ */
+function esporta() {
+  return JSON.stringify({ app: 'astahelper', formato: FORMATO, salvatoIl: new Date().toISOString(), ...istantanea() }, null, 1);
+}
+
+/** Nome del file: leggibile e ordinabile, cosi' due backup della stessa sera non si confondono. */
+function nomeBackup() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `astahelper-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
+}
+
+/**
+ * Ripristina un'asta da un file.
+ *
+ * Rifiuta prima di toccare qualsiasi cosa: importare un file sbagliato in mezzo a un'asta e
+ * ritrovarsi senza rosa sarebbe il danno peggiore che questa funzione possa fare, e sarebbe un
+ * danno causato proprio dalla funzione che dovrebbe proteggerla.
+ */
+function importa(testo) {
+  let data;
+  try {
+    data = JSON.parse(testo);
+  } catch {
+    return { ok: false, motivo: 'Non e\' un file di backup: non si legge come JSON.' };
+  }
+  if (!data || typeof data !== 'object') return { ok: false, motivo: 'Il file e\' vuoto o non ha la forma giusta.' };
+  if (!data.settings || !data.auction) {
+    return { ok: false, motivo: 'Manca l\'asta o la configurazione: questo file non viene da AstaHelper.' };
+  }
+  if (data.formato && data.formato > FORMATO) {
+    return { ok: false, motivo: 'Questo backup viene da una versione piu' + "'" + ' recente dell\'app.' };
+  }
+  try {
+    applica(data);
+    rebuildPlan({ ricorda: false });
+    save();
+    notify();
+    const presi = Object.keys(state.auction.owned || {}).length;
+    return { ok: true, giocatori: state.players.length, presi, salvatoIl: data.salvatoIl || null };
+  } catch (err) {
+    console.warn('Ripristino non riuscito', err);
+    return { ok: false, motivo: 'Il file si legge ma non si riesce a ricostruire l\'asta.' };
   }
 }
 
@@ -3300,7 +3406,7 @@ function creditsLeft() {
   return (state.settings.budget || 500) - spentTotal();
 }
 
-return { onReset, subscribe, notify, save, load, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, listaMia, obbligatiSet, blocca, scarta, liberaScelta, contestoConsiglio, statoScelta, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, attribuisci, undo, rinominaSquadre, updateSettings, spentTotal, creditsLeft, state };
+return { onReset, subscribe, notify, save, load, esporta, nomeBackup, importa, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, listaMia, obbligatiSet, blocca, scarta, liberaScelta, contestoConsiglio, statoScelta, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, attribuisci, undo, rinominaSquadre, updateSettings, spentTotal, creditsLeft, state };
 })();
 
 // ===== src/domain/advisor.js =====
@@ -7250,15 +7356,24 @@ return { ingestFile, ingestText, render, onAction, onInput };
 const __m_src_ui_setup_js = (() => {
 // Impostazioni della lega: e' qui che si dice all'app che asta si sta giocando.
 
-const { state, updateSettings, resetAll, rebuildPlan, rinominaSquadre } = __m_src_store_js;
+const { state, updateSettings, resetAll, rebuildPlan, rinominaSquadre, esporta, importa, nomeBackup } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
 const { nomiSquadre } = __m_src_domain_mercato_js;
 const { esc, roleChip, toast } = __m_src_ui_common_js;
+const { onReset } = __m_src_store_js;
 
 // La conferma sta dentro la pagina e non in una finestra del browser: `confirm()` viene
 // ignorato in silenzio dentro un iframe con sandbox, che e' esattamente dove gira l'app
 // pubblicata, e il tasto non faceva assolutamente niente.
 let chiedeConferma = false;
+let chiedeImport = false;
+let esitoImport = null;
+
+onReset(() => {
+  chiedeConferma = false;
+  chiedeImport = false;
+  esitoImport = null;
+});
 
 function tierEditor() {
   const role = state.ui.tierRole || 'D';
@@ -7428,6 +7543,8 @@ function render() {
 
     ${tierEditor()}
 
+    ${backupCard()}
+
     <div class="card">
       ${
         chiedeConferma
@@ -7443,6 +7560,54 @@ function render() {
       }
       <div class="tiny muted center" style="margin-top:8px">Listone, impostazioni e asta in corso restano solo su questo dispositivo.</div>
     </div>
+  </div>`;
+}
+
+/**
+ * Il backup dell'asta.
+ *
+ * Tutto vive nella memoria del browser, che non e' un posto sicuro dove tenere una serata:
+ * basta una finestra in incognito o un "cancella dati dei siti". E non c'era modo di passare
+ * l'asta dal telefono al computer. Il file contiene tutto, listone compreso.
+ */
+function backupCard() {
+  return `
+  <div class="card">
+    <h2>Backup dell'asta</h2>
+    <p class="small muted" style="margin-top:0">
+      Un file con tutto: listone, impostazioni e asta in corso. Serve per non perdere niente se il
+      browser dimentica, e per riprendere l'asta su un altro dispositivo.
+    </p>
+    ${
+      esitoImport
+        ? `<div class="verdict ${esitoImport.ok ? 'go' : 'stop'}" style="text-align:left;margin-bottom:12px">
+             <div class="small" style="font-weight:600">${esc(esitoImport.testo)}</div>
+           </div>`
+        : ''
+    }
+    ${
+      chiedeImport
+        ? `<div class="verdict stop" style="text-align:left">
+             <div>Ripristinare sostituisce l'asta che hai adesso.</div>
+             <div class="small" style="font-weight:500;margin-top:4px">
+               ${
+                 state.players.length
+                   ? `Hai ${state.players.length} giocatori caricati e ${Object.keys(state.auction.owned || {}).length} presi. Se non l'hai gia' fatto, salva prima un file di questa.`
+                   : 'Adesso non c\'e\' niente da perdere.'
+               }
+             </div>
+           </div>
+           <label class="btn block" style="margin-top:12px;text-align:center;cursor:pointer">
+             Scegli il file
+             <input type="file" accept="application/json,.json" data-action="importa" style="display:none">
+           </label>
+           <button class="btn ghost block" style="margin-top:8px" data-action="importa-annulla">Annulla</button>`
+        : `<div class="grid2">
+             <button class="btn primary" data-action="esporta"${state.players.length ? '' : ' disabled'}>Salva su file</button>
+             <button class="btn" data-action="importa-chiedi">Ripristina</button>
+           </div>
+           ${state.players.length ? '' : '<div class="tiny muted center" style="margin-top:8px">Non c\'e\' ancora niente da salvare.</div>'}`
+    }
   </div>`;
 }
 
@@ -7469,6 +7634,39 @@ function onAction(action, target, ev, rerender) {
       rerender();
       return true;
     }
+    case 'esporta': {
+      const testo = esporta();
+      const nome = nomeBackup();
+      try {
+        const url = URL.createObjectURL(new Blob([testo], { type: 'application/json' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = nome;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        // Revocare subito interrompe il download su alcuni browser: si lascia un attimo.
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        toast(`Salvato ${nome}.`);
+      } catch (err) {
+        // Dentro un iframe con sandbox il download e' inerte: meglio gli appunti che niente.
+        console.warn('Download non riuscito', err);
+        navigator.clipboard
+          ?.writeText(testo)
+          .then(() => toast('Download bloccato: l\'asta e\' negli appunti, incollala in un file.'))
+          .catch(() => toast('Non riesco a salvare il file da qui.'));
+      }
+      return true;
+    }
+    case 'importa-chiedi':
+      chiedeImport = true;
+      esitoImport = null;
+      rerender();
+      return true;
+    case 'importa-annulla':
+      chiedeImport = false;
+      rerender();
+      return true;
     case 'reset':
       chiedeConferma = true;
       rerender();
@@ -7498,6 +7696,30 @@ function onAction(action, target, ev, rerender) {
 function onInput(action, target, rerender, kind = 'input') {
   const s = state.settings;
   switch (action) {
+    case 'importa': {
+      const file = target.files && target.files[0];
+      if (!file) return true;
+      file
+        .text()
+        .then((testo) => {
+          const esito = importa(testo);
+          chiedeImport = false;
+          esitoImport = esito.ok
+            ? {
+                ok: true,
+                testo: `Asta ripristinata: ${esito.giocatori} giocatori, ${esito.presi} gia' presi${
+                  esito.salvatoIl ? ` (backup del ${new Date(esito.salvatoIl).toLocaleString('it-IT')})` : ''
+                }.`,
+              }
+            : { ok: false, testo: esito.motivo };
+          rerender();
+        })
+        .catch(() => {
+          esitoImport = { ok: false, testo: 'Non riesco a leggere il file.' };
+          rerender();
+        });
+      return true;
+    }
     case 'set': {
       const v = Math.max(1, Number(target.value) || 0);
       updateSettings({ [target.dataset.key]: v });

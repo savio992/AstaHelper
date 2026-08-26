@@ -319,3 +319,39 @@ table.tiers td.r { text-align: right; }
 
 .spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* L'avviso di versione nuova. Sta sopra la barra delle schede e sotto tutto il resto: non deve
+   coprire niente di cliccabile mentre si e' in mezzo a un rilancio. */
+#nuova-versione {
+  position: fixed;
+  left: 50%;
+  bottom: calc(78px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--text);
+  color: var(--bg);
+  padding: 8px 10px 8px 16px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 650;
+  z-index: 55;
+  box-shadow: var(--shadow);
+  max-width: 92vw;
+}
+#nuova-versione button {
+  font: inherit;
+  border: 0;
+  cursor: pointer;
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: var(--accent);
+  color: #fff;
+}
+#nuova-versione #nuova-versione-no {
+  background: transparent;
+  color: var(--bg);
+  opacity: 0.6;
+  padding: 6px 8px;
+}

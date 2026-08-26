@@ -1,14 +1,23 @@
 // Impostazioni della lega: e' qui che si dice all'app che asta si sta giocando.
 
-import { state, updateSettings, resetAll, rebuildPlan, rinominaSquadre } from '../store.js';
+import { state, updateSettings, resetAll, rebuildPlan, rinominaSquadre, esporta, importa, nomeBackup } from '../store.js';
 import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
 import { nomiSquadre } from '../domain/mercato.js';
 import { esc, roleChip, toast } from './common.js';
+import { onReset } from '../store.js';
 
 // La conferma sta dentro la pagina e non in una finestra del browser: `confirm()` viene
 // ignorato in silenzio dentro un iframe con sandbox, che e' esattamente dove gira l'app
 // pubblicata, e il tasto non faceva assolutamente niente.
 let chiedeConferma = false;
+let chiedeImport = false;
+let esitoImport = null;
+
+onReset(() => {
+  chiedeConferma = false;
+  chiedeImport = false;
+  esitoImport = null;
+});
 
 function tierEditor() {
   const role = state.ui.tierRole || 'D';
@@ -178,6 +187,8 @@ export function render() {
 
     ${tierEditor()}
 
+    ${backupCard()}
+
     <div class="card">
       ${
         chiedeConferma
@@ -193,6 +204,54 @@ export function render() {
       }
       <div class="tiny muted center" style="margin-top:8px">Listone, impostazioni e asta in corso restano solo su questo dispositivo.</div>
     </div>
+  </div>`;
+}
+
+/**
+ * Il backup dell'asta.
+ *
+ * Tutto vive nella memoria del browser, che non e' un posto sicuro dove tenere una serata:
+ * basta una finestra in incognito o un "cancella dati dei siti". E non c'era modo di passare
+ * l'asta dal telefono al computer. Il file contiene tutto, listone compreso.
+ */
+function backupCard() {
+  return `
+  <div class="card">
+    <h2>Backup dell'asta</h2>
+    <p class="small muted" style="margin-top:0">
+      Un file con tutto: listone, impostazioni e asta in corso. Serve per non perdere niente se il
+      browser dimentica, e per riprendere l'asta su un altro dispositivo.
+    </p>
+    ${
+      esitoImport
+        ? `<div class="verdict ${esitoImport.ok ? 'go' : 'stop'}" style="text-align:left;margin-bottom:12px">
+             <div class="small" style="font-weight:600">${esc(esitoImport.testo)}</div>
+           </div>`
+        : ''
+    }
+    ${
+      chiedeImport
+        ? `<div class="verdict stop" style="text-align:left">
+             <div>Ripristinare sostituisce l'asta che hai adesso.</div>
+             <div class="small" style="font-weight:500;margin-top:4px">
+               ${
+                 state.players.length
+                   ? `Hai ${state.players.length} giocatori caricati e ${Object.keys(state.auction.owned || {}).length} presi. Se non l'hai gia' fatto, salva prima un file di questa.`
+                   : 'Adesso non c\'e\' niente da perdere.'
+               }
+             </div>
+           </div>
+           <label class="btn block" style="margin-top:12px;text-align:center;cursor:pointer">
+             Scegli il file
+             <input type="file" accept="application/json,.json" data-action="importa" style="display:none">
+           </label>
+           <button class="btn ghost block" style="margin-top:8px" data-action="importa-annulla">Annulla</button>`
+        : `<div class="grid2">
+             <button class="btn primary" data-action="esporta"${state.players.length ? '' : ' disabled'}>Salva su file</button>
+             <button class="btn" data-action="importa-chiedi">Ripristina</button>
+           </div>
+           ${state.players.length ? '' : '<div class="tiny muted center" style="margin-top:8px">Non c\'e\' ancora niente da salvare.</div>'}`
+    }
   </div>`;
 }
 
@@ -219,6 +278,39 @@ export function onAction(action, target, ev, rerender) {
       rerender();
       return true;
     }
+    case 'esporta': {
+      const testo = esporta();
+      const nome = nomeBackup();
+      try {
+        const url = URL.createObjectURL(new Blob([testo], { type: 'application/json' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = nome;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        // Revocare subito interrompe il download su alcuni browser: si lascia un attimo.
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        toast(`Salvato ${nome}.`);
+      } catch (err) {
+        // Dentro un iframe con sandbox il download e' inerte: meglio gli appunti che niente.
+        console.warn('Download non riuscito', err);
+        navigator.clipboard
+          ?.writeText(testo)
+          .then(() => toast('Download bloccato: l\'asta e\' negli appunti, incollala in un file.'))
+          .catch(() => toast('Non riesco a salvare il file da qui.'));
+      }
+      return true;
+    }
+    case 'importa-chiedi':
+      chiedeImport = true;
+      esitoImport = null;
+      rerender();
+      return true;
+    case 'importa-annulla':
+      chiedeImport = false;
+      rerender();
+      return true;
     case 'reset':
       chiedeConferma = true;
       rerender();
@@ -248,6 +340,30 @@ export function onAction(action, target, ev, rerender) {
 export function onInput(action, target, rerender, kind = 'input') {
   const s = state.settings;
   switch (action) {
+    case 'importa': {
+      const file = target.files && target.files[0];
+      if (!file) return true;
+      file
+        .text()
+        .then((testo) => {
+          const esito = importa(testo);
+          chiedeImport = false;
+          esitoImport = esito.ok
+            ? {
+                ok: true,
+                testo: `Asta ripristinata: ${esito.giocatori} giocatori, ${esito.presi} gia' presi${
+                  esito.salvatoIl ? ` (backup del ${new Date(esito.salvatoIl).toLocaleString('it-IT')})` : ''
+                }.`,
+              }
+            : { ok: false, testo: esito.motivo };
+          rerender();
+        })
+        .catch(() => {
+          esitoImport = { ok: false, testo: 'Non riesco a leggere il file.' };
+          rerender();
+        });
+      return true;
+    }
     case 'set': {
       const v = Math.max(1, Number(target.value) || 0);
       updateSettings({ [target.dataset.key]: v });
