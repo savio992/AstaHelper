@@ -2825,7 +2825,7 @@ const { valuePlayers, markTopPlayers } = __m_src_domain_valuation_js;
 const { withExpectedPrices } = __m_src_domain_market_js;
 const { optimizeRoster, CONFIG_SOLUTORE } = __m_src_domain_optimizer_js;
 const { aggregateForm, applyForm, matchCount } = __m_src_domain_form_js;
-const { statoMercato, applyPrezziLive, avversari } = __m_src_domain_mercato_js;
+const { statoMercato, applyPrezziLive, avversari, normalizeTaken } = __m_src_domain_mercato_js;
 
 const KEY = 'astahelper:v1';
 
@@ -3329,6 +3329,82 @@ function release(id) {
 }
 
 /**
+ * Cosa cambierebbe importando le rose esportate dalla piattaforma.
+ *
+ * Il file e' la verita' su cosa e' stato assegnato, quindi l'import e' una sincronizzazione e non
+ * un accodamento: puo' anche togliere. Per questo il conto si fa prima e si mostra — cancellare
+ * senza dirlo assegnazioni segnate a mano sarebbe il danno peggiore che questa funzione possa
+ * fare, ed e' proprio la funzione che dovrebbe rendere il tabellone piu' affidabile.
+ *
+ * `indicePerSquadra`: Map dal nome della squadra nel file al suo posto in `settings.squadre`,
+ * dove lo zero sono io.
+ */
+function confrontaRose(righe, indicePerSquadra) {
+  const owned = {};
+  const taken = {};
+  const ignorati = [];
+
+  for (const r of righe || []) {
+    if (r.esito !== 'trovato' || !r.player) {
+      ignorati.push({ nome: r.nome, motivo: r.esito });
+      continue;
+    }
+    const posto = indicePerSquadra.get(r.squadra);
+    if (posto === undefined) {
+      ignorati.push({ nome: r.nome, motivo: 'squadra sconosciuta', squadra: r.squadra });
+      continue;
+    }
+    const prezzo = Math.max(0, Math.round(Number(r.prezzo) || 0));
+    if (posto === 0) owned[r.player.id] = prezzo;
+    else taken[r.player.id] = { price: prezzo, by: posto };
+  }
+
+  const nome = (id) => state.players.find((p) => p.id === id)?.name || id;
+  const oraOwned = state.auction.owned || {};
+  const oraTaken = normalizeTaken(state.auction.taken || {});
+  const nuovi = [];
+  const prezzi = [];
+  const tolti = [];
+
+  for (const [id, prezzo] of Object.entries(owned)) {
+    if (oraOwned[id] === undefined) nuovi.push({ id, nome: nome(id), prezzo, mio: true });
+    else if (Number(oraOwned[id]) !== prezzo) prezzi.push({ id, nome: nome(id), da: Number(oraOwned[id]), a: prezzo });
+  }
+  for (const [id, v] of Object.entries(taken)) {
+    const prima = oraTaken.get(id);
+    if (!prima) nuovi.push({ id, nome: nome(id), prezzo: v.price, mio: false });
+    else if (prima.price !== v.price || prima.by !== v.by) prezzi.push({ id, nome: nome(id), da: prima.price, a: v.price });
+  }
+  for (const id of Object.keys(oraOwned)) if (owned[id] === undefined) tolti.push({ id, nome: nome(id), mio: true });
+  for (const id of oraTaken.keys()) if (!taken[id]) tolti.push({ id, nome: nome(id), mio: false });
+
+  return { owned, taken, nuovi, prezzi, tolti, ignorati, invariato: !nuovi.length && !prezzi.length && !tolti.length };
+}
+
+/** Applica il confronto gia' calcolato. Si passa quello, non le righe: cosi' si applica esattamente cio' che e' stato mostrato. */
+function applicaRose(confronto) {
+  if (!confronto) return false;
+  state.auction.owned = { ...confronto.owned };
+  state.auction.taken = Object.fromEntries(Object.entries(confronto.taken).map(([id, v]) => [id, { ...v }]));
+  // Un giocatore ormai assegnato non puo' restare un obiettivo imposto.
+  for (const id of [...Object.keys(confronto.owned), ...Object.keys(confronto.taken)]) delete state.auction.bloccati[id];
+  // Il registro ridiventa il racconto di quello che dice il file, cosi' l'annulla resta coerente
+  // con cio' che si vede invece di riportare a uno stato che non esiste piu' da nessuna parte.
+  const at = Date.now();
+  state.auction.log = [
+    ...Object.entries(confronto.owned).map(([id, price]) => ({ id, kind: 'mine', price, by: null, at })),
+    ...Object.entries(confronto.taken).map(([id, v]) => ({ id, kind: 'other', price: v.price, by: v.by, at })),
+  ];
+  state.prevPlan = null;
+  state.ultimaModifica = null;
+  recompute();
+  rebuildPlan({ ricorda: false });
+  save();
+  notify();
+  return true;
+}
+
+/**
  * Dire a chi e' andato un giocatore gia' segnato come perso.
  *
  * Non e' un'assegnazione nuova: era gia' fuori, il prezzo e' quello di prima e il piano non
@@ -3406,7 +3482,7 @@ function creditsLeft() {
   return (state.settings.budget || 500) - spentTotal();
 }
 
-return { onReset, subscribe, notify, save, load, esporta, nomeBackup, importa, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, listaMia, obbligatiSet, blocca, scarta, liberaScelta, contestoConsiglio, statoScelta, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, attribuisci, undo, rinominaSquadre, updateSettings, spentTotal, creditsLeft, state };
+return { onReset, subscribe, notify, save, load, esporta, nomeBackup, importa, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, listaMia, obbligatiSet, blocca, scarta, liberaScelta, contestoConsiglio, statoScelta, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, confrontaRose, applicaRose, attribuisci, undo, rinominaSquadre, updateSettings, spentTotal, creditsLeft, state };
 })();
 
 // ===== src/domain/advisor.js =====
@@ -6404,21 +6480,167 @@ function leggiElenco(testo, players, { gia = new Set() } = {}) {
 return { chiave, indice, leggiRiga, abbina, leggiElenco };
 })();
 
+// ===== src/domain/rose.js =====
+const __m_src_domain_rose_js = (() => {
+// Le rose esportate dalla piattaforma dove si gioca l'asta.
+//
+// E' il file che risolve il problema piu' grosso dell'assistente: il tabellone degli avversari
+// deve sapere chi ha comprato chi e a quanto, e finche' quei due dati mancano puo' solo dare
+// limiti superiori — "al massimo possono arrivare a 85" invece di "arrivano a 62". L'export li ha
+// entrambi, si scarica anche a meta' asta, e contiene tutte le squadre della lega.
+//
+// Quindi qui non si ricostruisce un'asta finita: ci si riallinea durante, quando il banditore
+// corre piu' di quanto si riesca a segnare.
+
+const { parseCsv, normalizeHeader, parseNumber, normalizeRole, makePlayerId } = __m_src_domain_csv_js;
+const { indice, abbina } = __m_src_domain_incolla_js;
+
+// I nomi che le colonne possono avere. Il primo che combacia vince.
+const COLONNE = {
+  squadra: ['squadra', 'team', 'fantasquadra', 'squadra fantacalcio', 'proprietario', 'allenatore'],
+  nome: ['nome', 'giocatore', 'calciatore', 'player'],
+  club: ['squadra appartenenza', 'squadra serie a', 'club', 'squadra reale', 'sq'],
+  ruolo: ['ruolo', 'r', 'ruolo classic'],
+  prezzo: ['prezzo', 'costo', 'pagato', 'crediti', 'price'],
+  quo: ['quotazione', 'quota', 'qt', 'qt a'],
+};
+
+/**
+ * Quale colonna e' quale.
+ *
+ * `squadra` e `nome` si assomigliano parecchio ("Squadra" contro "Squadra_Appartenenza") e in
+ * questo file convivono: si assegnano per corrispondenza esatta sul nome normalizzato, senza
+ * ripieghi per sottostringa che le farebbero collidere.
+ */
+function mappaColonne(headers) {
+  const norm = headers.map((h) => normalizeHeader(h));
+  const usate = new Set();
+  const out = {};
+  for (const [campo, sinonimi] of Object.entries(COLONNE)) {
+    for (const s of sinonimi) {
+      const i = norm.findIndex((h, k) => h === s && !usate.has(k));
+      if (i >= 0) {
+        out[campo] = headers[i];
+        usate.add(i);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Legge l'export e abbina ogni riga al listone.
+ *
+ * L'abbinamento prova prima la strada esatta: l'id del listone e' costruito da nome, club e ruolo
+ * (`makePlayerId`), e l'export ha tutti e tre. Quando combaciano non c'e' niente da indovinare.
+ * Quando non combaciano — perche' una delle due parti abbrevia il club diversamente, o scrive
+ * "Martinez L." dove l'altra scrive "Lautaro Martinez" — si ricade sul lettore dell'incolla, che
+ * quella parte la sa gia' fare, e si usa il ruolo per sciogliere le omonimie che restano: e' il
+ * dato in piu' che il testo incollato non aveva.
+ */
+function leggiRose(testo, players) {
+  const { headers, rows } = parseCsv(testo);
+  if (!rows.length) return { ok: false, motivo: 'Il file non contiene righe leggibili.' };
+
+  const col = mappaColonne(headers);
+  if (!col.squadra || !col.nome) {
+    return {
+      ok: false,
+      motivo: `Non trovo le colonne della squadra e del giocatore. Le intestazioni lette sono: ${headers.join(', ')}.`,
+      headers,
+    };
+  }
+
+  const idx = indice(players);
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const righe = [];
+  const squadre = [];
+  const visti = new Set();
+
+  for (const r of rows) {
+    const nome = String(r[col.nome] ?? '').trim();
+    if (!nome) continue;
+    const squadra = String(r[col.squadra] ?? '').trim();
+    const club = col.club ? String(r[col.club] ?? '').trim() : '';
+    const ruolo = col.ruolo ? normalizeRole(r[col.ruolo]) : null;
+    const prezzo = col.prezzo ? parseNumber(r[col.prezzo]) : null;
+    const quo = col.quo ? parseNumber(r[col.quo]) : null;
+
+    if (squadra && !squadre.includes(squadra)) squadre.push(squadra);
+
+    const base = { squadra, nome, club, ruolo, prezzo: Number.isFinite(prezzo) ? Math.max(0, Math.round(prezzo)) : null, quo };
+    const player = trovaGiocatore({ nome, club, ruolo, quo }, byId, idx);
+    if (!player) {
+      righe.push({ ...base, esito: 'sconosciuto', player: null });
+      continue;
+    }
+    if (player.ambigui) {
+      righe.push({ ...base, esito: 'ambiguo', player: null, candidati: player.ambigui });
+      continue;
+    }
+    // Lo stesso giocatore due volte nel file: la seconda riga si segnala invece di sovrascrivere
+    // in silenzio, perche' vorrebbe dire che una delle due attribuzioni e' sbagliata.
+    if (visti.has(player.id)) {
+      righe.push({ ...base, esito: 'duplicato', player });
+      continue;
+    }
+    visti.add(player.id);
+    righe.push({ ...base, esito: 'trovato', player });
+  }
+
+  const conta = { trovato: 0, ambiguo: 0, sconosciuto: 0, duplicato: 0 };
+  for (const r of righe) conta[r.esito] += 1;
+  return { ok: true, righe, squadre, conta, colonne: col, headers };
+}
+
+function trovaGiocatore({ nome, club, ruolo, quo }, byId, idx) {
+  // 1. La stessa ricetta con cui il listone costruisce i suoi id.
+  if (club && ruolo) {
+    const diretto = byId.get(makePlayerId(nome, club, ruolo));
+    if (diretto) return diretto;
+  }
+
+  // 2. Il lettore dell'incolla: normalizza il nome, ripiega sul cognome, usa il club per le
+  //    omonimie. Il club va dentro `testo` perche' e' li' che lo cerca.
+  const m = abbina({ testo: `${nome} ${club}`.trim(), nome, altri: [], prezzo: null }, idx);
+  if (m.esito === 'trovato') return m.player;
+  if (m.esito !== 'ambiguo') return null;
+
+  // 3. Quel che resta lo scioglie il ruolo, e se non basta la quotazione.
+  let restano = m.candidati;
+  if (ruolo) {
+    const perRuolo = restano.filter((p) => p.role === ruolo);
+    if (perRuolo.length === 1) return perRuolo[0];
+    if (perRuolo.length) restano = perRuolo;
+  }
+  if (Number.isFinite(quo)) {
+    const perQuo = restano.filter((p) => Number(p.quo) === Number(quo));
+    if (perQuo.length === 1) return perQuo[0];
+  }
+  return { ambigui: restano };
+}
+
+return { mappaColonne, leggiRose };
+})();
+
 // ===== src/ui/mercato.js =====
 const __m_src_ui_mercato_js = (() => {
 // Quello che si legge fra un giocatore e l'altro: com'e' andata finora, chi ha ancora crediti,
 // e se la strada e' cambiata. Sta fuori dalla schermata d'asta apposta: sono cose da leggere
 // con calma, non mentre si rilancia.
 
-const { state, ownedMap, unavailableSet, takenMap, assegnaMolti, onReset } = __m_src_store_js;
+const { state, ownedMap, unavailableSet, takenMap, assegnaMolti, onReset, confrontaRose, applicaRose, updateSettings } = __m_src_store_js;
+const { leggiRose } = __m_src_domain_rose_js;
 const { leggiElenco } = __m_src_domain_incolla_js;
 const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
-const { concorrenzaPerRuolo, disponibilita } = __m_src_domain_mercato_js;
+const { concorrenzaPerRuolo, disponibilita, nomiSquadre } = __m_src_domain_mercato_js;
 const { consiglioStrategico, scenarioSenzaBig, narrazione } = __m_src_domain_strategia_js;
 const { esc, roleChip, emptyState, toast } = __m_src_ui_common_js;
 
 let scenario = null;
 let incollato = null;
+let rose = null;
 
 onReset(() => invalidate());
 
@@ -6426,6 +6648,7 @@ function invalidate() {
 
   scenario = null;
   incollato = null;
+  rose = null;
 }
 
 /**
@@ -6436,6 +6659,101 @@ function invalidate() {
  * la lista di chi e' gia' andato: copiarla e incollarla qui rimette in pari tutto in un gesto.
  * Il lettore non pretende un formato: cerca in ogni riga un nome del listone e, se c'e', un prezzo.
  */
+/**
+ * L'import delle rose esportate dalla piattaforma.
+ *
+ * E' la strada buona quando la piattaforma sa esportare: porta l'acquirente e il prezzo di ogni
+ * giocatore, cioe' proprio i due dati che al tabellone degli avversari mancano e che lo
+ * costringono a dare limiti superiori invece di misure.
+ *
+ * In due passi come l'incolla, ma per un motivo piu' serio: qui si sincronizza, e sincronizzare
+ * puo' anche togliere. Cosa cambia si vede prima.
+ */
+function roseCard() {
+  if (rose?.errore) {
+    return `
+    <div class="card" style="border-left:3px solid var(--danger)">
+      <b>Non riesco a leggere il file.</b>
+      <div class="small" style="margin-top:6px">${esc(rose.errore)}</div>
+      <button class="btn block" style="margin-top:10px" data-action="annulla-rose">Chiudi</button>
+    </div>`;
+  }
+
+  // Passo intermedio: quale di queste squadre sono io.
+  if (rose && rose.mia === null) {
+    return `
+    <div class="card">
+      <h2>Quale squadra sei tu?</h2>
+      <div class="small muted" style="margin-bottom:10px">
+        Nel file ci sono ${rose.lettura.squadre.length} squadre. Serve sapere quale e' la tua: i suoi
+        acquisti diventano la tua rosa, gli altri il tabellone degli avversari.
+      </div>
+      <div class="row wrap" style="gap:6px">
+        ${rose.lettura.squadre
+          .map((n, i) => `<button class="btn" style="flex:1 1 45%;min-width:120px" data-action="rose-io" data-i="${i}">${esc(n)}</button>`)
+          .join('')}
+      </div>
+      <button class="btn ghost block" style="margin-top:10px" data-action="annulla-rose">Annulla</button>
+    </div>`;
+  }
+
+  if (rose) {
+    const c = rose.confronto;
+    const problemi = rose.lettura.righe.filter((r) => r.esito === 'ambiguo' || r.esito === 'sconosciuto' || r.esito === 'duplicato');
+    return `
+    <div class="card">
+      <h2>Cosa cambia</h2>
+      ${
+        c.invariato
+          ? `<div class="verdict go" style="text-align:left"><div class="small" style="font-weight:600">Niente: l'app e il file dicono gia' la stessa cosa.</div></div>`
+          : `<div class="small" style="line-height:1.8;margin-bottom:10px">
+               ${c.nuovi.length ? `<div><b style="color:var(--accent)">${c.nuovi.length} nuovi</b> — ${esc(c.nuovi.slice(0, 6).map((x) => x.nome).join(', '))}${c.nuovi.length > 6 ? '…' : ''}</div>` : ''}
+               ${c.prezzi.length ? `<div><b>${c.prezzi.length} prezzi corretti</b> — ${esc(c.prezzi.slice(0, 5).map((x) => `${x.nome} ${x.da}→${x.a}`).join(', '))}</div>` : ''}
+               ${c.tolti.length ? `<div><b style="color:var(--danger)">${c.tolti.length} tolti</b> — ${esc(c.tolti.slice(0, 6).map((x) => x.nome).join(', '))}${c.tolti.length > 6 ? '…' : ''}<div class="tiny muted">Li avevi segnati, nel file non risultano.</div></div>` : ''}
+             </div>`
+      }
+      ${
+        problemi.length
+          ? `<details style="margin-bottom:10px">
+               <summary class="small muted">Righe che non ho usato (${problemi.length})</summary>
+               <div class="tiny muted" style="margin-top:8px;line-height:1.7">
+                 ${problemi
+                   .slice(0, 30)
+                   .map((r) => `<div>${esc(r.nome)} ${esc(r.club || '')} — <b>${r.esito === 'ambiguo' ? 'piu&#39; giocatori con questo nome' : r.esito === 'duplicato' ? 'gia&#39; presente nel file' : 'non nel listone'}</b></div>`)
+                   .join('')}
+               </div>
+             </details>`
+          : ''
+      }
+      ${
+        c.ignorati.length
+          ? `<div class="tiny muted" style="margin-bottom:10px">${c.ignorati.length} righe scartate perche' la squadra non e' fra quelle della lega.</div>`
+          : ''
+      }
+      <div class="grid2">
+        <button class="btn primary" data-action="conferma-rose" ${c.invariato ? 'disabled' : ''}>Sincronizza</button>
+        <button class="btn" data-action="annulla-rose">Annulla</button>
+      </div>
+    </div>`;
+  }
+
+  return `
+  <div class="card">
+    <details>
+      <summary><b>Importa le rose</b> <span class="tiny muted">— il file esportato dalla piattaforma</span></summary>
+      <p class="small muted" style="margin-top:10px">
+        Il file delle rose porta chi ha comprato ogni giocatore e a quanto. Con quello il tabellone
+        degli avversari smette di essere una stima: i tetti diventano quelli veri. Si puo' ricaricare
+        quante volte si vuole durante l'asta, anche solo per rimettersi in pari.
+      </p>
+      <label class="btn primary block" style="margin-top:10px;text-align:center;cursor:pointer">
+        Scegli il file
+        <input type="file" accept=".csv,text/csv,text/plain" data-action="file-rose" style="display:none">
+      </label>
+    </details>
+  </div>`;
+}
+
 function incollaCard() {
   if (incollato) {
     const c = incollato.conta;
@@ -6702,13 +7020,51 @@ function render() {
   <div class="view">
     ${concorrenzaCard()}
     ${andamentoCard()}
+    ${roseCard()}
     ${incollaCard()}
     ${strategiaCard()}
     ${tabelloneCard()}
   </div>`;
 }
 
+/** Da nomi nel file a posti in `settings.squadre`: io sempre allo zero, gli altri a seguire. */
+function mappaSquadre(squadre, mia) {
+  const altre = squadre.filter((_, i) => i !== mia);
+  const ordine = [squadre[mia], ...altre];
+  return { ordine, indice: new Map(ordine.map((n, i) => [n, i])) };
+}
+
+function preparaConfronto() {
+  const { ordine, indice } = mappaSquadre(rose.lettura.squadre, rose.mia);
+  rose.ordine = ordine;
+  rose.confronto = confrontaRose(rose.lettura.righe, indice);
+}
+
 function onAction(action, target, ev, rerender) {
+  if (action === 'rose-io') {
+    rose.mia = Number(target.dataset.i);
+    preparaConfronto();
+    rerender();
+    return true;
+  }
+  if (action === 'conferma-rose') {
+    // I nomi veri delle squadre valgono piu' dei "Squadra 2" di partenza, e servono anche a
+    // riconoscerle da soli al prossimo import.
+    const squadre = [...rose.ordine];
+    while (squadre.length < (state.settings.participants || 8)) squadre.push(`Squadra ${squadre.length + 1}`);
+    updateSettings({ squadre: squadre.slice(0, state.settings.participants || 8) });
+    const c = rose.confronto;
+    applicaRose(c);
+    rose = null;
+    toast(`Sincronizzato: ${c.nuovi.length} nuovi, ${c.prezzi.length} corretti, ${c.tolti.length} tolti.`);
+    rerender();
+    return true;
+  }
+  if (action === 'annulla-rose') {
+    rose = null;
+    rerender();
+    return true;
+  }
   if (action === 'leggi-incolla') {
     const testo = document.getElementById('assegnati')?.value || '';
     if (!testo.trim()) {
@@ -6760,7 +7116,38 @@ function onAction(action, target, ev, rerender) {
   return false;
 }
 
-return { invalidate, render, onAction };
+function onInput(action, target, rerender) {
+  if (action !== 'file-rose') return false;
+  const file = target.files && target.files[0];
+  if (!file) return true;
+  file
+    .text()
+    .then((testo) => {
+      const lettura = leggiRose(testo, state.players);
+      if (!lettura.ok) {
+        rose = { errore: lettura.motivo };
+      } else if (lettura.squadre.length > (state.settings.participants || 8)) {
+        rose = {
+          errore: `Il file contiene ${lettura.squadre.length} squadre ma la lega ne ha ${state.settings.participants}. Correggi i partecipanti nella scheda Lega.`,
+        };
+      } else {
+        // Se i nomi sono gia' quelli delle impostazioni, la domanda "quale sei tu" e' gia' stata
+        // fatta una volta: non si rifa' a ogni import.
+        const gia = nomiSquadre(state.settings);
+        const mia = lettura.squadre.findIndex((n) => n === gia[0]);
+        rose = { lettura, mia: mia >= 0 ? mia : null };
+        if (rose.mia !== null) preparaConfronto();
+      }
+      rerender();
+    })
+    .catch(() => {
+      rose = { errore: 'Non riesco a leggere il file.' };
+      rerender();
+    });
+  return true;
+}
+
+return { invalidate, render, onAction, onInput };
 })();
 
 // ===== src/domain/xlsx.js =====

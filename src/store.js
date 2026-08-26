@@ -7,7 +7,7 @@ import { valuePlayers, markTopPlayers } from './domain/valuation.js';
 import { withExpectedPrices } from './domain/market.js';
 import { optimizeRoster, CONFIG_SOLUTORE } from './domain/optimizer.js';
 import { aggregateForm, applyForm, matchCount } from './domain/form.js';
-import { statoMercato, applyPrezziLive, avversari } from './domain/mercato.js';
+import { statoMercato, applyPrezziLive, avversari, normalizeTaken } from './domain/mercato.js';
 
 const KEY = 'astahelper:v1';
 
@@ -508,6 +508,82 @@ export function release(id) {
   rebuildPlan();
   save();
   notify();
+}
+
+/**
+ * Cosa cambierebbe importando le rose esportate dalla piattaforma.
+ *
+ * Il file e' la verita' su cosa e' stato assegnato, quindi l'import e' una sincronizzazione e non
+ * un accodamento: puo' anche togliere. Per questo il conto si fa prima e si mostra — cancellare
+ * senza dirlo assegnazioni segnate a mano sarebbe il danno peggiore che questa funzione possa
+ * fare, ed e' proprio la funzione che dovrebbe rendere il tabellone piu' affidabile.
+ *
+ * `indicePerSquadra`: Map dal nome della squadra nel file al suo posto in `settings.squadre`,
+ * dove lo zero sono io.
+ */
+export function confrontaRose(righe, indicePerSquadra) {
+  const owned = {};
+  const taken = {};
+  const ignorati = [];
+
+  for (const r of righe || []) {
+    if (r.esito !== 'trovato' || !r.player) {
+      ignorati.push({ nome: r.nome, motivo: r.esito });
+      continue;
+    }
+    const posto = indicePerSquadra.get(r.squadra);
+    if (posto === undefined) {
+      ignorati.push({ nome: r.nome, motivo: 'squadra sconosciuta', squadra: r.squadra });
+      continue;
+    }
+    const prezzo = Math.max(0, Math.round(Number(r.prezzo) || 0));
+    if (posto === 0) owned[r.player.id] = prezzo;
+    else taken[r.player.id] = { price: prezzo, by: posto };
+  }
+
+  const nome = (id) => state.players.find((p) => p.id === id)?.name || id;
+  const oraOwned = state.auction.owned || {};
+  const oraTaken = normalizeTaken(state.auction.taken || {});
+  const nuovi = [];
+  const prezzi = [];
+  const tolti = [];
+
+  for (const [id, prezzo] of Object.entries(owned)) {
+    if (oraOwned[id] === undefined) nuovi.push({ id, nome: nome(id), prezzo, mio: true });
+    else if (Number(oraOwned[id]) !== prezzo) prezzi.push({ id, nome: nome(id), da: Number(oraOwned[id]), a: prezzo });
+  }
+  for (const [id, v] of Object.entries(taken)) {
+    const prima = oraTaken.get(id);
+    if (!prima) nuovi.push({ id, nome: nome(id), prezzo: v.price, mio: false });
+    else if (prima.price !== v.price || prima.by !== v.by) prezzi.push({ id, nome: nome(id), da: prima.price, a: v.price });
+  }
+  for (const id of Object.keys(oraOwned)) if (owned[id] === undefined) tolti.push({ id, nome: nome(id), mio: true });
+  for (const id of oraTaken.keys()) if (!taken[id]) tolti.push({ id, nome: nome(id), mio: false });
+
+  return { owned, taken, nuovi, prezzi, tolti, ignorati, invariato: !nuovi.length && !prezzi.length && !tolti.length };
+}
+
+/** Applica il confronto gia' calcolato. Si passa quello, non le righe: cosi' si applica esattamente cio' che e' stato mostrato. */
+export function applicaRose(confronto) {
+  if (!confronto) return false;
+  state.auction.owned = { ...confronto.owned };
+  state.auction.taken = Object.fromEntries(Object.entries(confronto.taken).map(([id, v]) => [id, { ...v }]));
+  // Un giocatore ormai assegnato non puo' restare un obiettivo imposto.
+  for (const id of [...Object.keys(confronto.owned), ...Object.keys(confronto.taken)]) delete state.auction.bloccati[id];
+  // Il registro ridiventa il racconto di quello che dice il file, cosi' l'annulla resta coerente
+  // con cio' che si vede invece di riportare a uno stato che non esiste piu' da nessuna parte.
+  const at = Date.now();
+  state.auction.log = [
+    ...Object.entries(confronto.owned).map(([id, price]) => ({ id, kind: 'mine', price, by: null, at })),
+    ...Object.entries(confronto.taken).map(([id, v]) => ({ id, kind: 'other', price: v.price, by: v.by, at })),
+  ];
+  state.prevPlan = null;
+  state.ultimaModifica = null;
+  recompute();
+  rebuildPlan({ ricorda: false });
+  save();
+  notify();
+  return true;
 }
 
 /**
