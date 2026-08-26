@@ -2,15 +2,17 @@
 // e se la strada e' cambiata. Sta fuori dalla schermata d'asta apposta: sono cose da leggere
 // con calma, non mentre si rilancia.
 
-import { state, ownedMap, unavailableSet, takenMap, assegnaMolti, onReset } from '../store.js';
+import { state, ownedMap, unavailableSet, takenMap, assegnaMolti, onReset, confrontaRose, applicaRose, updateSettings } from '../store.js';
+import { leggiRose } from '../domain/rose.js';
 import { leggiElenco } from '../domain/incolla.js';
 import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
-import { concorrenzaPerRuolo, disponibilita } from '../domain/mercato.js';
+import { concorrenzaPerRuolo, disponibilita, nomiSquadre } from '../domain/mercato.js';
 import { consiglioStrategico, scenarioSenzaBig, narrazione } from '../domain/strategia.js';
 import { esc, roleChip, emptyState, toast } from './common.js';
 
 let scenario = null;
 let incollato = null;
+let rose = null;
 
 onReset(() => invalidate());
 
@@ -18,6 +20,7 @@ export function invalidate() {
 
   scenario = null;
   incollato = null;
+  rose = null;
 }
 
 /**
@@ -28,6 +31,101 @@ export function invalidate() {
  * la lista di chi e' gia' andato: copiarla e incollarla qui rimette in pari tutto in un gesto.
  * Il lettore non pretende un formato: cerca in ogni riga un nome del listone e, se c'e', un prezzo.
  */
+/**
+ * L'import delle rose esportate dalla piattaforma.
+ *
+ * E' la strada buona quando la piattaforma sa esportare: porta l'acquirente e il prezzo di ogni
+ * giocatore, cioe' proprio i due dati che al tabellone degli avversari mancano e che lo
+ * costringono a dare limiti superiori invece di misure.
+ *
+ * In due passi come l'incolla, ma per un motivo piu' serio: qui si sincronizza, e sincronizzare
+ * puo' anche togliere. Cosa cambia si vede prima.
+ */
+function roseCard() {
+  if (rose?.errore) {
+    return `
+    <div class="card" style="border-left:3px solid var(--danger)">
+      <b>Non riesco a leggere il file.</b>
+      <div class="small" style="margin-top:6px">${esc(rose.errore)}</div>
+      <button class="btn block" style="margin-top:10px" data-action="annulla-rose">Chiudi</button>
+    </div>`;
+  }
+
+  // Passo intermedio: quale di queste squadre sono io.
+  if (rose && rose.mia === null) {
+    return `
+    <div class="card">
+      <h2>Quale squadra sei tu?</h2>
+      <div class="small muted" style="margin-bottom:10px">
+        Nel file ci sono ${rose.lettura.squadre.length} squadre. Serve sapere quale e' la tua: i suoi
+        acquisti diventano la tua rosa, gli altri il tabellone degli avversari.
+      </div>
+      <div class="row wrap" style="gap:6px">
+        ${rose.lettura.squadre
+          .map((n, i) => `<button class="btn" style="flex:1 1 45%;min-width:120px" data-action="rose-io" data-i="${i}">${esc(n)}</button>`)
+          .join('')}
+      </div>
+      <button class="btn ghost block" style="margin-top:10px" data-action="annulla-rose">Annulla</button>
+    </div>`;
+  }
+
+  if (rose) {
+    const c = rose.confronto;
+    const problemi = rose.lettura.righe.filter((r) => r.esito === 'ambiguo' || r.esito === 'sconosciuto' || r.esito === 'duplicato');
+    return `
+    <div class="card">
+      <h2>Cosa cambia</h2>
+      ${
+        c.invariato
+          ? `<div class="verdict go" style="text-align:left"><div class="small" style="font-weight:600">Niente: l'app e il file dicono gia' la stessa cosa.</div></div>`
+          : `<div class="small" style="line-height:1.8;margin-bottom:10px">
+               ${c.nuovi.length ? `<div><b style="color:var(--accent)">${c.nuovi.length} nuovi</b> — ${esc(c.nuovi.slice(0, 6).map((x) => x.nome).join(', '))}${c.nuovi.length > 6 ? '…' : ''}</div>` : ''}
+               ${c.prezzi.length ? `<div><b>${c.prezzi.length} prezzi corretti</b> — ${esc(c.prezzi.slice(0, 5).map((x) => `${x.nome} ${x.da}→${x.a}`).join(', '))}</div>` : ''}
+               ${c.tolti.length ? `<div><b style="color:var(--danger)">${c.tolti.length} tolti</b> — ${esc(c.tolti.slice(0, 6).map((x) => x.nome).join(', '))}${c.tolti.length > 6 ? '…' : ''}<div class="tiny muted">Li avevi segnati, nel file non risultano.</div></div>` : ''}
+             </div>`
+      }
+      ${
+        problemi.length
+          ? `<details style="margin-bottom:10px">
+               <summary class="small muted">Righe che non ho usato (${problemi.length})</summary>
+               <div class="tiny muted" style="margin-top:8px;line-height:1.7">
+                 ${problemi
+                   .slice(0, 30)
+                   .map((r) => `<div>${esc(r.nome)} ${esc(r.club || '')} — <b>${r.esito === 'ambiguo' ? 'piu&#39; giocatori con questo nome' : r.esito === 'duplicato' ? 'gia&#39; presente nel file' : 'non nel listone'}</b></div>`)
+                   .join('')}
+               </div>
+             </details>`
+          : ''
+      }
+      ${
+        c.ignorati.length
+          ? `<div class="tiny muted" style="margin-bottom:10px">${c.ignorati.length} righe scartate perche' la squadra non e' fra quelle della lega.</div>`
+          : ''
+      }
+      <div class="grid2">
+        <button class="btn primary" data-action="conferma-rose" ${c.invariato ? 'disabled' : ''}>Sincronizza</button>
+        <button class="btn" data-action="annulla-rose">Annulla</button>
+      </div>
+    </div>`;
+  }
+
+  return `
+  <div class="card">
+    <details>
+      <summary><b>Importa le rose</b> <span class="tiny muted">— il file esportato dalla piattaforma</span></summary>
+      <p class="small muted" style="margin-top:10px">
+        Il file delle rose porta chi ha comprato ogni giocatore e a quanto. Con quello il tabellone
+        degli avversari smette di essere una stima: i tetti diventano quelli veri. Si puo' ricaricare
+        quante volte si vuole durante l'asta, anche solo per rimettersi in pari.
+      </p>
+      <label class="btn primary block" style="margin-top:10px;text-align:center;cursor:pointer">
+        Scegli il file
+        <input type="file" accept=".csv,text/csv,text/plain" data-action="file-rose" style="display:none">
+      </label>
+    </details>
+  </div>`;
+}
+
 function incollaCard() {
   if (incollato) {
     const c = incollato.conta;
@@ -294,13 +392,51 @@ export function render() {
   <div class="view">
     ${concorrenzaCard()}
     ${andamentoCard()}
+    ${roseCard()}
     ${incollaCard()}
     ${strategiaCard()}
     ${tabelloneCard()}
   </div>`;
 }
 
+/** Da nomi nel file a posti in `settings.squadre`: io sempre allo zero, gli altri a seguire. */
+function mappaSquadre(squadre, mia) {
+  const altre = squadre.filter((_, i) => i !== mia);
+  const ordine = [squadre[mia], ...altre];
+  return { ordine, indice: new Map(ordine.map((n, i) => [n, i])) };
+}
+
+function preparaConfronto() {
+  const { ordine, indice } = mappaSquadre(rose.lettura.squadre, rose.mia);
+  rose.ordine = ordine;
+  rose.confronto = confrontaRose(rose.lettura.righe, indice);
+}
+
 export function onAction(action, target, ev, rerender) {
+  if (action === 'rose-io') {
+    rose.mia = Number(target.dataset.i);
+    preparaConfronto();
+    rerender();
+    return true;
+  }
+  if (action === 'conferma-rose') {
+    // I nomi veri delle squadre valgono piu' dei "Squadra 2" di partenza, e servono anche a
+    // riconoscerle da soli al prossimo import.
+    const squadre = [...rose.ordine];
+    while (squadre.length < (state.settings.participants || 8)) squadre.push(`Squadra ${squadre.length + 1}`);
+    updateSettings({ squadre: squadre.slice(0, state.settings.participants || 8) });
+    const c = rose.confronto;
+    applicaRose(c);
+    rose = null;
+    toast(`Sincronizzato: ${c.nuovi.length} nuovi, ${c.prezzi.length} corretti, ${c.tolti.length} tolti.`);
+    rerender();
+    return true;
+  }
+  if (action === 'annulla-rose') {
+    rose = null;
+    rerender();
+    return true;
+  }
   if (action === 'leggi-incolla') {
     const testo = document.getElementById('assegnati')?.value || '';
     if (!testo.trim()) {
@@ -350,4 +486,35 @@ export function onAction(action, target, ev, rerender) {
     return true;
   }
   return false;
+}
+
+export function onInput(action, target, rerender) {
+  if (action !== 'file-rose') return false;
+  const file = target.files && target.files[0];
+  if (!file) return true;
+  file
+    .text()
+    .then((testo) => {
+      const lettura = leggiRose(testo, state.players);
+      if (!lettura.ok) {
+        rose = { errore: lettura.motivo };
+      } else if (lettura.squadre.length > (state.settings.participants || 8)) {
+        rose = {
+          errore: `Il file contiene ${lettura.squadre.length} squadre ma la lega ne ha ${state.settings.participants}. Correggi i partecipanti nella scheda Lega.`,
+        };
+      } else {
+        // Se i nomi sono gia' quelli delle impostazioni, la domanda "quale sei tu" e' gia' stata
+        // fatta una volta: non si rifa' a ogni import.
+        const gia = nomiSquadre(state.settings);
+        const mia = lettura.squadre.findIndex((n) => n === gia[0]);
+        rose = { lettura, mia: mia >= 0 ? mia : null };
+        if (rose.mia !== null) preparaConfronto();
+      }
+      rerender();
+    })
+    .catch(() => {
+      rose = { errore: 'Non riesco a leggere il file.' };
+      rerender();
+    });
+  return true;
 }

@@ -10,6 +10,7 @@ import * as mercato from '../../src/ui/mercato.js';
 import * as listone from '../../src/ui/listone.js';
 import * as setup from '../../src/ui/setup.js';
 import * as advisor from '../../src/domain/advisor.js';
+import { leggiRose } from '../../src/domain/rose.js';
 import { ROLES } from '../../src/domain/model.js';
 
 const lines = [];
@@ -363,6 +364,49 @@ try {
   check('il piano viene rifatto sul listone ripristinato', store.state.plan?.ok === true && store.state.players.length === 540);
   check('e il backup e\' finito anche nella memoria del telefono',
     JSON.parse(localStorage.getItem('astahelper:v1')).auction.owned[cavia.id] === undefined);
+
+  // --- import delle rose ---------------------------------------------------------------
+  // E' il file che porta chi ha comprato e a quanto: i due dati che al tabellone mancano e che lo
+  // costringono a dare limiti superiori invece di misure.
+  const nomiLega = ['Io', 'Marco', 'Luca', 'Giacomo', 'Paolo', 'Andrea', 'Ivan', 'Nico'];
+  const daVendere = store.state.players.filter((p) => !store.state.auction.taken[p.id] && !store.state.auction.owned[p.id]).slice(0, 32);
+  const csv = ['Squadra,Nome,Squadra_Appartenenza,Ruolo,Ruoli_Mantra,Prezzo,Quotazione,Quotazione_Mantra,Fantacalcio_Id']
+    .concat(daVendere.map((p, i) => `"${nomiLega[i % 8]}","${p.name}","${p.team}","${p.role}","${p.role}",${4 + i},1,1,0`))
+    .join('\r\n');
+
+  const lettura = leggiRose(csv, store.state.players);
+  check('l\'export si legge', lettura.ok === true && lettura.conta.trovato === 32, `${lettura.conta?.trovato} righe`);
+  check('e riconosce tutte le squadre', lettura.squadre.length === 8, lettura.squadre.join(', '));
+
+  const mappa = new Map(nomiLega.map((n, i) => [n, i]));
+  const conf = store.confrontaRose(lettura.righe, mappa);
+  check('il confronto dice cosa cambierebbe prima di toccare niente',
+    conf.nuovi.length > 0 && store.state.auction.owned[daVendere[0].id] === undefined,
+    `${conf.nuovi.length} nuovi, ${conf.prezzi.length} corretti, ${conf.tolti.length} tolti`);
+
+  store.applicaRose(conf);
+  check('i miei acquisti finiscono in rosa col prezzo del file', store.state.auction.owned[daVendere[0].id] === 4, `${store.state.auction.owned[daVendere[0].id]}`);
+  check('quelli degli altri vanno alla squadra giusta',
+    store.state.auction.taken[daVendere[1].id]?.by === 1 && store.state.auction.taken[daVendere[1].id]?.price === 5,
+    JSON.stringify(store.state.auction.taken[daVendere[1].id]));
+  check('e il tabellone smette di essere una stima', store.state.tabellone.attendibile === true,
+    `${store.state.tabellone.attribuiti}/${store.state.tabellone.venduti} attribuiti, scarto ${store.state.tabellone.scarto}`);
+  check('il piano si rifa\' su quello che resta', store.state.plan?.ok === true);
+
+  // Sincronizzare due volte lo stesso file non deve cambiare niente: e' cio' che distingue una
+  // sincronizzazione da un accodamento.
+  const ancora = store.confrontaRose(leggiRose(csv, store.state.players).righe, mappa);
+  check('reimportare lo stesso file non cambia niente', ancora.invariato === true,
+    `${ancora.nuovi.length} nuovi, ${ancora.prezzi.length} corretti, ${ancora.tolti.length} tolti`);
+
+  // Un'assegnazione fatta a mano che il file non conosce deve comparire fra i "tolti", non
+  // sparire in silenzio: e' il danno peggiore che questa funzione possa fare.
+  const aMano = store.state.players.find((p) => !store.state.auction.taken[p.id] && !store.state.auction.owned[p.id]);
+  store.assign(aMano.id, 'other', 20, 2);
+  const conTolti = store.confrontaRose(leggiRose(csv, store.state.players).righe, mappa);
+  check('cio\' che il file non ha viene dichiarato prima di sparire',
+    conTolti.tolti.some((x) => x.id === aMano.id), `${conTolti.tolti.length} tolti`);
+  store.undo();
 
   // --- cancella tutto ----------------------------------------------------------------
   // Il tasto usava confirm(), che dentro un iframe con sandbox viene ignorato in silenzio:
