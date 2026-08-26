@@ -1,10 +1,9 @@
 # Pubblica l'app su GitHub Pages a ogni push.
 #
-# Richiede due cose lato repository, che vanno fatte una volta sola:
-#  1. il repository deve essere pubblico (Pages sui repository privati richiede un piano a pagamento);
-#  2. Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+# L'unico requisito e' che il repository sia pubblico: Pages sui repository privati richiede un
+# piano a pagamento. Attivare Pages non serve farlo a mano — ci pensa `enablement` piu' sotto.
 #
-# Da quel momento l'app vive su https://savio992.github.io/AstaHelper/ e si aggiorna da sola.
+# L'app vive su https://savio992.github.io/AstaHelper/ e si aggiorna da sola.
 
 name: Pubblica su GitHub Pages
 
@@ -42,7 +41,12 @@ jobs:
       - name: Build
         run: node scripts/build.js
 
+      # `enablement` accende Pages via API se non lo e' gia': senza, il primo push su un
+      # repository dove Pages non e' mai stato configurato fallisce qui con "Not Found", e
+      # l'unico rimedio sarebbe andare a mano nelle impostazioni.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
