@@ -87,6 +87,42 @@ export function annotateTierPct(players) {
   });
 }
 
+/**
+ * Normalizza la colonna PMA in quote di mercato confrontabili fra creators.
+ *
+ * PMA e' il prezzo medio pagato per quel giocatore nelle altre aste, in percentuale del budget
+ * di squadra: e' un dato osservato, non un'opinione. Ma ogni creator lo calcola sul proprio
+ * campione di aste, e i totali non coincidono (in questi listoni 1009% contro 810%, cioe' aste
+ * da dieci squadre contro aste da otto). Mediare le percentuali grezze mescolerebbe due scale
+ * diverse: si mediano le quote sul totale di ciascuna fonte.
+ */
+export function annotatePmaShare(players) {
+  let total = 0;
+  for (const p of players) if (Number.isFinite(p.pma) && p.pma > 0) total += p.pma;
+  return players.map((p) => ({
+    ...p,
+    pmaShare: total > 0 && Number.isFinite(p.pma) && p.pma > 0 ? p.pma / total : null,
+  }));
+}
+
+/**
+ * Normalizza anche il prezzo consigliato in quote confrontabili fra creators.
+ *
+ * Stesso problema della PMA, ma per un motivo diverso: la PMA misura lo stesso mercato e i
+ * creators concordano (Lautaro pagato 164 e 156), mentre il prezzo consigliato e' un giudizio
+ * personale e le scale divergono (Lautaro consigliato a 150 e a 195). Mediare i valori grezzi
+ * mescolerebbe un creator prudente con uno generoso; mediare le quote confronta invece quanto
+ * ciascuno dei due lo valuta rispetto a tutti gli altri giocatori del suo listone.
+ */
+export function annotatePriceShare(players) {
+  let total = 0;
+  for (const p of players) if (Number.isFinite(p.price) && p.price > 0) total += p.price;
+  return players.map((p) => ({
+    ...p,
+    priceShare: total > 0 && Number.isFinite(p.price) && p.price > 0 ? p.price / total : null,
+  }));
+}
+
 /** Ordina un elenco di etichette di fascia dalla migliore alla peggiore, con euristica sui nomi. */
 export function sortTierLabels(labels) {
   return [...labels].sort((a, b) => {
@@ -100,7 +136,8 @@ export function sortTierLabels(labels) {
 export function defaultSettings() {
   return {
     budget: 500,
-    participants: 10,
+    // Lega da otto: modificabile dalla scheda Lega.
+    participants: 8,
     slots: { P: 3, D: 8, C: 8, A: 6 },
     // Quanti giocatori per ruolo schieri di solito (modulo di riferimento, default 3-4-3).
     // Serve a non far spendere crediti su panchinari: in porta ne gioca uno solo.
@@ -115,14 +152,35 @@ export function defaultSettings() {
     // I prezzi consigliati dai creators sono gia' calibrati sul montepremi di una lega da
     // dieci: quando ci sono, sono la stima migliore. 'model' serve ai listoni senza prezzi.
     priceSource: 'listone',
+    // Come si compone la rosa: 'auto' la sceglie il solutore, 'mia' la scelgo io e il solutore
+    // si limita a completare le caselle che lascio vuote e a dirmi quanto posso spendere.
+    modalita: 'auto',
     // Tetti opzionali di spesa per ruolo (crediti). null = nessun vincolo.
     roleBudget: { P: null, D: null, C: null, A: null },
     // Ordine delle fasce per ruolo (dalla migliore alla peggiore), popolato all'import.
     tierOrder: { P: [], D: [], C: [], A: [] },
+    // Ordine dei reparti all'asta. Nelle aste a chiamata per ruolo si parte dai portieri e si
+    // scende fino agli attaccanti: i crediti vanno impegnati prima di sapere cosa costera' il resto.
+    auctionOrder: ['P', 'D', 'C', 'A'],
+    // Minimo di giocatori di prima fascia per reparto. Una rosa fatta solo di occasioni e'
+    // matematicamente efficiente ma fragile: i top sono i giocatori che vincono le giornate.
+    minTop: { P: 0, D: 1, C: 1, A: 1 },
+    // Quanto in alto deve stare la fascia perche' un giocatore conti come top (0 = solo la prima).
+    topThreshold: 0.06,
     // Massimo numero di giocatori dallo stesso club (0 = nessun limite).
     // Serve a non ritrovarsi mezza rosa legata alla stagione di una sola squadra.
     maxPerClub: 4,
+    // Nomi delle squadre della lega; la prima sono io. Servono a tenere il registro
+    // di chi compra cosa, che e' quello che dice fin dove puo' spingersi un avversario.
+    squadre: [],
   };
+}
+
+/** Elenco leggibile: "difensori, centrocampisti e attaccanti", non "a e b e c". */
+export function elenco(voci) {
+  const v = voci.filter(Boolean);
+  if (v.length <= 1) return v.join('');
+  return `${v.slice(0, -1).join(', ')} e ${v[v.length - 1]}`;
 }
 
 export function totalSlots(settings) {

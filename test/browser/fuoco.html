@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>fuoco</title>
+<pre id="out">in corso…</pre>
+<main id="app"></main>
+<nav class="tabbar" id="tabbar"></nav>
+<script type="module">
+// Il test del cursore va fatto sull'app vera: il bug non stava in una funzione, stava fra
+// il ridisegno (che rifa' tutto il DOM) e il campo che stava ricevendo i tasti.
+import * as store from '../../src/store.js';
+import { ROLES } from '../../src/domain/model.js';
+
+const lines = [];
+const check = (name, ok, extra = '') => lines.push(`${ok ? 'PASS' : 'FAIL'} ${name}${extra ? ' :: ' + extra : ''}`);
+
+try {
+  localStorage.clear();
+  const app = await import('../../src/app.js');
+
+  const clubs = ['ROM','INT','MIL','NAP','ATA','LAZ','JUV','BOL'];
+  const perRole = { P: 3, D: 9, C: 9, A: 6 };
+  const players = [];
+  for (const club of clubs) for (const role of ROLES) for (let i = 0; i < perRole[role]; i++)
+    players.push({ id: `${club}-${role}-${i}`, name: `${role}${i}${club}`, team: club, role, tier: i < 2 ? 'Top' : 'Terza',
+      tags: [], notes: '', sources: ['prova'], price: Math.max(1, 30 - i * 3), fmvExp: 6, titolarita: 4, integrita: 4 });
+  store.addSource({ name: 'prova', players, headers: [], mapping: {}, warnings: [], fileName: 'prova.xlsx' });
+
+  store.state.ui.tab = 'setup';
+  app.render();
+
+  const campo = document.getElementById('cfg-squadra-2');
+  check('il campo del nome esiste ed e\' raggiungibile', !!campo);
+
+  campo.focus();
+  campo.value = '';
+  campo.dispatchEvent(new Event('input', { bubbles: true }));
+  const scritto = 'Sasso FC';
+  let persoIlFuoco = '';
+  for (const c of scritto) {
+    const vivo = document.getElementById('cfg-squadra-2');
+    vivo.focus();
+    vivo.value += c;
+    vivo.dispatchEvent(new Event('input', { bubbles: true }));
+    const dopo = document.activeElement;
+    if (!dopo || dopo.id !== 'cfg-squadra-2') persoIlFuoco = `dopo "${c}" il fuoco e' su ${dopo ? dopo.id || dopo.tagName : 'niente'}`;
+  }
+  check('scrivendo il cursore resta nel campo', !persoIlFuoco, persoIlFuoco || 'ok');
+  check('e a schermo c\'e\' quello che ho scritto', document.getElementById('cfg-squadra-2').value === scritto, document.getElementById('cfg-squadra-2').value);
+
+  const finale = document.getElementById('cfg-squadra-2');
+  finale.dispatchEvent(new Event('change', { bubbles: true }));
+  check('il nome finisce nello stato', store.state.settings.squadre[2] === scritto, store.state.settings.squadre[2]);
+  check('e nel disegno del campo', document.getElementById('cfg-squadra-2').value === scritto);
+  check('e sopravvive alla ricarica', (() => {
+    const salvato = JSON.parse(localStorage.getItem('astahelper:v1'));
+    return salvato?.settings?.squadre?.[2] === scritto;
+  })());
+
+  // Anche i campi numerici avevano lo stesso problema.
+  const budget = document.getElementById('cfg-budget');
+  budget.focus();
+  budget.value = '400';
+  budget.dispatchEvent(new Event('input', { bubbles: true }));
+  check('anche i numeri tengono il cursore', document.activeElement?.id === 'cfg-budget', document.activeElement?.id || 'nessuno');
+  check('e il valore arriva alle impostazioni', store.state.settings.budget === 400, `${store.state.settings.budget}`);
+} catch (err) {
+  check('nessun errore', false, (err && err.stack) || String(err));
+}
+
+document.getElementById('out').textContent = lines.join('\n');
+</script>

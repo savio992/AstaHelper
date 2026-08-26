@@ -1,14 +1,22 @@
 // Import dei listoni (xlsx dei creators o CSV) e consultazione dei giocatori.
 
-import { state, addSource, removeSource } from '../store.js';
+import { state, addSource, removeSource, setForm, clearForm, onReset } from '../store.js';
 import { parseCsv, sheetsToTable, autoMap, refineMapping, buildPlayers } from '../domain/csv.js';
 import { readXlsx } from '../domain/xlsx.js';
+import { formMapping, aggregateForm, matchCount } from '../domain/form.js';
 import { ROLES } from '../domain/model.js';
 import { esc, matches, playerRow, emptyState, toast } from './common.js';
 
 // Import in corso: vive solo finche' l'utente conferma la mappatura delle colonne.
 let draft = null;
 let showMapping = false;
+let tipoAtteso = 'listone';
+
+onReset(() => {
+  draft = null;
+  showMapping = false;
+  tipoAtteso = 'listone';
+});
 
 const FIELDS = [
   ['name', 'Nome', true],
@@ -47,8 +55,14 @@ export async function ingestFile(file) {
       toast('Non riesco a leggere questo file.');
       return;
     }
+    if (tipoAtteso === 'voti') {
+      const mapping = formMapping(table.headers);
+      draft = { ...table, mapping, fileName: name, kind: 'voti' };
+      showMapping = !mapping.name;
+      return;
+    }
     const mapping = refineMapping(table.rows, autoMap(table.headers));
-    draft = { ...table, mapping, fileName: name, source: sourceName(name) };
+    draft = { ...table, mapping, fileName: name, source: sourceName(name), kind: 'listone' };
     showMapping = !mapping.name || !mapping.role;
   } catch (err) {
     console.error(err);
@@ -89,6 +103,29 @@ function emptyImport() {
     <div class="row" style="margin:12px 0 6px"><div class="grow" style="height:1px;background:var(--line)"></div><span class="tiny muted">oppure incolla un CSV</span><div class="grow" style="height:1px;background:var(--line)"></div></div>
     <textarea id="pastearea" rows="3" placeholder="Incolla qui il contenuto" style="width:100%;background:var(--surface-2);border:1px solid var(--line);border-radius:11px;padding:11px"></textarea>
     <button class="btn block" style="margin-top:8px" data-action="paste">Importa dal testo</button>
+  </div>`;
+}
+
+function votiCard() {
+  const { form, giornate } = aggregateForm(draft.rows, draft.mapping);
+  const abbinati = matchCount(state.players, form);
+  const n = giornate || 1;
+  return `
+  <div class="card">
+    <div class="row between"><h2 style="margin:0">Voti delle giornate</h2><button class="btn ghost" data-action="cancel-import">Annulla</button></div>
+    <div class="small muted" style="margin:8px 0 12px">${esc(draft.fileName)} · ${draft.rows.length} righe</div>
+    <div class="card" style="background:var(--surface-2);box-shadow:none;margin-bottom:12px">
+      <div class="row between"><b>${form.size} giocatori nel file</b><span class="small muted">${n} giornat${n === 1 ? 'a' : 'e'}</span></div>
+      <div class="tiny muted" style="margin-top:6px">
+        ${abbinati} abbinati al tuo listone${abbinati < form.size ? ` · ${form.size - abbinati} non trovati (nomi scritti diversamente)` : ''}
+      </div>
+    </div>
+    <label class="field"><span>Giornate giocate finora</span>
+      <input type="number" inputmode="numeric" id="giornate" value="${n}" min="1" max="38"></label>
+    <div class="tiny muted" style="margin-bottom:12px">
+      Serve a pesare i dati: dopo una giornata contano poco, dopo dieci comandano loro.
+    </div>
+    <button class="btn primary block" data-action="confirm-voti" ${abbinati ? '' : 'disabled'}>Applica alle valutazioni</button>
   </div>`;
 }
 
@@ -161,6 +198,23 @@ function sourcesCard() {
     }
     <button class="btn block" style="margin-top:10px" data-action="pickfile">Aggiungi un altro listone</button>
     <input type="file" id="csvfile" accept=".xlsx,.xlsm,.csv,.tsv,.txt" multiple style="display:none" data-action="file">
+  </div>
+
+  <div class="card">
+    <h2>Giornate gia' giocate</h2>
+    ${
+      state.formData
+        ? `<div class="small">Stai usando i voti di <b>${state.formData.giornate} giornat${state.formData.giornate === 1 ? 'a' : 'e'}</b>
+             (${esc(state.formData.fileName || 'file')}), abbinati a ${state.formData.abbinati} giocatori.</div>
+           <button class="btn danger block" style="margin-top:10px" data-action="clearvoti">Torna alle sole proiezioni</button>`
+        : `<p class="small muted" style="margin-top:0">
+             Se il campionato e' gia' iniziato, carica il file dei voti: chi e' sceso in campo da titolare
+             e chi e' rimasto fuori corregge le proiezioni fatte prima dell'estate. I dati pesano in
+             proporzione alle giornate giocate, quindi dopo una sola giornata cambia poco.
+           </p>
+           <button class="btn block" data-action="pickvoti">Carica i voti</button>`
+    }
+    <input type="file" id="votifile" accept=".xlsx,.xlsm,.csv,.tsv,.txt" style="display:none" data-action="file">
   </div>`;
 }
 
@@ -206,7 +260,7 @@ function browseCard() {
 }
 
 export function render() {
-  if (draft) return `<div class="view">${draftCard()}</div>`;
+  if (draft) return `<div class="view">${draft.kind === 'voti' ? votiCard() : draftCard()}</div>`;
   if (!state.players.length) {
     return `<div class="view">${emptyImport()}${emptyState('⚽️', 'Si parte dal listone', 'Senza listone non c\'e\' piano: carica il file del tuo creator.')}</div>`;
   }
@@ -216,8 +270,26 @@ export function render() {
 export function onAction(action, target, ev, rerender) {
   switch (action) {
     case 'pickfile':
+      tipoAtteso = 'listone';
       document.getElementById('csvfile')?.click();
       return true;
+    case 'pickvoti':
+      tipoAtteso = 'voti';
+      document.getElementById('votifile')?.click();
+      return true;
+    case 'clearvoti':
+      clearForm();
+      rerender();
+      return true;
+    case 'confirm-voti': {
+      const giornate = Number(document.getElementById('giornate')?.value) || 1;
+      setForm({ rows: draft.rows, mapping: draft.mapping, fileName: draft.fileName, giornate });
+      draft = null;
+      tipoAtteso = 'listone';
+      toast('Valutazioni aggiornate con i voti.');
+      rerender();
+      return true;
+    }
     case 'paste': {
       const text = document.getElementById('pastearea')?.value || '';
       if (!text.trim()) {

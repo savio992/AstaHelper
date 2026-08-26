@@ -48,9 +48,12 @@ class Trail {
  * i migliori per punteggio, i migliori per rapporto punti/credito e i piu' economici
  * (servono per chiudere gli slot con 1 credito).
  */
-export function pruneCandidates(cands, keepTop = 70, keepRatio = 50, keepCheap = 25) {
+export function pruneCandidates(cands, keepTop = 70, keepRatio = 50, keepCheap = 25, tieniPrimaFascia = false) {
   if (cands.length <= keepTop + keepRatio + keepCheap) return cands;
   const chosen = new Set();
+  // Con il vincolo sui top attivo, i giocatori di prima fascia non possono essere potati:
+  // se sparissero tutti dai candidati il vincolo diventerebbe insoddisfacibile.
+  if (tieniPrimaFascia) for (const c of cands) if (c.isTop) chosen.add(c);
   const byScore = [...cands].sort((a, b) => b.score - a.score);
   const byRatio = [...cands].sort((a, b) => b.score / b.cost - a.score / a.cost);
   const byCheap = [...cands].sort((a, b) => a.cost - b.cost || b.score - a.score);
@@ -67,33 +70,45 @@ export function pruneCandidates(cands, keepTop = 70, keepRatio = 50, keepCheap =
  * di profondita' corretto (titolare, primo cambio, panchinaro...) senza rompere il DP.
  * Ritorna dp[k * (B+1) + b] = punteggio massimo con esattamente k giocatori e costo esatto b.
  */
-function roleKnapsack(cands, slots, B) {
+function roleKnapsack(cands, slots, B, minTop = 0) {
   const W = B + 1;
-  const dp = new Float64Array((slots + 1) * W).fill(NEG);
-  const refs = new Int32Array((slots + 1) * W);
-  const trail = new Trail(Math.min(1 << 20, Math.max(1024, cands.length * (slots + 1) * 8)));
-  dp[0] = 0;
+  const T = Math.max(0, Math.min(minTop, slots));
+  // Terza dimensione: quanti giocatori di prima fascia sono stati presi, saturata a T
+  // (oltre il minimo richiesto non serve distinguere).
+  const at = (k, t) => (k * (T + 1) + t) * W;
+  const size = (slots + 1) * (T + 1) * W;
+  const dp = new Float64Array(size).fill(NEG);
+  const refs = new Int32Array(size);
+  const trail = new Trail(Math.min(1 << 21, Math.max(1024, cands.length * (slots + 1) * (T + 1) * 4)));
+  dp[at(0, 0)] = 0;
 
   for (let i = 0; i < cands.length; i++) {
     const c = cands[i].cost;
     const weighted = cands[i].weighted;
+    const isTop = cands[i].isTop ? 1 : 0;
     if (c > B) continue;
     for (let k = slots; k >= 1; k--) {
-      const rowPrev = (k - 1) * W;
-      const row = k * W;
       const s = weighted[k - 1];
-      for (let b = B; b >= c; b--) {
-        const prev = dp[rowPrev + b - c];
-        if (prev <= NEG / 2) continue;
-        const val = prev + s;
-        if (val > dp[row + b]) {
-          dp[row + b] = val;
-          refs[row + b] = trail.push(i, refs[rowPrev + b - c]);
+      for (let t = T; t >= 0; t--) {
+        // Stati che portano a (k, t) prendendo questo giocatore.
+        const sorgenti = isTop ? (t === T ? (T > 0 ? [T - 1, T] : [T]) : t > 0 ? [t - 1] : []) : [t];
+        for (const tPrev of sorgenti) {
+          const rowPrev = at(k - 1, tPrev);
+          const row = at(k, t);
+          for (let b = B; b >= c; b--) {
+            const prev = dp[rowPrev + b - c];
+            if (prev <= NEG / 2) continue;
+            const val = prev + s;
+            if (val > dp[row + b]) {
+              dp[row + b] = val;
+              refs[row + b] = trail.push(i, refs[rowPrev + b - c]);
+            }
+          }
         }
       }
     }
   }
-  return { dp, refs, trail, W };
+  return { dp, refs, trail, W, T, at };
 }
 
 /**
@@ -108,6 +123,21 @@ function roleKnapsack(cands, slots, B) {
  *
  * Ritorna { ok, picks, owned, cost, score, spentByRole, leftover, budgetCurve }
  */
+/**
+ * L'unica configurazione del solutore, usata dal piano e da ogni consiglio.
+ *
+ * Deve stare in un posto solo. Due volte in questo progetto il piano mostrato e l'offerta
+ * massima hanno usato solutori di forza diversa, e ogni volta il risultato e' stato lo stesso:
+ * il piano diceva di non comprare un giocatore e l'assistente diceva di pagarlo tre volte il
+ * suo prezzo, perche' il termine di paragone era una rosa peggiore di quella vera. La prima
+ * volta era la ricerca locale, la seconda le ripartenze. Con una costante sola non puo'
+ * succedere una terza.
+ *
+ * Una ripartenza sola basta: sui listoni veri porta la rosa da 1905 a 1949 punti, e la seconda
+ * non aggiunge niente mentre raddoppia il tempo di ogni consiglio.
+ */
+export const CONFIG_SOLUTORE = { prune: false, localSearch: true, ripartenze: 1 };
+
 export function optimizeRoster({
   players,
   settings,
@@ -116,15 +146,40 @@ export function optimizeRoster({
   priceOverride = new Map(),
   prune = true,
   localSearch = true,
+  ripartenze = 0,
+  obbligati = new Set(),
 } = {}) {
   const byId = new Map(players.map((p) => [p.id, p]));
+
+  // I giocatori che l'utente ha deciso di volere si trattano come gia' in rosa al loro prezzo
+  // di mercato: e' l'unico modo di farli entrare nel conto in modo esatto, perche' il solutore
+  // sa gia' come un giocatore in rosa sposta i pesi di profondita' degli altri del suo ruolo.
+  // Alla fine tornano fra gli obiettivi da comprare, che e' quello che sono davvero.
+  const forzati = new Set();
+  const ownedEffettivo = new Map(owned);
+  for (const id of obbligati) {
+    if (owned.has(id) || unavailable.has(id)) continue;
+    const p = byId.get(id);
+    if (!p) continue;
+    ownedEffettivo.set(id, Math.max(1, Math.round(priceOverride.get(id) ?? p.expectedPrice ?? 1)));
+    forzati.add(id);
+  }
+
+  // In modalita' "scelgo io" la lista non e' un vincolo da aggirare: e' la rosa. Chi ci sta
+  // dentro gioca, e le caselle libere si completano attorno a lui. Senza questo, scegliere un
+  // portiere da 43 crediti faceva comprare al piano anche il portiere da 52 che lo mandava in
+  // panchina: novantasette crediti per un posto dove ne gioca uno solo.
+  // In modalita' automatica il lucchetto resta quello che e' sempre stato — "questo lo voglio
+  // in rosa" — e il solutore e' libero di costruirgli intorno la rosa migliore.
+  const sceltiTitolari = settings.modalita === 'mia';
+
   const ownedPlayers = [];
   let ownedCost = 0;
   const ownedByRole = { P: 0, D: 0, C: 0, A: 0 };
-  for (const [id, price] of owned) {
+  for (const [id, price] of ownedEffettivo) {
     const p = byId.get(id);
     if (!p) continue;
-    ownedPlayers.push({ ...p, paid: price });
+    ownedPlayers.push(sceltiTitolari && forzati.has(id) ? { ...p, paid: price, scelto: true } : { ...p, paid: price });
     ownedCost += price;
     ownedByRole[p.role] = (ownedByRole[p.role] || 0) + 1;
   }
@@ -152,31 +207,50 @@ export function optimizeRoster({
 
   const B = Math.max(0, Math.floor(budgetLeft));
 
+  // I top gia' comprati contano: il vincolo riguarda la rosa finita, non i soli acquisti futuri.
+  // E non puo' chiedere piu' top di quanti ne restino disponibili, altrimenti un listone senza
+  // fasce, o un reparto in cui li hanno gia' presi tutti, renderebbe il piano impossibile.
+  const topNeed = {};
+  for (const role of ROLES) {
+    const richiesti = Math.max(0, Math.round(settings.minTop?.[role] ?? 0));
+    const gia = ownedPlayers.filter((p) => p.role === role && p.isTop).length;
+    const disponibili = players.filter(
+      (p) => p.role === role && p.isTop && !ownedEffettivo.has(p.id) && !unavailable.has(p.id)
+    ).length;
+    topNeed[role] = Math.max(0, Math.min(need[role], disponibili, richiesti - gia));
+  }
+
   // Candidati per ruolo
   const roleData = {};
   for (const role of ROLES) {
-    const ownedScores = ownedPlayers
+    // Stesso ordine di profondita' che usa il punteggio della rosa: prima i giocatori scelti a
+    // mano, poi gli altri per punteggio. Se qui e' diverso, il DP e la valutazione finale
+    // parlano di due rose diverse e la ricerca locale passa il tempo a disfare le sue scelte.
+    const ownedRuolo = ownedPlayers
       .filter((p) => p.role === role)
-      .map((p) => p.score || 0)
-      .sort((a, b) => b - a);
+      .map((p) => ({ score: p.score || 0, scelto: !!p.scelto }))
+      .sort((a, b) => (b.scelto ? 1 : 0) - (a.scelto ? 1 : 0) || b.score - a.score);
+    const ownedScores = ownedRuolo.map((o) => o.score);
     const weights = depthWeights(settings, role);
     const wAt = (i) => weights[Math.min(Math.max(0, i), weights.length - 1)] ?? 0.05;
     let cands = players
-      .filter((p) => p.role === role && !owned.has(p.id) && !unavailable.has(p.id))
+      .filter((p) => p.role === role && !ownedEffettivo.has(p.id) && !unavailable.has(p.id))
       .map((p) => ({
         id: p.id,
         score: p.score || 0,
+        isTop: !!p.isTop,
         cost: Math.max(1, Math.round(priceOverride.get(p.id) ?? p.expectedPrice ?? 1)),
       }))
       .filter((c) => c.cost <= B);
-    if (prune) cands = pruneCandidates(cands);
+    if (prune) cands = pruneCandidates(cands, 70, 50, 25, topNeed[role] > 0);
     cands.sort((a, b) => b.score - a.score);
     // Rango reale nel ruolo = giocatori gia' in rosa piu' forti + candidati migliori gia' scelti.
     // Comprare un giocatore piu' forte retrocede di un posto tutti quelli gia' in rosa piu' deboli:
     // senza questo termine l'ottimizzatore ti fa comprare cinque attaccanti sopra quello che hai gia'.
     const needRole = need[role] || 1;
     for (const cand of cands) {
-      const above = ownedScores.filter((s) => s >= cand.score).length;
+      // Quanti gia' in rosa restano davanti a lui: tutti gli scelti a mano, piu' i piu' forti.
+      const above = ownedRuolo.filter((o) => o.scelto || o.score >= cand.score).length;
       cand.weighted = new Float64Array(needRole);
       for (let k = 1; k <= needRole; k++) {
         let v = cand.score * wAt(k - 1 + above);
@@ -205,7 +279,7 @@ export function optimizeRoster({
   // DP per ruolo
   const solved = {};
   for (const role of ROLES) {
-    solved[role] = need[role] > 0 ? roleKnapsack(roleData[role], need[role], B) : null;
+    solved[role] = need[role] > 0 ? roleKnapsack(roleData[role], need[role], B, topNeed[role]) : null;
   }
 
   // Convoluzione fra i ruoli, rispettando eventuali tetti di spesa per ruolo.
@@ -223,8 +297,8 @@ export function optimizeRoster({
       cur = next;
       continue;
     }
-    const { dp } = solved[role];
-    const row = need[role] * W;
+    const { dp, at, T } = solved[role];
+    const row = at(need[role], T);
     const cap = settings.roleBudget?.[role];
     const maxRole = cap === null || cap === undefined || cap === '' ? B : Math.min(B, Math.max(0, Math.floor(cap)));
     for (let c = 0; c <= maxRole; c++) {
@@ -252,10 +326,12 @@ export function optimizeRoster({
     budgetCurve[b] = running;
   }
 
+  // A parita' di punteggio si sceglie la rosa che spende di piu': i crediti che avanzano
+  // a fine asta valgono zero, quindi non ha senso lasciarli sul tavolo.
   let bestB = -1;
   let bestVal = NEG;
   for (let b = 0; b <= B; b++) {
-    if (cur[b] > bestVal) {
+    if (cur[b] >= bestVal && cur[b] > NEG / 2) {
       bestVal = cur[b];
       bestB = b;
     }
@@ -282,8 +358,8 @@ export function optimizeRoster({
     const c = splits[r][b];
     if (c > 0 || need[role] > 0) {
       if (need[role] > 0) {
-        const { refs, trail, W: rw } = solved[role];
-        const ref = refs[need[role] * rw + c];
+        const { refs, trail, at, T } = solved[role];
+        const ref = refs[at(need[role], T) + c];
         for (const idx of trail.collect(ref)) {
           const cand = roleData[role][idx];
           picks.push({ ...byId.get(cand.id), plannedPrice: cand.cost });
@@ -294,7 +370,7 @@ export function optimizeRoster({
   }
 
   if (localSearch) {
-    const ctx = { ownedPlayers, players, settings, owned, unavailable, priceOverride, budgetLeft };
+    const ctx = { ownedPlayers, players, settings, owned: ownedEffettivo, unavailable, priceOverride, budgetLeft };
     picks = improveWithSynergy({ picks, ...ctx });
     // Il DP non sa nulla di club: se e' andato oltre il tetto di concentrazione si ripara qui.
     picks = enforceClubCap({ picks, ...ctx });
@@ -304,18 +380,62 @@ export function optimizeRoster({
 
   const cost = ownedCost + picks.reduce((s, p) => s + p.plannedPrice, 0);
   const full = [...ownedPlayers.map((p) => ({ ...p, plannedPrice: p.paid })), ...picks];
-  return {
+
+  // I forzati tornano fra gli obiettivi: non sono comprati, sono scelti. Il totale non cambia,
+  // ma cosi' il budget di fase li conta fra le spese ancora da fare e l'elenco li mostra
+  // come quello che sono.
+  const daComprare = forzati.size
+    ? [...picks, ...ownedPlayers.filter((p) => forzati.has(p.id)).map((p) => ({ ...p, plannedPrice: p.paid, bloccato: true }))]
+    : picks;
+  const davveroMiei = forzati.size ? ownedPlayers.filter((p) => !forzati.has(p.id)) : ownedPlayers;
+
+  const risultato = {
     ok: true,
-    picks,
-    owned: ownedPlayers,
+    picks: daComprare,
+    owned: davveroMiei,
     all: full,
     cost,
     score: rosterScore(full, settings),
-    spentByRole: spendByRole(ownedPlayers, picks),
+    spentByRole: spendByRole(davveroMiei, daComprare),
     leftover: (settings.budget || 500) - cost,
     budgetCurve,
     budgetLeft,
   };
+
+  if (ripartenze <= 0) return risultato;
+
+  // Ripartenze: la programmazione dinamica e' esatta sulla parte separabile del punteggio, ma
+  // e' cieca alla sinergia, che dipende da quali giocatori stanno insieme e non si puo' scrivere
+  // come somma di contributi individuali. Cosi' capita che il piano compri il giocatore che
+  // massimizza la somma e perda un blocco che varrebbe di piu': sui listoni di prova escludere
+  // l'attaccante piu' caro faceva salire la rosa da 1905 a 1949 punti, perche' la sinergia
+  // passava da 21 a 87.
+  //
+  // Rimedio economico: si riprova togliendo a turno una delle scelte piu' costose e si tiene la
+  // rosa migliore. Non garantisce l'ottimo — quello richiederebbe un modello non separabile —
+  // ma recupera proprio i casi in cui una singola scelta cara sbarra la strada a un blocco.
+  let migliore = risultato;
+  const candidate = daComprare
+    .filter((c) => !obbligati.has(c.id))
+    .sort((a, b) => b.plannedPrice - a.plannedPrice)
+    .slice(0, ripartenze);
+  for (const c of candidate) {
+    const escluso = new Set(unavailable);
+    escluso.add(c.id);
+    const alt = optimizeRoster({
+      players,
+      settings,
+      owned,
+      unavailable: escluso,
+      priceOverride,
+      prune,
+      localSearch,
+      ripartenze: 0,
+      obbligati,
+    });
+    if (alt.ok && alt.score > migliore.score) migliore = alt;
+  }
+  return migliore;
 }
 
 function spendByRole(ownedPlayers, picks) {
@@ -370,8 +490,13 @@ function improveWithSynergy({ picks, ownedPlayers, players, settings, owned, una
       let bestScore = evaluate(current);
       const clubCap = Number(settings.maxPerClub) || 0;
       const exposure = clubCap > 0 ? clubExposure([...ownedPlayers, ...current], settings) : null;
+      // Se sto togliendo un top e il reparto e' gia' al minimo, il sostituto deve essere un top.
+      const minTop = Math.max(0, Math.round(settings.minTop?.[out.role] ?? 0));
+      const topInRuolo = [...current, ...ownedPlayers].filter((p) => p.role === out.role && p.isTop).length;
+      const serveTop = out.isTop && topInRuolo <= minTop;
       for (const cand of poolByRole[out.role]) {
         if (inRoster.has(cand.id)) continue;
+        if (serveTop && !cand.isTop) continue;
         const cost = priceOf(cand);
         if (cost > budgetForSlot || cost > roleCapLeft) continue;
         // Non riportare dentro un club gia' al limite: il tetto e' appena stato rispettato.
@@ -425,6 +550,9 @@ function enforceClubCap({ picks, ownedPlayers, players, settings, owned, unavail
 
     let replaced = false;
     for (const { p: outPlayer, i } of sacrificable) {
+      const minTop = Math.max(0, Math.round(settings.minTop?.[outPlayer.role] ?? 0));
+      const topInRuolo = [...current, ...ownedPlayers].filter((p) => p.role === outPlayer.role && p.isTop).length;
+      const serveTop = outPlayer.isTop && topInRuolo <= minTop;
       const inRoster = new Set([...current.map((x) => x.id), ...ownedPlayers.map((x) => x.id)]);
       const spendOthers = current.reduce((a, x) => a + x.plannedPrice, 0) - outPlayer.plannedPrice;
       const budgetForSlot = budgetLeft - spendOthers;
@@ -437,7 +565,8 @@ function enforceClubCap({ picks, ownedPlayers, players, settings, owned, unavail
             !owned.has(c.id) &&
             !unavailable.has(c.id) &&
             priceOf(c) <= budgetForSlot &&
-            (exposure.get(c.team)?.effettivi ?? 0) < cap
+            (exposure.get(c.team)?.effettivi ?? 0) < cap &&
+            (!serveTop || c.isTop)
         )
         .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
       if (!candidate) continue;

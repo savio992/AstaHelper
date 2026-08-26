@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>service worker</title>
+<pre id="out">in corso…</pre>
+<!-- Questa immagine tiene aperto l'evento load finche' il referto non e' pronto: senza, il
+     browser stamperebbe la pagina prima che il worker abbia finito di registrarsi. Il tempo
+     virtuale qui non si puo' usare — i timer scatterebbero prima che il worker esista davvero. -->
+<img src="./attendi.png" alt="" width="1" height="1">
+<script type="module">
+// Questa pagina viene servita da dentro dist/ (il server di prova la mappa li'), perche' un
+// service worker vale solo per il percorso da cui viene servito: da fuori non lo si potrebbe
+// nemmeno registrare.
+const lines = [];
+const mostra = () => { document.getElementById('out').textContent = lines.join('\n'); };
+// Si scrive man mano: se qualcosa resta appeso, il referto dice fin dove si e' arrivati invece
+// di lasciare la pagina con "in corso" e nessuna spiegazione.
+const check = (name, ok, extra = '') => { lines.push(`${ok ? 'PASS' : 'FAIL'} ${name}${extra ? ' :: ' + extra : ''}`); mostra(); };
+
+const conLimite = (p, ms, cosa) =>
+  Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(`${cosa}: nessuna risposta entro ${ms}ms`)), ms))]);
+
+try {
+  check('il contesto e\' sicuro', window.isSecureContext, location.origin);
+  check('il browser ha i service worker', 'serviceWorker' in navigator);
+
+  const reg = await conLimite(navigator.serviceWorker.register('./sw.js'), 10000, 'registrazione');
+  await conLimite(navigator.serviceWorker.ready, 10000, 'attivazione');
+  check('il worker si registra e diventa attivo', !!reg.active, reg.active?.state || 'nessuno');
+
+  const nomi = await caches.keys();
+  const mia = nomi.filter((n) => n.startsWith('astahelper-'));
+  check('crea una cache con la sua versione', mia.length === 1, mia.join(', ') || 'nessuna');
+
+  // La versione deve venire dall'impronta del build, non dal segnaposto rimasto nel sorgente.
+  check('la versione e\' stata iniettata dal build', /^astahelper-[0-9a-f]{12}$/.test(mia[0] || ''), mia[0] || '');
+
+  const c = await caches.open(mia[0]);
+  const dentro = await Promise.all(
+    ['./', './index.html', './manifest.webmanifest', './icona-180.png', './icona-192.png'].map(async (u) => [u, !!(await c.match(u))])
+  );
+  const mancanti = dentro.filter(([, c]) => !c).map(([u]) => u);
+  check('il guscio dell\'app e\' in cache', mancanti.length === 0, mancanti.join(', ') || 'tutto dentro');
+
+  // La prova che conta: la pagina esce dalla cache, quindi uscirebbe anche senza rete.
+  const salvata = await c.match('./index.html');
+  const testo = salvata ? await salvata.text() : '';
+  check('e la pagina in cache e\' l\'app vera', testo.includes('data-tab') || testo.includes('id="app"'), `${Math.round(testo.length / 1024)} KB`);
+} catch (err) {
+  check('nessun errore', false, (err && err.stack) || String(err));
+}
+
+mostra();
+fetch('./fatto').catch(() => {});
+</script>

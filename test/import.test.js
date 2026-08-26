@@ -4,9 +4,9 @@ import zlib from 'node:zlib';
 
 import { readXlsx, columnToIndex } from '../src/domain/xlsx.js';
 import { sheetsToTable, gridToTable, autoMap, refineMapping, buildPlayers, mergeSources } from '../src/domain/csv.js';
-import { inferTierOrder, annotateTierPct, defaultSettings, ROLES } from '../src/domain/model.js';
+import { inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, defaultSettings, ROLES } from '../src/domain/model.js';
 import { valuePlayers, expectedShare, clubExposure, concentrationPenalty, rosterScore } from '../src/domain/valuation.js';
-import { withExpectedPrices } from '../src/domain/market.js';
+import { withExpectedPrices, marketSignal } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
 
 // --- costruzione di un .xlsx minimo, per non dover allegare listoni veri ai test ---------
@@ -294,6 +294,78 @@ test('il tetto per club viene rispettato anche dalla ricerca locale', async () =
   const players = withExpectedPrices(valuePlayers(roster, settings), settings);
   const plan = optimizeRoster({ players, settings });
   const exposure = clubExposure(plan.picks, settings);
-  const roma = exposure.get('ROM');
-  assert.ok(roma.effettivi <= 3.3, `esposizione alla Roma ${roma?.effettivi}`);
+  const roma = exposure.get('ROM') ?? { effettivi: 0 };
+  assert.ok(roma.effettivi <= 3.3, `esposizione alla Roma ${roma.effettivi}`);
+});
+
+// --- prezzo di mercato contro valutazione del creator -----------------------------------
+
+/** Due creators sullo stesso listone: uno prudente, uno generoso, stesso mercato osservato. */
+function dueCreators() {
+  const base = [
+    { id: 'top', name: 'Top', team: 'INT', role: 'A', tier: 'Top', tags: [], notes: '' },
+    { id: 'medio', name: 'Medio', team: 'MIL', role: 'A', tier: 'Terza', tags: [], notes: '' },
+    { id: 'affare', name: 'Affare', team: 'ROM', role: 'A', tier: 'Terza', tags: [], notes: '' },
+  ];
+  // Prudente: valuta poco tutti. Generoso: valuta molto tutti. Sullo stesso ordine relativo,
+  // tranne che entrambi ritengono "Affare" sottopagato dal mercato.
+  const prudente = base.map((p, i) => ({ ...p, sources: ['prudente'], price: [100, 40, 40][i], pma: [20, 8, 4][i] }));
+  const generoso = base.map((p, i) => ({ ...p, sources: ['generoso'], price: [300, 120, 120][i], pma: [21, 8, 4][i] }));
+  const prep = (l) => annotatePriceShare(annotatePmaShare(l));
+  return mergeSources([prep(prudente), prep(generoso)]);
+}
+
+test('le valutazioni dei creators si mediano per quota, non per valore grezzo', () => {
+  const merged = dueCreators();
+  const top = merged.find((p) => p.id === 'top');
+  // La media grezza darebbe 200. Quello che conta e' la posizione relativa, identica
+  // per i due creators: la quota mediata deve valere quanto quella di ciascuno.
+  assert.equal(top.price, 200, 'il valore grezzo resta disponibile');
+  assert.ok(Math.abs(top.priceShare - 100 / 180) < 1e-9, `quota ${top.priceShare}`);
+});
+
+test('la valutazione riportata sulla scala della lega non dipende dalla generosita' + "'" + ' del creator', () => {
+  const settings = { ...defaultSettings(), participants: 2, slots: { P: 0, D: 0, C: 0, A: 3 }, starters: { P: 1, D: 1, C: 1, A: 3 } };
+  const valued = withExpectedPrices(
+    valuePlayers(dueCreators().map((p) => ({ ...p, fmvExp: 7, titolarita: 5, integrita: 5 })), settings),
+    settings
+  );
+  const top = valued.find((p) => p.id === 'top');
+  const affare = valued.find((p) => p.id === 'affare');
+  // Il creator prudente dice 100 e il generoso 300: la scala comune deve stare in mezzo
+  // in proporzione, non essere la media aritmetica dei due numeri.
+  assert.ok(Number.isFinite(top.consigliato));
+  assert.deepEqual(Object.keys(top.consigliatoBySource).sort(), ['generoso', 'prudente']);
+  assert.equal(top.consigliatoBySource.prudente, top.consigliatoBySource.generoso,
+    'stessa posizione relativa deve dare la stessa valutazione');
+  // "Affare" e' pagato meno di quanto entrambi lo valutino: deve risultare un'occasione.
+  assert.ok(affare.edge > 0, `scarto ${affare.edge}`);
+  assert.ok(top.edge < affare.edge);
+});
+
+test('marketSignal non mescola quote e crediti', () => {
+  // Un giocatore con la sola PMA e uno con il solo prezzo consigliato: le due colonne
+  // hanno scale incompatibili e vanno riportate alla stessa unita' prima di confrontarle.
+  const players = [];
+  for (let i = 0; i < 10; i++) players.push({ id: `a${i}`, pmaShare: 0.05, price: 25 });
+  players.push({ id: 'solo-prezzo', pmaShare: null, price: 25 });
+  const signal = marketSignal(players);
+  assert.ok(Math.abs(signal.get('solo-prezzo') - 0.05) < 1e-9,
+    `chi ha solo il prezzo deve finire sulla stessa scala, non a ${signal.get('solo-prezzo')}`);
+});
+
+test('il prezzo atteso segue le aste reali, non la valutazione del creator', () => {
+  const settings = { ...defaultSettings(), participants: 2, slots: { P: 0, D: 0, C: 0, A: 2 }, starters: { P: 1, D: 1, C: 1, A: 2 } };
+  const roster = [
+    // Stesso giudizio del creator, ma il primo nelle aste vere e' costato il doppio.
+    { id: 'caro', name: 'Caro', team: 'INT', role: 'A', tier: 'Top', tags: [], sources: ['x'], price: 50, pma: 20, fmvExp: 7, titolarita: 5, integrita: 5 },
+    { id: 'economico', name: 'Economico', team: 'MIL', role: 'A', tier: 'Top', tags: [], sources: ['x'], price: 50, pma: 10, fmvExp: 7, titolarita: 5, integrita: 5 },
+    { id: 'terzo', name: 'Terzo', team: 'ROM', role: 'A', tier: 'Terza', tags: [], sources: ['x'], price: 10, pma: 5, fmvExp: 6, titolarita: 3, integrita: 3 },
+  ];
+  const players = withExpectedPrices(valuePlayers(annotatePriceShare(annotatePmaShare(roster)), settings), settings);
+  const caro = players.find((p) => p.id === 'caro');
+  const economico = players.find((p) => p.id === 'economico');
+  assert.ok(caro.expectedPrice > economico.expectedPrice * 1.5,
+    `atteso ${caro.expectedPrice} contro ${economico.expectedPrice}`);
+  assert.ok(caro.edge < economico.edge, 'a parita' + "'" + ' di giudizio, chi costa di piu' + "'" + ' e' + "'" + ' l\'affare peggiore');
 });

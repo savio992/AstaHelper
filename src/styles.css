@@ -106,7 +106,10 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
   left: 0; right: 0; bottom: 0;
   z-index: 40;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* Il numero di schede e' dichiarato dal codice: cinque non stanno in quattro colonne
+     e la barra andava a capo coprendo il contenuto. */
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   background: var(--surface);
   border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom);
@@ -114,17 +117,19 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .tabbar button {
   background: none;
   border: 0;
-  padding: 9px 4px 10px;
-  font-size: 11px;
+  padding: 9px 2px 10px;
+  font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 0.2px;
+  letter-spacing: 0;
+  min-width: 0;
+  white-space: nowrap;
   color: var(--muted);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 3px;
 }
-.tabbar button .ico { font-size: 21px; line-height: 1; }
+.tabbar button .ico { font-size: 20px; line-height: 1; }
 .tabbar button[aria-current='true'] { color: var(--accent); }
 
 /* --- componenti ------------------------------------------------------ */
@@ -314,3 +319,39 @@ table.tiers td.r { text-align: right; }
 
 .spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* L'avviso di versione nuova. Sta sopra la barra delle schede e sotto tutto il resto: non deve
+   coprire niente di cliccabile mentre si e' in mezzo a un rilancio. */
+#nuova-versione {
+  position: fixed;
+  left: 50%;
+  bottom: calc(78px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--text);
+  color: var(--bg);
+  padding: 8px 10px 8px 16px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 650;
+  z-index: 55;
+  box-shadow: var(--shadow);
+  max-width: 92vw;
+}
+#nuova-versione button {
+  font: inherit;
+  border: 0;
+  cursor: pointer;
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: var(--accent);
+  color: #fff;
+}
+#nuova-versione #nuova-versione-no {
+  background: transparent;
+  color: var(--bg);
+  opacity: 0.6;
+  padding: 6px 8px;
+}

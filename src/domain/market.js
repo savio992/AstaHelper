@@ -23,6 +23,44 @@ function boughtSet(players, settings) {
   return bought;
 }
 
+/**
+ * Sceglie il segnale di mercato e lo restituisce in un'unica unita' di misura.
+ *
+ * Le fonti disponibili non sono confrontabili fra loro: PMA e' una quota (0,03), il prezzo
+ * consigliato e' in crediti (155). Mescolarle nella stessa mappa fa esplodere le quote di chi
+ * ha solo il prezzo. Si sceglie quindi una scala sola e si convertono gli altri valori in
+ * quella, usando il rapporto osservato sui giocatori che hanno entrambi i dati.
+ *
+ * Ordine di attendibilita': PMA, il prezzo medio effettivamente pagato nelle altre aste, e'
+ * una rilevazione; il prezzo consigliato dal creator e' una valutazione; la quotazione
+ * ufficiale e' solo un ordine di grandezza.
+ */
+export function marketSignal(players) {
+  const out = new Map();
+  const hasPma = players.filter((p) => Number.isFinite(p.pmaShare) && p.pmaShare > 0);
+
+  if (hasPma.length > players.length / 3) {
+    // Rapporto mediano fra quota di mercato e prezzo consigliato, per convertire
+    // i giocatori che hanno solo il secondo senza cambiare scala.
+    const ratios = hasPma
+      .filter((p) => Number.isFinite(p.price) && p.price > 0)
+      .map((p) => p.pmaShare / p.price)
+      .sort((a, b) => a - b);
+    const ratio = ratios.length ? ratios[Math.floor(ratios.length / 2)] : null;
+    for (const p of players) {
+      if (Number.isFinite(p.pmaShare) && p.pmaShare > 0) out.set(p.id, p.pmaShare);
+      else if (ratio && Number.isFinite(p.price) && p.price > 0) out.set(p.id, p.price * ratio);
+    }
+    return out;
+  }
+
+  for (const p of players) {
+    const v = p.price ?? p.fvm ?? p.quo ?? null;
+    if (Number.isFinite(v) && v > 0) out.set(p.id, v);
+  }
+  return out;
+}
+
 function normalizeShares(raw, bought) {
   let sum = 0;
   for (const [id, v] of raw) if (bought.has(id)) sum += v;
@@ -47,12 +85,7 @@ export function expectedPrices(players, settings) {
   const discretionary = Math.max(0, (budget - slotsTotal) * n);
   const maxPrice = Math.max(1, budget - (slotsTotal - 1));
 
-  // Forma "creators": il prezzo consigliato, o in mancanza la percentuale massima d'asta.
-  const listoneRaw = new Map();
-  for (const p of players) {
-    const v = p.price ?? p.pma ?? p.fvm ?? p.quo ?? null;
-    if (Number.isFinite(v) && v > 0) listoneRaw.set(p.id, v);
-  }
+  const listoneRaw = marketSignal(players);
   const hasListone = listoneRaw.size > players.length / 3;
 
   // Forma "modello": i crediti si distribuiscono in proporzione al punteggio, con un
@@ -68,14 +101,15 @@ export function expectedPrices(players, settings) {
   const useListone = hasListone && source !== 'model';
   const useModel = !hasListone || source !== 'listone';
 
-  // Correzione per la dimensione della lega: i prezzi dei creators sono tarati su dieci
-  // squadre, con piu' partecipanti la concorrenza si concentra sui giocatori unici.
-  const tilt = 1 + 0.04 * (n - 10);
-
+  // Nessuna correzione arbitraria per la dimensione della lega: l'effetto vero e' gia' nel
+  // modello, perche' con meno squadre si comprano meno giocatori e le quote si ridistribuiscono
+  // su un insieme piu' ristretto e migliore. Un esponente in piu' conterebbe due volte lo stesso
+  // fenomeno, e i dati a disposizione non permettono di calibrarlo: il confronto fra i campioni
+  // di due creators e' confuso dalla diversa copertura del listone.
   const combined = new Map();
   for (const p of players) {
     const parts = [];
-    if (useListone && listoneShare.has(p.id)) parts.push(Math.pow(listoneShare.get(p.id), tilt));
+    if (useListone && listoneShare.has(p.id)) parts.push(listoneShare.get(p.id));
     if (useModel && modelShare.has(p.id)) parts.push(modelShare.get(p.id));
     if (!parts.length) {
       combined.set(p.id, 0);
@@ -96,8 +130,51 @@ export function expectedPrices(players, settings) {
   return out;
 }
 
-/** Applica i prezzi attesi ai giocatori, restituendo nuovi oggetti con `expectedPrice`. */
+/**
+ * Applica i prezzi attesi ai giocatori.
+ *
+ * Aggiunge anche `edge`: la differenza fra quanto il creator dice che il giocatore vale
+ * (colonna Prezzo) e quanto il mercato lo paga davvero (PMA). Positivo significa che il
+ * creator lo valuta piu' di quanto costa, ed e' li' che si fanno gli affari all'asta.
+ */
 export function withExpectedPrices(players, settings) {
   const prices = expectedPrices(players, settings);
-  return players.map((p) => ({ ...p, expectedPrice: prices.get(p.id) ?? 1 }));
+  // La valutazione del creator va riportata sulla stessa scala del prezzo atteso prima di
+  // poterli confrontare. Si usa la quota normalizzata per fonte, non il valore grezzo: un
+  // creator generoso e uno prudente danno cifre diverse per lo stesso giocatore, ma la
+  // posizione relativa dentro il proprio listone e' confrontabile.
+  const signal = (p) => (Number.isFinite(p.priceShare) ? p.priceShare : null);
+  let sumSignal = 0;
+  let sumExpected = 0;
+  for (const p of players) {
+    if (signal(p) === null) continue;
+    sumSignal += signal(p);
+    sumExpected += prices.get(p.id) ?? 0;
+  }
+  const scale = sumSignal > 0 ? sumExpected / sumSignal : 0;
+
+  return players.map((p) => {
+    const expectedPrice = prices.get(p.id) ?? 1;
+    const quota = signal(p);
+    const consigliato = quota === null ? null : Math.max(1, Math.round(quota * scale));
+
+    // La valutazione di ciascun creator, riportata sulla scala della lega: serve a vedere
+    // se il consenso nasconde un disaccordo forte fra le due firme.
+    let consigliatoBySource = null;
+    if (p.bySource && scale > 0) {
+      consigliatoBySource = {};
+      for (const [src, v] of Object.entries(p.bySource)) {
+        if (Number.isFinite(v.priceShare)) consigliatoBySource[src] = Math.max(1, Math.round(v.priceShare * scale));
+      }
+      if (!Object.keys(consigliatoBySource).length) consigliatoBySource = null;
+    }
+
+    return {
+      ...p,
+      expectedPrice,
+      consigliato,
+      consigliatoBySource,
+      edge: consigliato === null ? null : consigliato - expectedPrice,
+    };
+  });
 }

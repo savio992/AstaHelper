@@ -1,0 +1,63 @@
+# Pubblica l'app su GitHub Pages a ogni push.
+#
+# Richiede due cose lato repository, che vanno fatte una volta sola:
+#  1. il repository deve essere pubblico (Pages sui repository privati richiede un piano a pagamento);
+#  2. Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+#
+# Il secondo passo non si puo' automatizzare, ed e' gia' stato provato: `enablement: true` su
+# configure-pages fallisce con "Resource not accessible by integration". Il token del workflow
+# puo' pubblicare su un sito Pages che esiste, non crearne uno.
+#
+# Da quel momento l'app vive su https://savio992.github.io/AstaHelper/ e si aggiorna da sola.
+
+name: Pubblica su GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+      - claude/fantacalcio-auction-app-m0u47u
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Un solo deploy alla volta, senza annullare quello gia' partito.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Nessuna dipendenza da installare: il progetto usa solo Node e le API del browser.
+      - name: Test
+        run: node --test 'test/*.test.js'
+
+      - name: Build
+        run: node scripts/build.js
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -6,8 +6,10 @@
 import * as store from '../../src/store.js';
 import * as asta from '../../src/ui/asta.js';
 import * as piano from '../../src/ui/piano.js';
+import * as mercato from '../../src/ui/mercato.js';
 import * as listone from '../../src/ui/listone.js';
 import * as setup from '../../src/ui/setup.js';
+import * as advisor from '../../src/domain/advisor.js';
 import { ROLES } from '../../src/domain/model.js';
 
 const lines = [];
@@ -44,7 +46,10 @@ try {
   store.state.ui.tab = 'asta';
   let html = asta.render(noop);
   check('la schermata asta mostra i crediti', html.includes('crediti liberi') && html.includes('500'));
-  check('mostra gli obiettivi ancora liberi', html.includes('Obiettivi ancora liberi'));
+  // Gli obiettivi sono ora tagliati sul reparto in corso, con gli altri piegati sotto.
+  check('mostra gli obiettivi del reparto in corso', /Obiettivi · portieri/.test(html));
+  check('gli obiettivi dei reparti dopo restano raggiungibili', html.includes('Gli obiettivi dei reparti dopo'));
+  check('propone chi sta per essere chiamato', html.includes('i piu&#39; probabili adesso') || html.includes("i piu' probabili adesso"));
   check('ogni obiettivo ha il tocco singolo per dirlo perso', html.includes('data-action="quick-gone"'));
 
   // Seleziono un obiettivo: deve comparire il pannello con offerta massima e alternative.
@@ -54,14 +59,50 @@ try {
   await new Promise((r) => setTimeout(r, 400));
   html = asta.render(noop);
   check('pannello del giocatore aperto', html.includes(target.name));
-  check("mostra l'offerta massima", html.includes('offerta massima conveniente'));
+  check("mostra l'offerta massima", html.includes('vale fino a questo') || html.includes('non fa per te'));
   check('mostra le alternative se lo perdo', html.includes('Se lo perdo'));
+  // Il divario fra prezzo di mercato e offerta massima va motivato, non lasciato li': un
+  // portiere di riserva caro e' il caso tipico, e il ripiego non deve essere gia' in rosa.
+  const titolare = store.state.plan.picks.filter((x) => x.role === 'P').sort((a, b) => b.score - a.score)[0];
+  const riserva = store.state.players
+    .filter((x) => x.role === 'P' && x.id !== titolare.id && x.expectedPrice > 8)
+    .sort((a, b) => a.score - b.score)[0];
+  if (riserva) {
+    store.state.ui.selectedId = riserva.id;
+    asta.render(noop);
+    await new Promise((r) => setTimeout(r, 900));
+    const conRiserva = asta.render(noop);
+    check('il divario col mercato viene motivato', /mercato lo paga/.test(conRiserva), riserva.name);
+    const rip = conRiserva.match(/(?:se lo superi, meglio|se ti serve il ruolo,) <b>([^<]+)<\/b>/);
+    const inPiano = new Set(store.state.plan.picks.map((x) => x.name));
+    check('il ripiego non e\' uno che prendo comunque', !rip || !inPiano.has(rip[1]), rip ? rip[1] : 'nessun ripiego');
+    store.state.ui.selectedId = target.id;
+    asta.render(noop);
+    await new Promise((r) => setTimeout(r, 900));
+  }
+
   check('mostra i pulsanti di assegnazione', html.includes('data-action="take-mine"') && html.includes('data-action="take-other"'));
+  check('le alternative sono spiegate a parole, non con un delta', /praticamente uguale|poco sotto|sensibilmente sotto|ripiego|meglio di lui/.test(html));
+
+  // La schermata iniziale deve dire cosa e' impostato e cosa manca.
+  store.state.ui.selectedId = null;
+  const home = asta.render(noop);
+  check('la schermata iniziale riepiloga la configurazione', home.includes('Prima di cominciare'));
+  check('riepiloga la lega impostata', home.includes(`${store.state.settings.participants} squadre`));
+  check('i passi portano alle altre schede', home.includes('data-action="goto"'));
+  store.state.ui.selectedId = target.id;
 
   // --- compro un giocatore ---------------------------------------------------------
   const prezzo = 40;
   store.assign(target.id, 'mine', prezzo);
   check('crediti scalati', store.creditsLeft() === 500 - prezzo, `restano ${store.creditsLeft()}`);
+  // Ogni operazione deve essere raccontata: chi e' entrato, chi esce, dove vanno i crediti.
+  // Nell'app il pannello del giocatore si chiude da solo dopo l'assegnazione: qui lo replichiamo,
+  // altrimenti si sta guardando il dettaglio e non la schermata che vede l'utente.
+  store.state.ui.selectedId = null;
+  const dopoAcquisto = asta.render(noop);
+  check('l\'acquisto viene raccontato', dopoAcquisto.includes(target.name) && /tuo a \d+/.test(dopoAcquisto), 'card della mossa');
+  check('il racconto dice cosa ne consegue', /piano|crediti|obiettiv/i.test(dopoAcquisto));
   check('il giocatore entra in rosa', store.state.plan.owned.some((p) => p.id === target.id));
   check('il piano si ricalcola su 24 slot', store.state.plan.picks.length === 24);
   check('il budget totale resta rispettato', store.state.plan.cost <= 500, `${store.state.plan.cost}`);
@@ -70,9 +111,25 @@ try {
   const perso = store.state.plan.picks.filter((p) => p.role === 'D').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
   const puntiPrima = store.state.plan.score;
   store.assign(perso.id, 'other', 0);
+  store.state.ui.selectedId = null;
+  const dopoPerdita = asta.render(noop);
+  check('la perdita viene raccontata', /va a un avversario/.test(dopoPerdita), 'card della mossa');
   check('chi va agli altri esce dal piano', !store.state.plan.picks.some((p) => p.id === perso.id));
   check('il piano resta valido', store.state.plan.ok && store.state.plan.picks.length === 24);
   check('perdere un obiettivo non migliora la rosa', store.state.plan.score <= puntiPrima + 1e-6);
+
+  // --- a chi e' andato ----------------------------------------------------------------
+  // La corsia veloce non chiede l'acquirente, ma senza acquirente il tabellone non impara.
+  // La domanda arriva dopo, e rispondere non deve costare un ricalcolo del piano.
+  check('dopo una perdita l\'app chiede a chi e\' andato', /a chi e&#39; andato\?|a chi e' andato\?/.test(dopoPerdita), 'card di attribuzione');
+  const primaDellAttribuzione = store.state.plan;
+  const tettoPrima = store.state.tabellone.squadre[3].massimo;
+  asta.onAction('attribuisci', { dataset: { id: perso.id, idx: '3' } }, null, noop);
+  check('l\'acquisto finisce alla squadra giusta', store.state.auction.taken[perso.id].by === 3, `by=${store.state.auction.taken[perso.id].by}`);
+  check('il tabellone impara', store.state.tabellone.squadre[3].massimo < tettoPrima, `${tettoPrima} → ${store.state.tabellone.squadre[3].massimo}`);
+  check('il tabellone e\' completo', store.state.tabellone.attendibile === true);
+  check('e il piano non e\' stato rifatto', store.state.plan === primaDellAttribuzione, 'stessa identica istanza');
+  check('la domanda sparisce', !/a chi e&#39; andato\?|a chi e' andato\?/.test(asta.render(noop)));
 
   // --- annullo -----------------------------------------------------------------------
   store.undo();
@@ -96,6 +153,28 @@ try {
   check('le impostazioni mostrano i modificatori', html.includes('Modificatore di difesa') && html.includes('Imbattibilita'));
   check('le impostazioni mostrano il tetto per club', html.includes('Concentrazione per club'));
 
+  // --- rinominare una squadra ---------------------------------------------------------
+  // Ogni campo in cui si scrive deve avere un id: il ridisegno rifa' tutto il DOM e senza id
+  // il cursore finisce nel nulla dopo la prima lettera.
+  const campi = [...html.matchAll(/<input[^>]*data-action="(?:set|setsquadra|setslot|setstarter|setcap|setmintop|setmaxclub)"[^>]*>/g)].map((m) => m[0]);
+  check('ogni campo delle impostazioni ha un id', campi.length >= 10 && campi.every((c) => /\sid="/.test(c)), `${campi.length} campi`);
+
+  let ridisegni = 0;
+  const conta = () => { ridisegni++; };
+  const campo = { value: '', dataset: { i: '2' }, id: 'cfg-squadra-2' };
+  for (const c of 'Sasso FC') {
+    campo.value += c;
+    setup.onInput('setsquadra', campo, conta, 'input');
+  }
+  check('scrivere un nome non ridisegna la pagina', ridisegni === 0, `${ridisegni} ridisegni`);
+  check('e il nome resta quello che ho scritto', store.state.settings.squadre[2] === 'Sasso FC', store.state.settings.squadre[2]);
+  setup.onInput('setsquadra', campo, conta, 'change');
+  check('uscendo dal campo il nome e\' salvato', JSON.parse(localStorage.getItem('astahelper:v1')).settings.squadre[2] === 'Sasso FC');
+  check('e il ridisegno arriva alla fine', ridisegni === 1);
+  const campoVuoto = { value: '   ', dataset: { i: '3' }, id: 'cfg-squadra-3' };
+  setup.onInput('setsquadra', campoVuoto, noop, 'change');
+  check('un nome svuotato torna al valore di partenza', store.state.settings.squadre[3] === 'Squadra 4', store.state.settings.squadre[3]);
+
   // --- persistenza -------------------------------------------------------------------
   const primaDelReload = store.creditsLeft();
   store.state.roster = [];
@@ -104,6 +183,237 @@ try {
   const ok = store.load();
   check('lo stato si ricarica dal telefono', ok && store.state.players.length === 540 && store.creditsLeft() === primaDelReload);
   check("l'asta in corso sopravvive alla chiusura", store.state.auction.owned[target.id] === prezzo);
+
+  // --- il piano si puo' correggere a mano ------------------------------------------
+  store.state.ui.tab = 'piano';
+  // load() ricalcola i giocatori ma non il piano: e' rebuildPlan a farlo, come all'avvio.
+  store.rebuildPlan();
+  const pianoPrima = store.state.plan;
+  const giaDentro = new Set(pianoPrima.picks.map((x) => x.id));
+  const portiereVoluto = store.state.players
+    .filter((x) => x.role === 'P' && !giaDentro.has(x.id) && !store.state.auction.taken[x.id])
+    .sort((a, b) => b.expectedPrice - a.expectedPrice)[0];
+  piano.onAction('blocca', { dataset: { id: portiereVoluto.id } }, null, noop);
+  const scelto = store.state.plan.picks.find((x) => x.id === portiereVoluto.id);
+  check('il portiere scelto a mano entra nel piano', !!scelto && scelto.bloccato === true, portiereVoluto.name);
+  const idsPiano = store.state.plan.picks.map((x) => x.id);
+  check('e non compare due volte', new Set(idsPiano).size === idsPiano.length);
+  check('il piano resta completo', ROLES.every((r) => store.state.plan.picks.filter((x) => x.role === r).length === store.state.settings.slots[r] - Object.keys(store.state.auction.owned).filter((id) => store.state.players.find((p) => p.id === id)?.role === r).length));
+  check('il piano lo mostra come scelta tua', piano.render(noop).includes('scelto da te'));
+
+  piano.onAction('libera', { dataset: { id: portiereVoluto.id } }, null, noop);
+  check('si puo\' restituire la scelta al solutore', !store.state.plan.picks.some((x) => x.id === portiereVoluto.id && x.bloccato));
+
+  // Scartare il terzo portiere: il posto si deve riempire da solo, e l'app deve dirlo.
+  const terzoPortiere = store.state.plan.picks.filter((x) => x.role === 'P').sort((a, b) => a.plannedPrice - b.plannedPrice)[0];
+  piano.onAction('scarta', { dataset: { id: terzoPortiere.id } }, null, noop);
+  const portieriDopo = store.state.plan.picks.filter((x) => x.role === 'P');
+  const miei = Object.keys(store.state.auction.owned).filter((id) => store.state.players.find((p) => p.id === id)?.role === 'P').length;
+  check('il posto lasciato libero si riempie', portieriDopo.length === store.state.settings.slots.P - miei, `${portieriDopo.length} portieri a piano`);
+  check('lo scartato non c\'e\' piu\'', !portieriDopo.some((x) => x.id === terzoPortiere.id));
+  const raccontoScarto = piano.render(noop);
+  check('lo scarto viene raccontato', raccontoScarto.includes(terzoPortiere.name + ' scartato'), 'card della modifica');
+  piano.onAction('libera', { dataset: { id: terzoPortiere.id } }, null, noop);
+
+  // Un giocatore scartato: i numeri devono valere sul mondo in cui non lo e', altrimenti
+  // dicono solo che il piano non ha budget per lui perche' l'hai tolto tu. La decisione sta in
+  // una funzione a parte proprio per poterla verificare senza rifare tutti i calcoli.
+  const portiereCaro = store.state.players
+    .filter((x) => x.role === 'P' && !store.state.auction.taken[x.id] && !store.state.auction.owned[x.id])
+    .sort((a, b) => b.expectedPrice - a.expectedPrice)[0];
+  const primaDelloScarto = store.contestoConsiglio(portiereCaro.id);
+  check('un giocatore normale si valuta com\'e\'', primaDelloScarto.escluso === false && !primaDelloScarto.unavailable.has(portiereCaro.id));
+
+  piano.onAction('scarta', { dataset: { id: portiereCaro.id } }, null, noop);
+  const dopoLoScarto = store.contestoConsiglio(portiereCaro.id);
+  check('uno scartato resta escluso dal piano', !!store.state.auction.esclusi[portiereCaro.id]);
+  check('ma si valuta come se non lo fosse', dopoLoScarto.escluso === true && !dopoLoScarto.unavailable.has(portiereCaro.id),
+    'altrimenti il tetto direbbe solo che il piano non lo vuole');
+  // Non si puo' usare `perso`: poche righe sopra il test annulla proprio quell'assegnazione.
+  const venduto = Object.keys(store.state.auction.taken)[0];
+  if (venduto) check('e chi e\' andato agli altri resta escluso davvero', dopoLoScarto.unavailable.has(venduto));
+
+  store.state.ui.selectedId = portiereCaro.id;
+  const schermata = asta.render(noop);
+  check('lo scarto e\' dichiarato in cima', schermata.includes('L\'hai scartato'));
+  check('e si dice che i numeri valgono se cambi idea', schermata.includes('se cambiassi idea'));
+  piano.onAction('libera', { dataset: { id: portiereCaro.id } }, null, noop);
+  store.state.ui.selectedId = null;
+  asta.invalidate();
+
+  const daScartare = store.state.plan.picks.filter((x) => x.role === 'C').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  piano.onAction('scarta', { dataset: { id: daScartare.id } }, null, noop);
+  check('lo scartato sparisce dal piano', !store.state.plan.picks.some((x) => x.id === daScartare.id), daScartare.name);
+  check('e resta visibile per poterlo recuperare', piano.render(noop).includes('Scartati da te'));
+  piano.onAction('libera', { dataset: { id: daScartare.id } }, null, noop);
+  check('si puo\' recuperare', !piano.render(noop).includes('Scartati da te'));
+
+  // --- le due modalita' ---------------------------------------------------------------
+  store.state.ui.tab = 'piano';
+  piano.onAction('modalita', { dataset: { v: 'mia' } }, null, noop);
+  check('la modalita\' si puo\' cambiare', store.state.settings.modalita === 'mia');
+  const inModalitaMia = piano.render(noop);
+  check('la lista compare', inModalitaMia.includes('La tua lista'));
+  check('e si puo\' cercare chi aggiungere', inModalitaMia.includes('Aggiungi alla lista'));
+
+  const daMettere = store.state.players.filter((x) => x.role === 'A' && !store.state.auction.taken[x.id]).sort((a, b) => b.expectedPrice - a.expectedPrice)[0];
+  piano.onAction('blocca', { dataset: { id: daMettere.id } }, null, noop);
+  const conUnNome = piano.render(noop);
+  check('il nome scelto entra in lista', conUnNome.includes('1 nomi') || conUnNome.includes('scelto da te'));
+
+  // Il portiere scelto e' il portiere: il piano non deve comprarne uno piu' forte sopra di lui.
+  const liberi = store.state.players.filter((x) => x.role === 'P' && !store.state.auction.taken[x.id] && !store.state.auction.owned[x.id]).sort((a, b) => b.score - a.score);
+  const mioPortiere = liberi[Math.floor(liberi.length * 0.2)];
+  piano.onAction('blocca', { dataset: { id: mioPortiere.id } }, null, noop);
+  const inPorta = [...store.state.plan.owned, ...store.state.plan.picks].filter((x) => x.role === 'P');
+  const sopra = inPorta.filter((x) => x.id !== mioPortiere.id && (x.score || 0) > (mioPortiere.score || 0));
+  check('il portiere che scelgo io e\' il titolare', inPorta.some((x) => x.id === mioPortiere.id) && sopra.length === 0,
+    `${mioPortiere.name} · in porta: ${inPorta.map((x) => x.name).join(' + ')}`);
+  const conPortiere = piano.render(noop);
+  check('e il piano dice chi di loro non gioca', conPortiere.includes('panchina'));
+  piano.onAction('libera', { dataset: { id: mioPortiere.id } }, null, noop);
+
+  // In modalita' "scelgo io" il numerone dell'asta cambia domanda.
+  store.state.ui.tab = 'asta';
+  store.state.ui.selectedId = daMettere.id;
+  asta.invalidate();
+  // Il primo disegno avvia il calcolo e restituisce la rotella; il secondo lo trova pronto.
+  // Nell'app lo fa il rerender passato a ensureAdvice, qui il rerender e' un noop.
+  asta.render(noop);
+  await new Promise((r) => setTimeout(r, 4000));
+  asta.render(noop);
+  await new Promise((r) => setTimeout(r, 4000));
+  const schedaMia = asta.render(noop);
+  // Se il calcolo va in errore la scheda resta con la rotella: qui lo si fa emergere.
+  let erroreConsiglio = '';
+  try {
+    const ctx = store.contestoConsiglio(daMettere.id);
+    const a = { players: store.state.players, settings: store.state.settings, owned: store.ownedMap(), unavailable: ctx.unavailable, obbligati: store.obbligatiSet(), playerId: daMettere.id };
+    const alts = advisor.alternatives({ ...a, limit: 12 });
+    advisor.maxBid(a);
+    advisor.spiegaPerdita({ ...a, piano: store.state.plan, alternative: alts.alternatives });
+    advisor.tettoSullaLista({ players: a.players, settings: a.settings, owned: a.owned, lista: store.obbligatiSet(), playerId: daMettere.id });
+  } catch (e) {
+    erroreConsiglio = (e && e.message) || String(e);
+  }
+  check('i consigli non vanno in errore', !erroreConsiglio, erroreConsiglio || 'ok');
+  const etichetta = (schedaMia.match(/class="lbl">([^<]*)</) || [])[1] || 'NESSUNA';
+  check('l\'asta chiede quanto posso arrivare, non quanto vale', schedaMia.includes('puoi arrivare a questo'), `${daMettere.name} · ${etichetta}`);
+  check('e dice quanto e\' impegnato sul resto della lista', schedaMia.includes('della tua lista'));
+
+  piano.onAction('modalita', { dataset: { v: 'auto' } }, null, noop);
+  store.state.ui.selectedId = null;
+  asta.invalidate();
+
+  // --- backup dell'asta ---------------------------------------------------------------
+  // Tutto vive nella memoria del browser, che puo' sparire. Il file deve bastare da solo a
+  // rimettere in piedi la stessa asta, listone compreso.
+  store.state.ui.tab = 'setup';
+  check('la scheda Lega offre il backup', setup.render(noop).includes('Backup dell\'asta'));
+
+  // Il tasto non deve mai fingere: dentro un iframe il download e' inerte e non solleva
+  // niente, quindi la scelta si fa guardando dove si gira, non aspettando un errore.
+  const inCornice = window.self !== window.top;
+  let salvato = null;
+  const clipVera = navigator.clipboard && navigator.clipboard.writeText;
+  if (navigator.clipboard) navigator.clipboard.writeText = (t) => { salvato = t; return Promise.resolve(); };
+  const click = HTMLAnchorElement.prototype.click;
+  let scaricato = null;
+  HTMLAnchorElement.prototype.click = function () { if (this.download) scaricato = this.download; else click.call(this); };
+  setup.onAction('esporta', { dataset: {} }, null, noop);
+  HTMLAnchorElement.prototype.click = click;
+  if (navigator.clipboard && clipVera) navigator.clipboard.writeText = clipVera;
+  check(
+    inCornice ? 'in una cornice l\'export passa dagli appunti' : 'in pagina piena l\'export scarica un file',
+    inCornice ? typeof salvato === 'string' && salvato.length > 100 : /^astahelper-\d{8}-\d{4}\.json$/.test(scaricato || ''),
+    inCornice ? `${Math.round((salvato || '').length / 1024)} KB negli appunti` : String(scaricato)
+  );
+
+  const backup = store.esporta();
+  let payload = null;
+  try { payload = JSON.parse(backup); } catch (e) { payload = null; }
+  check('il backup e\' JSON valido e si dichiara', !!payload && payload.app === 'astahelper' && payload.formato >= 1);
+  check('e contiene listone, impostazioni e asta',
+    !!payload?.settings && !!payload?.auction && (payload?.sources || []).length === 1,
+    `${(payload?.sources?.[0]?.players || []).length} giocatori nel file`);
+
+  // Un file sbagliato non deve fare danni: e' il momento in cui si sta gia' rischiando.
+  const primaDelDanno = { giocatori: store.state.players.length, crediti: store.creditsLeft() };
+  const rifiuti = [
+    ['testo che non e\' JSON', 'questo non e un file'],
+    ['JSON senza asta dentro', '{"app":"astahelper","settings":{}}'],
+    ['backup di una versione futura', JSON.stringify({ ...payload, formato: 99 })],
+  ];
+  for (const [nome, cattivo] of rifiuti) {
+    const esito = store.importa(cattivo);
+    check(`rifiuta ${nome}`, esito.ok === false && !!esito.motivo, esito.motivo || '');
+  }
+  check('e rifiutando non ha toccato niente',
+    store.state.players.length === primaDelDanno.giocatori && store.creditsLeft() === primaDelDanno.crediti);
+
+  // Andata e ritorno: si compra qualcuno, si ripristina, si deve tornare a prima.
+  const cavia = store.state.plan.picks.filter((p) => p.role === 'C')[0];
+  store.assign(cavia.id, 'mine', 33);
+  check('lo stato e\' cambiato', store.creditsLeft() !== primaDelDanno.crediti);
+  const tornato = store.importa(backup);
+  check('il ripristino riesce', tornato.ok === true, tornato.motivo || `${tornato.giocatori} giocatori`);
+  check('e riporta l\'asta esattamente a prima',
+    store.creditsLeft() === primaDelDanno.crediti && store.state.auction.owned[cavia.id] === undefined,
+    `${store.creditsLeft()} crediti`);
+  check('il piano viene rifatto sul listone ripristinato', store.state.plan?.ok === true && store.state.players.length === 540);
+  check('e il backup e\' finito anche nella memoria del telefono',
+    JSON.parse(localStorage.getItem('astahelper:v1')).auction.owned[cavia.id] === undefined);
+
+  // --- cancella tutto ----------------------------------------------------------------
+  // Il tasto usava confirm(), che dentro un iframe con sandbox viene ignorato in silenzio:
+  // la conferma deve stare nella pagina, e l'azzeramento deve ripulire anche le memorie
+  // delle viste, che vivono fuori dallo stato.
+  piano.render(noop);
+  store.state.ui.tab = 'setup';
+  setup.onAction('reset', { dataset: {} }, null, noop);
+  const conConferma = setup.render(noop);
+  check('la conferma sta dentro la pagina', conConferma.includes('reset-conferma') && conConferma.includes('Annulla'));
+
+  setup.onAction('reset-annulla', { dataset: {} }, null, noop);
+  check('si puo\' annullare', !setup.render(noop).includes('reset-conferma') && store.state.players.length === 540);
+
+  setup.onAction('reset', { dataset: {} }, null, noop);
+  setup.onAction('reset-conferma', { dataset: {} }, null, noop);
+  check('il listone e\' sparito', store.state.players.length === 0 && store.state.sources.length === 0);
+  check('l\'asta in corso e\' sparita', Object.keys(store.state.auction.owned).length === 0 && store.state.auction.log.length === 0);
+  check('la memoria del telefono e\' vuota', localStorage.getItem('astahelper:v1') === null);
+  check('non si ricarica piu\' niente', store.load() === false);
+  const astaDopo = asta.render(noop);
+  check('l\'asta torna alla schermata iniziale', astaDopo.includes('Nessun listone caricato'));
+  check('il mercato e\' vuoto', mercato.render(noop).includes('Nessun listone caricato'));
+
+  // Il caso che conta davvero per le memorie delle viste: azzero e reimporto un listone
+  // diverso. Se la scheda d'asta calcolata prima sopravvive, restano a schermo giocatori
+  // di un listone che non esiste piu'.
+  store.addSource({ name: 'prova', players, headers: [], mapping: {}, warnings: [], fileName: 'prova.xlsx' });
+  const nomeVecchio = target.name;
+  piano.onAction('scheda', { dataset: {} }, null, noop);
+  await new Promise((r) => setTimeout(r, 400));
+  const conScheda = piano.render(noop);
+  check('la scheda d\'asta si calcola', conScheda.includes("Scheda d'asta") && conScheda.includes('Ricalcola'));
+
+  setup.onAction('reset', { dataset: {} }, null, noop);
+  setup.onAction('reset-conferma', { dataset: {} }, null, noop);
+  // Nomi che non contengono i vecchi nemmeno come sottostringa, altrimenti il controllo mente.
+  store.addSource({
+    name: 'altro',
+    players: players.slice(0, 200).map((p, i) => ({ ...p, id: 'nuovo' + i, name: 'Nuovo' + i })),
+    headers: [],
+    mapping: {},
+    warnings: [],
+    fileName: 'altro.xlsx',
+  });
+  const dopoReimport = piano.render(noop);
+  check(
+    'la scheda del listone cancellato non sopravvive',
+    !dopoReimport.includes('Ricalcola') && !dopoReimport.includes(nomeVecchio),
+    'memoria della vista ripulita'
+  );
 
   localStorage.clear();
 } catch (err) {

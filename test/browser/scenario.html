@@ -51,13 +51,17 @@ try {
   const bid = maxBid({ players, settings, playerId: target.id });
   const bidMs = performance.now() - t1;
   check('offerta massima calcolata', bid.maxBid > 0 && bid.maxBid <= 476, `${bid.maxBid} crediti in ${bidMs.toFixed(0)}ms`);
-  check('offerta massima reattiva', bidMs < 800, `${bidMs.toFixed(0)}ms`);
+  // Guardie contro regressioni di ordine di grandezza, non misure: questo gira in un container
+  // condiviso e lo stesso calcolo oscilla fra 800 e 1600 millisecondi a seconda del carico.
+  // Il solutore completo costa piu' del vecchio, che pero' sbagliava l'offerta fino al 50%;
+  // il pannello mostra la rotella mentre calcola.
+  check('offerta massima reattiva', bidMs < 3000, `${bidMs.toFixed(0)}ms`);
 
   const t2 = performance.now();
   const alts = alternatives({ players, settings, playerId: target.id });
   const altMs = performance.now() - t2;
   check('alternative trovate', alts.alternatives.length > 0 && alts.alternatives.every((a) => a.player.role === target.role), `${alts.alternatives.length} in ${altMs.toFixed(0)}ms`);
-  check('alternative reattive', altMs < 1200, `${altMs.toFixed(0)}ms`);
+  check('alternative reattive', altMs < 3000, `${altMs.toFixed(0)}ms`);
 
   // 5. Lettura di un .xlsx vero costruito al volo con CompressionStream.
   const enc = new TextEncoder();
