@@ -429,6 +429,41 @@ try {
   store.state.ui.selectedId = null;
   asta.invalidate();
 
+  // --- la cache a piu' voci -----------------------------------------------------------
+  // Durante un rilancio si salta avanti e indietro fra due o tre nomi. Con una casella sola
+  // ogni ritorno rifaceva un secondo e mezzo di conti su un piano che non era cambiato.
+  const primoBersaglio = store.state.plan.picks[0].id;
+  const secondoBersaglio = store.state.plan.picks[1].id;
+  asta.invalidate();
+  store.state.ui.selectedId = primoBersaglio;
+  asta.render(noop);
+  await new Promise((r) => setTimeout(r, 1800));
+  store.state.ui.selectedId = secondoBersaglio;
+  asta.render(noop);
+  await new Promise((r) => setTimeout(r, 1800));
+
+  // Ritorno sul primo: deve essere gia' pronto senza aspettare niente.
+  const tRitorno = performance.now();
+  store.state.ui.selectedId = primoBersaglio;
+  const alRitorno = asta.render(noop);
+  const msRitorno = Math.round(performance.now() - tRitorno);
+  check(
+    'tornare su un giocatore gia\' aperto non ricalcola',
+    !alRitorno.includes('calcolo in corso') && alRitorno.includes('vale fino a questo') && msRitorno < 120,
+    `${msRitorno}ms, senza spinner`
+  );
+
+  // Ma se il piano cambia, la cache scade tutta insieme: un consiglio vecchio sarebbe peggio
+  // di un'attesa.
+  store.assign(store.state.plan.picks[3].id, 'other', 30, 2);
+  store.state.ui.selectedId = primoBersaglio;
+  const dopoIlCambio = asta.render(noop);
+  check('ma se il piano cambia la cache scade', dopoIlCambio.includes('calcolo in corso'), 'ricalcola invece di mostrare il vecchio');
+  await new Promise((r) => setTimeout(r, 1800));
+  store.undo();
+  store.state.ui.selectedId = null;
+  asta.invalidate();
+
   // --- backup dell'asta ---------------------------------------------------------------
   // Tutto vive nella memoria del browser, che puo' sparire. Il file deve bastare da solo a
   // rimettere in piedi la stessa asta, listone compreso.

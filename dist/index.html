@@ -3727,14 +3727,31 @@ function budgetDiFase({ settings, players, owned, plan, role = null }) {
  * E' il prezzo oltre il quale la rosa che ottengo prendendolo vale meno della rosa
  * che ottengo lasciandolo andare e ridistribuendo i crediti. Il vero limite dell'asta.
  */
-function maxBid({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId }) {
+/**
+ * La rosa migliore assumendo di aver perso questo giocatore: il piano B.
+ *
+ * E' il termine di paragone di quasi tutto quello che l'assistente dice su un giocatore —
+ * l'offerta massima e' il prezzo oltre il quale conviene il piano B, le alternative sono chi
+ * ci entra al posto suo, il racconto della perdita e' la differenza fra i due piani. Per
+ * questo va calcolato una volta sola e passato in giro: le tre funzioni lo costruivano
+ * ciascuna per conto proprio, con gli stessi identici argomenti, e aprire una scheda costava
+ * tre risoluzioni complete invece di una.
+ *
+ * Se era un giocatore che avevo imposto, perderlo scioglie il vincolo: altrimenti il piano
+ * resterebbe legato a qualcuno che non e' piu' comprabile.
+ */
+function pianoSenza({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId }) {
+  const senza = new Set(unavailable);
+  senza.add(playerId);
+  const vincoli = new Set([...obbligati].filter((id) => id !== playerId));
+  return optimizeRoster({ players, settings, owned, unavailable: senza, ...FAST, obbligati: vincoli });
+}
+
+function maxBid({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, planB: pianoB = null }) {
   const hard = maxSpendableNow(settings, owned);
   if (hard < 1) return { maxBid: 0, planB: null, reason: 'Crediti esauriti per i vincoli di rosa.' };
 
-  const withoutSet = new Set(unavailable);
-  withoutSet.add(playerId);
-  const senzaVincolo = new Set([...obbligati].filter((id) => id !== playerId));
-  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST, obbligati: senzaVincolo });
+  const planB = pianoB?.ok ? pianoB : pianoSenza({ players, settings, owned, unavailable, obbligati, playerId });
   if (!planB.ok) {
     // Se senza di lui non esiste una rosa valida, e' incedibile: si arriva al tetto tecnico.
     return { maxBid: hard, planB, hard, breakEven: hard, reason: 'Senza di lui non chiudi la rosa.' };
@@ -3790,15 +3807,18 @@ function alternatives({
   playerId,
   limit = 5,
   shortlist = 10,
+  planB: pianoB = null,
 }) {
   const byId = new Map(players.map((p) => [p.id, p]));
   const target = byId.get(playerId);
   if (!target) return { alternatives: [], planB: null };
 
+  // Il piano B arriva da fuori quando c'e' (aprire una scheda ne calcolava tre identici),
+  // ma l'insieme "senza di lui" serve lo stesso per valutare ogni candidato: costruirlo non
+  // costa niente, e' risolverlo che costava.
   const withoutSet = new Set(unavailable);
   withoutSet.add(playerId);
-  const senzaVincolo = new Set([...obbligati].filter((id) => id !== playerId));
-  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST, obbligati: senzaVincolo });
+  const planB = pianoB?.ok ? pianoB : pianoSenza({ players, settings, owned, unavailable, obbligati, playerId });
   const planWith = (() => {
     const o = new Map(owned);
     o.set(playerId, Math.max(1, Math.round(target.expectedPrice ?? 1)));
@@ -4023,17 +4043,12 @@ function abbinamentoPortiere({ players, settings, plan, owned = new Map(), unava
  * su uno da venti: significa che quei crediti si ridistribuiscono, e il piano puo' rifare
  * l'attacco intero e portarsi dietro difesa e centrocampo.
  */
-function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, piano = null, limite = 4, alternative = null }) {
+function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, piano = null, limite = 4, alternative = null, planB: pianoB = null }) {
   const perso = players.find((p) => p.id === playerId);
   if (!perso) return null;
 
   const prima = piano?.ok ? piano : optimizeRoster({ players, settings, owned, unavailable, ...FAST, obbligati });
-  const senza = new Set(unavailable);
-  senza.add(playerId);
-  // Se era un giocatore che avevo imposto, perderlo scioglie il vincolo: altrimenti il piano
-  // resterebbe legato a qualcuno che non e' piu' comprabile.
-  const vincoli = new Set([...obbligati].filter((id) => id !== playerId));
-  const dopo = optimizeRoster({ players, settings, owned, unavailable: senza, ...FAST, obbligati: vincoli });
+  const dopo = pianoB?.ok ? pianoB : pianoSenza({ players, settings, owned, unavailable, obbligati, playerId });
   if (!dopo.ok) {
     return { perso, dopo, impossibile: true, frasi: ['Senza di lui non si chiude una rosa valida: e\' incedibile.'] };
   }
@@ -4055,7 +4070,12 @@ function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new
 
   const prezzoPiano = prima.picks.find((p) => p.id === playerId)?.plannedPrice ?? perso.expectedPrice ?? 0;
   const costo = Math.max(0, Math.round((prima.score - dopo.score) * 10) / 10);
-  const { alternatives: tutte } = alternatives({ players, settings, owned, unavailable, playerId, limit: 12 });
+  // Le alternative arrivano gia' calcolate da chi ci chiama. Il parametro c'era da tempo e non
+  // veniva letto: si ricalcolavano da capo a ogni apertura di scheda, ed erano il pezzo piu'
+  // caro dei tre.
+  const tutte = alternative?.length
+    ? alternative
+    : alternatives({ players, settings, owned, unavailable, obbligati, playerId, limit: 12, planB: dopo }).alternatives;
 
   const frasi = [];
   if (sostituto) {
@@ -4289,7 +4309,7 @@ function sceltiInPanchina({ plan, settings }) {
   return out.sort((a, b) => b.prezzo - a.prezzo);
 }
 
-return { maxSpendableNow, slotsLeftByRole, faseCorrente, budgetDiFase, maxBid, alternatives, planDiff, tierBudgetReport, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, CONFIG_ASTA };
+return { maxSpendableNow, slotsLeftByRole, faseCorrente, budgetDiFase, pianoSenza, maxBid, alternatives, planDiff, tierBudgetReport, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, CONFIG_ASTA };
 })();
 
 // ===== src/domain/strategia.js =====
@@ -4735,15 +4755,37 @@ const __m_src_ui_asta_js = (() => {
 
 const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, contestoConsiglio, attribuisci } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots, elenco } = __m_src_domain_model_js;
-const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista } = __m_src_domain_advisor_js;
+const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista, pianoSenza } = __m_src_domain_advisor_js;
 const { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } = __m_src_domain_mercato_js;
 const { spiegaMossa, ultimaOccasione } = __m_src_domain_strategia_js;
 const { optimizeRoster, CONFIG_SOLUTORE } = __m_src_domain_optimizer_js;
 const { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } = __m_src_ui_common_js;
 
-// I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
-let cache = { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+// I calcoli d'asta costano piu' di un secondo a scheda: si tengono finche' il piano non cambia.
+//
+// Ne teniamo alcuni, non uno solo. Durante un rilancio si salta avanti e indietro fra due o tre
+// nomi — quello chiamato, il suo sostituto, quello che si stava seguendo prima — e con una
+// casella sola ogni ritorno ricalcolava tutto da capo. Le voci valgono per una revisione del
+// piano; quando il piano cambia sono tutte scadute insieme, quindi si buttano invece di
+// invecchiare una per una.
+const MAX_SCHEDE = 6;
+const schede = new Map();
+// A quale piano appartengono le schede in cache. Quando il piano cambia scadono tutte
+// insieme, perche' tutte lo usano come termine di paragone.
+let schedeRev = null;
+let cache = vuota();
 let pending = false;
+
+function vuota() {
+  return { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+}
+
+/** Riporta in cima la voce appena usata, cosi' a buttarne una si butta la piu' vecchia. */
+function ricorda(key, voce) {
+  schede.delete(key);
+  schede.set(key, voce);
+  while (schede.size > MAX_SCHEDE) schede.delete(schede.keys().next().value);
+}
 
 // La revisione del piano, non la lunghezza del registro: mettere un lucchetto dalla scheda
 // Piano cambia l'offerta massima senza aggiungere una riga al registro, e per due versioni
@@ -4762,13 +4804,24 @@ function invalidate() {
   mossaChiusa = null;
   mossaRicostruita = null;
 
-  cache = { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+  schede.clear();
+  schedeRev = null;
+  cache = vuota();
   reparto = null;
 }
 
 function ensureAdvice(rerender) {
   const key = cacheKey();
   if (cache.key === key || !state.ui.selectedId || pending) return;
+  if (schedeRev !== state.revisione) {
+    schede.clear();
+    schedeRev = state.revisione;
+  }
+  const gia = schede.get(key);
+  if (gia) {
+    cache = gia;
+    return;
+  }
   pending = true;
   // Un frame di respiro cosi' lo spinner viene disegnato prima del calcolo.
   setTimeout(() => {
@@ -4789,19 +4842,23 @@ function ensureAdvice(rerender) {
       const pianoRif = escluso
         ? optimizeRoster({ players: args.players, settings: args.settings, owned: args.owned, unavailable, obbligati: args.obbligati, ...CONFIG_SOLUTORE })
         : state.plan;
-      const alts = alternatives({ ...args, limit: 12 });
+      // Un piano B solo per tutti e tre: e' il termine di paragone dell'offerta massima,
+      // delle alternative e del racconto della perdita, e ognuno se lo ricalcolava uguale.
+      const planB = pianoSenza(args);
+      const alts = alternatives({ ...args, limit: 12, planB });
       cache = {
         key,
         escluso,
         pianoRif,
-        bid: maxBid(args),
+        bid: maxBid({ ...args, planB }),
         alts,
-        // Le stesse alternative, non ricalcolate: erano due secondi buttati a ogni apertura.
-        perdita: spiegaPerdita({ ...args, piano: pianoRif, alternative: alts.alternatives }),
+        // Le stesse alternative, non ricalcolate: il parametro c'era e non veniva letto.
+        perdita: spiegaPerdita({ ...args, piano: pianoRif, alternative: alts.alternatives, planB }),
       };
+      ricorda(key, cache);
     } catch (err) {
       console.error(err);
-      cache = { key, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+      cache = { ...vuota(), key };
     } finally {
       pending = false;
       rerender();

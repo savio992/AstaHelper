@@ -6,7 +6,7 @@ import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domai
 import { valuePlayers, rosterScore, depthWeights } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
-import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, CONFIG_ASTA } from '../src/domain/advisor.js';
+import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, pianoSenza, CONFIG_ASTA } from '../src/domain/advisor.js';
 import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa, spiegaModifica, ultimaOccasione } from '../src/domain/strategia.js';
 import { makeContext, makeListone } from './helpers.js';
 
@@ -1028,4 +1028,64 @@ test('un giocatore gia\' assegnato non e\' piu\' un\'occasione', () => {
   const { players, settings, topA } = contestoTop();
   const unavailable = new Set([...topA.slice(1).map((p) => p.id), topA[0].id]);
   assert.equal(ultimaOccasione({ players, settings, unavailable, playerId: topA[0].id }), null);
+});
+
+// --- il piano B condiviso ----------------------------------------------------------------
+// Aprire una scheda risolveva tre volte lo stesso identico piano B — offerta massima,
+// alternative e racconto della perdita se lo costruivano ciascuno per conto proprio — e
+// ricalcolava le alternative che gli erano gia' state passate. Condividerli dimezza il costo,
+// ma vale solo se il risultato non cambia di una virgola: e' il numero su cui si rilancia.
+
+test('condividere il piano B non cambia una virgola dei consigli', () => {
+  const { players, settings } = makeContext({ projected: true });
+  const piano = optimizeRoster({ players, settings, ...CONFIG_ASTA });
+  const bersagli = piano.picks.slice().sort((a, b) => b.plannedPrice - a.plannedPrice);
+  // Un giocatore caro, uno medio e un riempitivo: i tre regimi in cui la ricerca del
+  // punto di pareggio si comporta in modo diverso.
+  for (const idx of [0, Math.floor(bersagli.length / 2), bersagli.length - 1]) {
+    const args = {
+      players,
+      settings,
+      owned: new Map(),
+      unavailable: new Set(),
+      obbligati: new Set(),
+      playerId: bersagli[idx].id,
+    };
+    const planB = pianoSenza(args);
+
+    assert.equal(maxBid({ ...args, planB }).maxBid, maxBid(args).maxBid, `offerta massima su ${bersagli[idx].name}`);
+
+    const conPiano = alternatives({ ...args, limit: 12, planB }).alternatives.map((a) => `${a.player.id}:${a.delta}`);
+    const senzaPiano = alternatives({ ...args, limit: 12 }).alternatives.map((a) => `${a.player.id}:${a.delta}`);
+    assert.deepEqual(conPiano, senzaPiano, `alternative su ${bersagli[idx].name}`);
+
+    const alt = alternatives({ ...args, limit: 12, planB }).alternatives;
+    const conTutto = spiegaPerdita({ ...args, piano, alternative: alt, planB });
+    const senzaNiente = spiegaPerdita({ ...args, piano });
+    assert.deepEqual(conTutto.frasi, senzaNiente.frasi, `racconto su ${bersagli[idx].name}`);
+    assert.equal(conTutto.costo, senzaNiente.costo);
+    assert.deepEqual(
+      conTutto.alternative.map((a) => a.player.id),
+      senzaNiente.alternative.map((a) => a.player.id)
+    );
+  }
+});
+
+test('un piano B rotto non viene riusato: si ricalcola invece di mentire', () => {
+  const { players, settings } = makeContext({ projected: true });
+  const piano = optimizeRoster({ players, settings, ...CONFIG_ASTA });
+  const args = {
+    players,
+    settings,
+    owned: new Map(),
+    unavailable: new Set(),
+    obbligati: new Set(),
+    playerId: piano.picks[0].id,
+  };
+  const rotto = { ok: false, reason: 'finto' };
+  assert.equal(maxBid({ ...args, planB: rotto }).maxBid, maxBid(args).maxBid);
+  assert.deepEqual(
+    alternatives({ ...args, limit: 5, planB: rotto }).alternatives.map((a) => a.player.id),
+    alternatives({ ...args, limit: 5 }).alternatives.map((a) => a.player.id)
+  );
 });
