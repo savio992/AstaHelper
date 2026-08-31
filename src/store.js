@@ -33,10 +33,21 @@ export const state = {
   // Il tabellone degli avversari, derivato dal registro delle assegnazioni.
   tabellone: null,
   plan: null,
+  // Quante volte il piano e' stato rifatto. Le viste tengono in cache calcoli che valgono
+  // solo per un certo piano — l'offerta massima, le alternative — e devono sapere quando
+  // quel piano non e' piu' quello. Contare le assegnazioni non bastava: mettere un lucchetto
+  // dalla scheda Piano cambia i consigli senza toccare il registro, e annullare una mossa fa
+  // tornare indietro la sua lunghezza. Ogni cosa che conta passa da `rebuildPlan`, quindi il
+  // conto sta li' ed e' esatto per costruzione.
+  revisione: 0,
   // Il piano precedente, per poter raccontare cosa e' cambiato dopo l'ultima assegnazione.
   prevPlan: null,
   // L'ultima correzione fatta a mano al piano, per poterne raccontare l'effetto.
   ultimaModifica: null,
+  // Le strade salvate: rose complete messe da parte come alternative, che l'asta poi
+  // conferma o chiude. Si tengono per id, non per oggetto giocatore: un listone reimportato
+  // deve ritrovarle.
+  scenari: [],
   ui: {
     tab: 'asta',
     query: '',
@@ -75,6 +86,7 @@ function istantanea() {
     sources: state.sources,
     formData: state.formData,
     auction: state.auction,
+    scenari: state.scenari,
     importMeta: state.importMeta ? { headers: state.importMeta.headers, mapping: state.importMeta.mapping, fileName: state.importMeta.fileName, count: state.roster.length } : null,
     ui: { tab: state.ui.tab },
   };
@@ -99,6 +111,7 @@ function applica(data) {
   state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {}, ...(data.auction || {}) };
   state.importMeta = data.importMeta || null;
   state.formData = data.formData || null;
+  state.scenari = Array.isArray(data.scenari) ? data.scenari : [];
   recompute();
 }
 
@@ -193,6 +206,7 @@ export function resetAll() {
   state.players = [];
   state.importMeta = null;
   state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {} };
+  state.scenari = [];
   state.mercato = null;
   state.tabellone = null;
   state.plan = null;
@@ -340,6 +354,91 @@ export function liberaScelta(id) {
 }
 
 /**
+ * Le strade salvate.
+ *
+ * Una strada e' una rosa intera messa da parte come alternativa. Serve perche' un'asta non si
+ * gioca su una rosa sola: si gioca su un'idea, e quando salta un giocatore la domanda vera non
+ * e' "chi prendo al posto suo" ma "la mia idea regge ancora". Finche' l'idea resta implicita
+ * nel piano, quella domanda non ha nemmeno un posto dove essere fatta.
+ *
+ * Si salvano gli id e i prezzi previsti, non i giocatori: reimportando il listone gli oggetti
+ * cambiano, gli id no, e i prezzi di allora sono il metro per misurare quanto e' costata una
+ * perdita.
+ */
+const MAX_SCENARI = 6;
+
+// L'orologio non basta come identita': salvare due strade di fila richiede meno di un
+// millisecondo, e due strade con lo stesso id vuol dire che cancellandone una spariscono
+// tutte e due.
+let contatoreScenari = 0;
+
+export function salvaScenario({ nome, ids, prezzi, score }) {
+  if (!Array.isArray(ids) || !ids.length) return null;
+  const voce = {
+    id: `s${Date.now().toString(36)}-${(contatoreScenari++).toString(36)}`,
+    nome: (nome || 'Strada').slice(0, 40),
+    ids: [...ids],
+    prezzi: { ...(prezzi || {}) },
+    score: Number(score) || 0,
+    creatoIl: Date.now(),
+  };
+  state.scenari = [voce, ...state.scenari].slice(0, MAX_SCENARI);
+  save();
+  notify();
+  return voce;
+}
+
+export function rinominaScenario(id, nome) {
+  const voce = state.scenari.find((s) => s.id === id);
+  if (!voce) return false;
+  voce.nome = (nome || voce.nome).slice(0, 40);
+  save();
+  notify();
+  return true;
+}
+
+export function eliminaScenario(id) {
+  const prima = state.scenari.length;
+  state.scenari = state.scenari.filter((s) => s.id !== id);
+  if (state.scenari.length === prima) return false;
+  save();
+  notify();
+  return true;
+}
+
+/**
+ * Segui questa strada: i suoi giocatori diventano lucchetti e il piano si ricostruisce intorno.
+ *
+ * Non si bloccano tutti e venticinque. I riempitivi da un credito sono intercambiabili per
+ * definizione — bloccarli non direbbe niente al solutore e gli toglierebbe l'unica liberta'
+ * che gli serve per assorbire i rincari. Si blocca il nucleo: i giocatori che da soli valgono
+ * la gran parte della strada, quelli per cui all'asta alzeresti la mano davvero.
+ *
+ * Passa dalla stessa strada di ogni altra correzione, quindi se la rosa non si chiude piu' la
+ * mossa viene rifiutata invece di lasciare un piano rotto.
+ */
+export function adottaScenario(id, nucleo) {
+  const voce = state.scenari.find((s) => s.id === id);
+  if (!voce) return false;
+  const daBloccare = (nucleo && nucleo.length ? nucleo : voce.ids).filter(
+    (pid) => !state.auction.taken[pid] && !state.auction.owned[pid]
+  );
+  if (!daBloccare.length) return false;
+  return correggiPiano(id, 'adotta', () => {
+    state.auction.bloccati = {};
+    for (const pid of daBloccare) state.auction.bloccati[pid] = true;
+  });
+}
+
+/** Lascia di nuovo decidere al solutore: via tutti i lucchetti. */
+export function abbandonaStrada() {
+  if (!Object.keys(state.auction.bloccati || {}).length) return false;
+  return correggiPiano(null, 'abbandona', () => {
+    state.auction.bloccati = {};
+  });
+}
+
+/**
  * Il contesto su cui calcolare i consigli per un giocatore.
  *
  * Se l'ho scartato, i numeri vanno calcolati sul mondo in cui non l'ho fatto: altrimenti
@@ -393,6 +492,7 @@ export function rebuildPlan(opts = {}) {
     ...CONFIG_SOLUTORE,
     ...opts,
   });
+  state.revisione++;
   return state.plan;
 }
 

@@ -7,6 +7,7 @@ import { clubExposure, depthWeights, sortByStrength } from '../domain/valuation.
 import { ownedMap, unavailableSet, onReset } from '../store.js';
 import { spiegaModifica } from '../domain/strategia.js';
 import { esc, roleChip, emptyState, playerRow, edgeBadge, toast, matches } from './common.js';
+import * as strade from './strade.js';
 
 /**
  * L'effetto di una correzione fatta a mano.
@@ -518,7 +519,7 @@ function confrontoCard() {
   </div>`;
 }
 
-export function render() {
+export function render(rerender) {
   if (!state.players.length) {
     return `<div class="view">${emptyState('📋', 'Nessun listone caricato', 'Importa prima il CSV delle fasce.')}</div>`;
   }
@@ -536,6 +537,9 @@ export function render() {
 
   const budget = state.settings.budget || 500;
   const filled = plan.owned.length;
+  // Le valutazioni delle strade salvate partono in ritardo, dopo che questa stringa e'
+  // diventata DOM: qui si dice solo che servono.
+  if (rerender) strade.dopoIlDisegno(rerender);
   return `
   <div class="view">
     ${modalitaCard()}
@@ -560,6 +564,7 @@ export function render() {
       </div>
     </div>
 
+    ${strade.render()}
     ${panchinaCard()}
     ${schedaCard()}
     ${ROLES.map((r) => roleBlock(r, plan)).join('')}
@@ -578,6 +583,7 @@ export function render() {
 }
 
 export function onAction(action, target, ev, rerender) {
+  if (strade.onAction(action, target, ev, rerender)) return true;
   if (action === 'blocca' || action === 'scarta' || action === 'libera') {
     const id = target.dataset.id;
     confronto = null;
@@ -621,6 +627,7 @@ export function onAction(action, target, ev, rerender) {
 }
 
 export function onInput(action, target, rerender) {
+  if (strade.onInput(action, target, rerender)) return true;
   if (action === 'listaquery') {
     state.ui.listaQuery = target.value;
     rerender({ keepFocus: 'listaQuery' });

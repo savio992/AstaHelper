@@ -12,8 +12,12 @@ import { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVer
 let cache = { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
 let pending = false;
 
+// La revisione del piano, non la lunghezza del registro: mettere un lucchetto dalla scheda
+// Piano cambia l'offerta massima senza aggiungere una riga al registro, e per due versioni
+// l'asta ha continuato a mostrare il consiglio di prima. Annullare una mossa aveva lo stesso
+// difetto al contrario, perche' faceva tornare la lunghezza a un valore gia' visto.
 function cacheKey() {
-  return `${state.ui.selectedId}|${state.auction.log.length}|${JSON.stringify(state.settings)}`;
+  return `${state.ui.selectedId}|${state.revisione}`;
 }
 
 onReset(() => {

@@ -306,6 +306,89 @@ try {
   store.state.ui.selectedId = null;
   asta.invalidate();
 
+  // --- le strade: generare, salvare, seguire ------------------------------------------
+  // Il punto non e' che il tasto disegni qualcosa: e' che una strada salvata sopravviva
+  // all'asta, cambi voto quando le portano via un giocatore e sappia guidare il piano.
+  store.state.ui.tab = 'piano';
+  piano.onAction('genera-strade', { dataset: {} }, null, noop);
+  await new Promise((r) => setTimeout(r, 2500));
+  const conStrade = piano.render(noop);
+  check('le strade si generano', conStrade.includes('Le strade') && conStrade.includes('★'), `${(conStrade.match(/data-action="salva-strada"/g) || []).length} salvabili`);
+
+  piano.onAction('salva-strada', { dataset: { i: '0' } }, null, noop);
+  piano.onAction('salva-strada', { dataset: { i: '1' } }, null, noop);
+  check('le strade si salvano', store.state.scenari.length === 2, `${store.state.scenari.map((x) => x.nome).join(' | ')}`);
+
+  const stradaA = store.state.scenari[0];
+  check('la strada e\' una rosa intera con i suoi prezzi', stradaA.ids.length === 25 && Object.keys(stradaA.prezzi).length === 25);
+
+  piano.render(noop);
+  await new Promise((r) => setTimeout(r, 900));
+  const conVoti = piano.render(noop);
+  check('le strade salvate prendono un voto', conVoti.includes('Le mie strade') && conVoti.includes('Intatta'));
+
+  // Il salvataggio deve sopravvivere alla chiusura dell'app: e' il senso di salvare.
+  store.save();
+  const dallaMemoria = JSON.parse(localStorage.getItem(Object.keys(localStorage).find((k) => k.includes('asta')) || 'astahelper') || '{}');
+  check('le strade finiscono nel salvataggio', (dallaMemoria.scenari || []).length === 2);
+
+  // Adesso gliene portano via il piu' caro: il voto deve scendere e lo stato cambiare.
+  const pernoStrada = stradaA.ids.slice().sort((a, b) => stradaA.prezzi[b] - stradaA.prezzi[a])[0];
+  store.assign(pernoStrada, 'other', stradaA.prezzi[pernoStrada] + 10, 2);
+  piano.render(noop);
+  await new Promise((r) => setTimeout(r, 900));
+  const dopoLaPerdita = piano.render(noop);
+  check('perdere il perno si vede nella strada', dopoLaPerdita.includes('Colpita') && dopoLaPerdita.includes('crediti su'));
+
+  // Seguire una strada mette i lucchetti sul suo nucleo e rifa' il piano intorno.
+  const revPrima = store.state.revisione;
+  piano.onAction('segui-strada', { dataset: { id: stradaA.id } }, null, noop);
+  const bloccatiOra = Object.keys(store.state.auction.bloccati || {});
+  check('seguire una strada blocca il suo nucleo', bloccatiOra.length > 0 && bloccatiOra.length < 25, `${bloccatiOra.length} lucchetti`);
+  check('e il piano si rifa\'', store.state.revisione > revPrima);
+  check('il piano segue davvero la strada', bloccatiOra.every((id) => store.state.plan.picks.some((p) => p.id === id) || store.state.plan.owned.some((p) => p.id === id)));
+
+  // Il difetto che questa scheda avrebbe potuto ereditare: mettere un lucchetto non tocca il
+  // registro, quindi una cache basata sulle assegnazioni continuerebbe a mostrare l'offerta
+  // massima calcolata sul piano di prima.
+  // Si sceglie un attaccante e si blocca un giocatore di un altro reparto: il piano cambia,
+  // quindi l'offerta massima deve cambiare con lui. Non si controlla la direzione — puo'
+  // salire, perche' imporre un centrocampista peggiora anche il piano B e quindi perdere
+  // l'attaccante costa di piu' — si controlla che il numero si rifaccia. Se restasse uguale
+  // vorrebbe dire che la cache sta mostrando il consiglio di un piano che non esiste piu',
+  // che e' esattamente il difetto per cui esiste il contatore di revisione.
+  const cifra = (html) => Number((html.match(/class="n mono[^"]*">(\d+)</) || [])[1] ?? NaN);
+  const mirino = store.state.plan.picks.filter((p) => p.role === 'A').sort((a, b) => b.plannedPrice - a.plannedPrice)[0];
+  store.state.ui.selectedId = mirino.id;
+  asta.invalidate();
+  asta.render(noop);
+  await new Promise((r) => setTimeout(r, 900));
+  const offertaPrima = cifra(asta.render(noop));
+  check('l\'asta dice un\'offerta massima', Number.isFinite(offertaPrima), `${mirino.name} vale fino a ${offertaPrima}`);
+
+  const daBloccare = store.state.players
+    .filter((p) => p.role !== 'A' && !store.state.auction.owned[p.id] && !store.state.auction.taken[p.id] && !store.state.auction.bloccati[p.id])
+    .sort((a, b) => (b.expectedPrice || 0) - (a.expectedPrice || 0))[0];
+  piano.onAction('blocca', { dataset: { id: daBloccare.id } }, null, noop);
+  asta.render(noop);
+  await new Promise((r) => setTimeout(r, 900));
+  const offertaDopo = cifra(asta.render(noop));
+  check(
+    'un lucchetto in un altro reparto rifa\' subito l\'offerta massima',
+    Number.isFinite(offertaDopo) && offertaDopo !== offertaPrima,
+    `${offertaPrima} → ${offertaDopo} dopo aver bloccato ${daBloccare.name} (${daBloccare.expectedPrice} cr)`
+  );
+
+  piano.onAction('abbandona-strada', { dataset: {} }, null, noop);
+  check('si puo\' abbandonare la strada', Object.keys(store.state.auction.bloccati || {}).length === 0);
+
+  piano.onAction('elimina-strada', { dataset: { id: stradaA.id } }, null, noop);
+  check('e si puo\' eliminare', store.state.scenari.length === 1);
+
+  store.undo();
+  store.state.ui.selectedId = null;
+  asta.invalidate();
+
   // --- backup dell'asta ---------------------------------------------------------------
   // Tutto vive nella memoria del browser, che puo' sparire. Il file deve bastare da solo a
   // rimettere in piedi la stessa asta, listone compreso.
