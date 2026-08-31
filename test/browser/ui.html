@@ -389,6 +389,46 @@ try {
   store.state.ui.selectedId = null;
   asta.invalidate();
 
+  // --- l'ultima occasione -------------------------------------------------------------
+  // L'avviso sulla scarsita' dei big viveva nella scheda Mercato, che durante l'asta non
+  // guarda nessuno. Deve comparire dove si sta puntando.
+  // Serve che gliene manchi ancora uno: a questo punto dell'asta un attaccante top ce l'ha
+  // gia', e con la soglia coperta l'avviso deve tacere — e infatti taceva.
+  const giaMiei = Object.keys(store.state.auction.owned)
+    .map((id) => store.state.players.find((x) => x.id === id))
+    .filter((x) => x && x.role === 'A' && x.isTop).length;
+  store.updateSettings({ minTop: { ...store.state.settings.minTop, A: giaMiei + 1 } });
+  const topAttacco = store.state.players
+    .filter((p) => p.role === 'A' && p.isTop && !store.state.auction.owned[p.id] && !store.state.auction.taken[p.id])
+    .sort((a, b) => b.score - a.score);
+  const superstite = topAttacco[0];
+  const daBruciare = topAttacco.slice(1);
+  store.assegnaMolti(daBruciare.map((p) => ({ id: p.id, kind: 'other', price: Math.round(p.expectedPrice || 1), by: 2 })));
+
+  store.state.ui.tab = 'asta';
+  store.state.ui.selectedId = superstite.id;
+  asta.invalidate();
+  asta.render(noop);
+  await new Promise((r) => setTimeout(r, 900));
+  const conAllarme = asta.render(noop);
+  check(
+    'l\'ultimo big lo dice la schermata d\'asta, non solo il mercato',
+    conAllarme.includes('ultimo big in attacco') && conAllarme.includes('piano B'),
+    `${superstite.name}, ${daBruciare.length} big bruciati, ne aveva gia' ${giaMiei}`
+  );
+
+  // E su un giocatore qualunque non deve comparire niente.
+  const qualunque = store.state.players.find((p) => p.role === 'A' && !p.isTop && !store.state.auction.taken[p.id]);
+  store.state.ui.selectedId = qualunque.id;
+  asta.invalidate();
+  asta.render(noop);
+  await new Promise((r) => setTimeout(r, 900));
+  check('e non compare su chi non e\' di prima fascia', !asta.render(noop).includes('ultimo big in attacco'));
+
+  for (let i = 0; i < daBruciare.length; i++) store.undo();
+  store.state.ui.selectedId = null;
+  asta.invalidate();
+
   // --- backup dell'asta ---------------------------------------------------------------
   // Tutto vive nella memoria del browser, che puo' sparire. Il file deve bastare da solo a
   // rimettere in piedi la stessa asta, listone compreso.

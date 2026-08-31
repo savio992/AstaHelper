@@ -5,7 +5,7 @@
 import { state, ownedMap, unavailableSet, takenMap, assegnaMolti, onReset, confrontaRose, applicaRose, updateSettings } from '../store.js';
 import { leggiRose } from '../domain/rose.js';
 import { leggiElenco } from '../domain/incolla.js';
-import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
+import { ROLES, ROLE_LABEL, ROLE_REPARTO, totalSlots } from '../domain/model.js';
 import { concorrenzaPerRuolo, disponibilita, nomiSquadre } from '../domain/mercato.js';
 import { consiglioStrategico, scenarioSenzaBig, narrazione } from '../domain/strategia.js';
 import { esc, roleChip, emptyState, toast } from './common.js';
@@ -366,7 +366,7 @@ function strategiaCard() {
       scenario
         ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
              <div class="row between" style="margin-bottom:6px">
-               <b class="small">Se non prendi nessun big in ${esc(ROLE_LABEL[scenario.role].toLowerCase())}</b>
+               <b class="small">Se non prendi nessun big in ${esc(ROLE_REPARTO[scenario.role])}</b>
                <button class="btn ghost tiny" data-action="chiudi-scenario">chiudi</button>
              </div>
              <div class="small">${scenario.frasi.map((f) => esc(f)).join(' ') || 'Il piano non cambierebbe granche&#39;.'}</div>

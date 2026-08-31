@@ -406,6 +406,9 @@ const ROLES = ['P', 'D', 'C', 'A'];
 
 const ROLE_LABEL = { P: 'Portieri', D: 'Difensori', C: 'Centrocampisti', A: 'Attaccanti' };
 const ROLE_LABEL_SHORT = { P: 'Por', D: 'Dif', C: 'Cen', A: 'Att' };
+// Il reparto, non il ruolo al plurale: "gli ultimi due big in attacco" si legge, "in
+// attaccanti" no. Serve ovunque si parli del reparto invece che dei giocatori.
+const ROLE_REPARTO = { P: 'porta', D: 'difesa', C: 'centrocampo', A: 'attacco' };
 
 // Scala unica di qualita' delle fasce: piu' basso = fascia migliore.
 // Serve solo a proporre un ordinamento automatico all'import; resta tutto modificabile a mano.
@@ -600,7 +603,7 @@ function tierRank(settings, role, tier) {
   return idx >= 0 ? idx : order.length;
 }
 
-return { inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, sortTierLabels, defaultSettings, elenco, totalSlots, tierKey, tierRank, ROLES, ROLE_LABEL, ROLE_LABEL_SHORT };
+return { inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, sortTierLabels, defaultSettings, elenco, totalSlots, tierKey, tierRank, ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, ROLE_REPARTO };
 })();
 
 // ===== src/domain/csv.js =====
@@ -4295,7 +4298,7 @@ const __m_src_domain_strategia_js = (() => {
 // che la strada e' cambiata. Se i big di un reparto finiscono tutti, i crediti che avevi
 // messo da parte per loro vanno spostati, e conviene saperlo prima che sia troppo tardi.
 
-const { ROLES, ROLE_LABEL, elenco } = __m_src_domain_model_js;
+const { ROLES, ROLE_LABEL, ROLE_REPARTO, elenco } = __m_src_domain_model_js;
 const { optimizeRoster } = __m_src_domain_optimizer_js;
 
 /** Quanti giocatori di prima fascia restano liberi, reparto per reparto. */
@@ -4401,20 +4404,68 @@ function consiglioStrategico({ players, settings, owned = new Map(), unavailable
       avvisi.push({
         role,
         gravita: 'finiti',
-        titolo: `I big in ${ROLE_LABEL[role].toLowerCase()} sono finiti.`,
+        titolo: `I big in ${ROLE_REPARTO[role]} sono finiti.`,
         testo: frasi.length ? frasi.join(' ') : 'Il piano si e\' gia\' adattato senza di loro.',
       });
     } else if (liberi <= richiesti - miei) {
       avvisi.push({
         role,
         gravita: 'ultimi',
-        titolo: `Restano ${liberi} big in ${ROLE_LABEL[role].toLowerCase()}: ${nomi.join(', ')}.`,
+        titolo: `Restano ${liberi} big in ${ROLE_REPARTO[role]}: ${nomi.join(', ')}.`,
         testo: `Te ne serve ${richiesti - miei}. Se li perdi tutti devi cambiare strada.`,
       });
     }
   }
 
   return { big, avvisi };
+}
+
+/**
+ * Quanto e' l'ultima occasione, per il giocatore che stai guardando.
+ *
+ * L'avviso sulla scarsita' dei big esiste da tempo ma vive nella scheda Mercato, che durante
+ * l'asta non guarda nessuno: quando il banditore chiama un nome si sta sulla schermata
+ * dell'asta, e li' l'unica cosa che si vedeva era il tetto d'offerta. Ma "puoi arrivare a 38"
+ * significa una cosa diversa se dopo di lui ci sono altri quattro come lui e un'altra se e'
+ * rimasto solo lui: nel secondo caso il tetto e' vero e lo stesso conviene sforarlo, perche'
+ * il piano B non esiste.
+ *
+ * Si guarda solo il reparto del giocatore in questione, e solo se e' di prima fascia: dire a
+ * chi sta puntando il quarto portiere che gli attaccanti top stanno finendo e' rumore.
+ */
+function ultimaOccasione({ players, settings, owned = new Map(), unavailable = new Set(), playerId }) {
+  const p = players.find((x) => x.id === playerId);
+  if (!p || !p.isTop || owned.has(p.id) || unavailable.has(p.id)) return null;
+
+  const richiesti = Math.max(0, Math.round(settings.minTop?.[p.role] ?? 0));
+  if (!richiesti) return null;
+
+  const { liberi, miei, nomi } = bigRimasti(players, { owned, unavailable })[p.role];
+  const mancanti = richiesti - miei;
+  if (mancanti <= 0) return null;
+
+  const reparto = ROLE_REPARTO[p.role];
+  // Lui compreso: se ne restano tanti quanti te ne servono, perderne uno vuol dire restare
+  // sotto, e non c'e' un secondo tentativo.
+  if (liberi <= mancanti) {
+    return {
+      gravita: 'ultima',
+      titolo: liberi === 1 ? `E' l'ultimo big in ${reparto}.` : `Sono gli ultimi ${liberi} big in ${reparto} e te ne servono ${mancanti}.`,
+      testo:
+        liberi === 1
+          ? 'Se lo perdi, di prima fascia in questo reparto non ne prendi piu\'. Il tetto qui sopra e\' calcolato su un piano B che non esiste: sforalo consapevolmente o cambia strada adesso.'
+          : 'Perderne anche uno vuol dire chiudere sotto la soglia che ti sei dato. Il piano B c\'e\' ma e\' gia\' un ripiego.',
+    };
+  }
+  const altri = liberi - mancanti;
+  if (altri <= 2) {
+    return {
+      gravita: 'quasi',
+      titolo: `Restano ${liberi} big in ${reparto}: te ne servono ${mancanti}.`,
+      testo: `Puoi ancora permetterti di perderne ${altri}. Dopo di lui: ${nomi.filter((n) => n !== p.name).slice(0, 2).join(', ') || 'nessuno'}.`,
+    };
+  }
+  return null;
 }
 
 /**
@@ -4576,7 +4627,7 @@ function spiegaModifica({ prima, dopo, players, settings, id, azione }) {
   return { player: p, azione, titolo, frasi, entrati, usciti, mosse, costo, soloLui: entrati.length <= 1 };
 }
 
-return { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa, spiegaModifica };
+return { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, ultimaOccasione, spiegaMossa, spiegaModifica };
 })();
 
 // ===== src/ui/common.js =====
@@ -4686,7 +4737,7 @@ const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, player
 const { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots, elenco } = __m_src_domain_model_js;
 const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista } = __m_src_domain_advisor_js;
 const { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } = __m_src_domain_mercato_js;
-const { spiegaMossa } = __m_src_domain_strategia_js;
+const { spiegaMossa, ultimaOccasione } = __m_src_domain_strategia_js;
 const { optimizeRoster, CONFIG_SOLUTORE } = __m_src_domain_optimizer_js;
 const { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } = __m_src_ui_common_js;
 
@@ -5105,6 +5156,7 @@ elenco((state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder
           ) || 'il resto'}.</div>`
         : verdictFor(current, bid)
     }</div>
+    ${scarsitaBox(p)}
 
     ${
       state.ui.chiediSquadra === p.id
@@ -5140,6 +5192,30 @@ elenco((state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder
  * secondo miglior offerente. Se quel numero e' sotto la mia offerta massima, l'asta e' gia'
  * decisa e ogni credito speso oltre quella soglia e' buttato.
  */
+/**
+ * "Dopo di lui non ce ne sono altri".
+ *
+ * Il tetto d'offerta e' calcolato sul piano B: quanto puoi pagare prima che convenga
+ * l'alternativa. Ma quando l'alternativa non esiste piu' quel numero, pur restando esatto,
+ * risponde a una domanda che non e' piu' quella giusta — e sulla schermata dell'asta era
+ * l'unica cosa scritta. Questo riquadro dice quando siamo in quel caso.
+ */
+function scarsitaBox(p) {
+  const avviso = ultimaOccasione({
+    players: state.players,
+    settings: state.settings,
+    owned: ownedMap(),
+    unavailable: unavailableSet(),
+    playerId: p.id,
+  });
+  if (!avviso) return '';
+  return `
+  <div class="verdict ${avviso.gravita === 'ultima' ? 'stop' : 'edge'}" style="margin-top:10px;text-align:left">
+    <div class="small" style="font-weight:700">${esc(avviso.titolo)}</div>
+    <div class="small" style="font-weight:500;margin-top:4px">${esc(avviso.testo)}</div>
+  </div>`;
+}
+
 function concorrenzaBox(p, bid) {
   if (!bid || bid.maxBid <= 0) return '';
   const conc = concorrenza({
@@ -7380,7 +7456,7 @@ const __m_src_ui_mercato_js = (() => {
 const { state, ownedMap, unavailableSet, takenMap, assegnaMolti, onReset, confrontaRose, applicaRose, updateSettings } = __m_src_store_js;
 const { leggiRose } = __m_src_domain_rose_js;
 const { leggiElenco } = __m_src_domain_incolla_js;
-const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
+const { ROLES, ROLE_LABEL, ROLE_REPARTO, totalSlots } = __m_src_domain_model_js;
 const { concorrenzaPerRuolo, disponibilita, nomiSquadre } = __m_src_domain_mercato_js;
 const { consiglioStrategico, scenarioSenzaBig, narrazione } = __m_src_domain_strategia_js;
 const { esc, roleChip, emptyState, toast } = __m_src_ui_common_js;
@@ -7741,7 +7817,7 @@ function strategiaCard() {
       scenario
         ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
              <div class="row between" style="margin-bottom:6px">
-               <b class="small">Se non prendi nessun big in ${esc(ROLE_LABEL[scenario.role].toLowerCase())}</b>
+               <b class="small">Se non prendi nessun big in ${esc(ROLE_REPARTO[scenario.role])}</b>
                <button class="btn ghost tiny" data-action="chiudi-scenario">chiudi</button>
              </div>
              <div class="small">${scenario.frasi.map((f) => esc(f)).join(' ') || 'Il piano non cambierebbe granche&#39;.'}</div>

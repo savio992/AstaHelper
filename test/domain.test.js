@@ -7,7 +7,7 @@ import { valuePlayers, rosterScore, depthWeights } from '../src/domain/valuation
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
 import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, CONFIG_ASTA } from '../src/domain/advisor.js';
-import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa, spiegaModifica } from '../src/domain/strategia.js';
+import { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa, spiegaModifica, ultimaOccasione } from '../src/domain/strategia.js';
 import { makeContext, makeListone } from './helpers.js';
 
 test('sniffDelimiter riconosce ; , e tab', () => {
@@ -968,4 +968,64 @@ test('il costo della lista si sa anche reparto per reparto', () => {
     Math.abs(c.perRuolo[0].differenza - c.differenza) < 0.001,
     `il reparto dice ${c.perRuolo[0].differenza}, il totale ${c.differenza}`
   );
+});
+
+// --- l'ultima occasione: l'avviso di scarsita' dove si sta puntando ----------------------
+
+function contestoTop() {
+  const ctx = makeContext({ projected: true, minTop: { A: 1 } });
+  const topA = ctx.players.filter((p) => p.role === 'A' && p.isTop).sort((a, b) => b.score - a.score);
+  return { ...ctx, topA };
+}
+
+test('con i big ancora abbondanti non si avvisa nessuno: sarebbe rumore', () => {
+  const { players, settings, topA } = contestoTop();
+  assert.equal(ultimaOccasione({ players, settings, playerId: topA[0].id }), null);
+});
+
+test('quando ne resta uno solo lo dice, e dice che il piano B non esiste', () => {
+  const { players, settings, topA } = contestoTop();
+  const unavailable = new Set(topA.slice(1).map((p) => p.id));
+  const a = ultimaOccasione({ players, settings, unavailable, playerId: topA[0].id });
+  assert.equal(a.gravita, 'ultima');
+  assert.match(a.titolo, /ultimo big in attacco/);
+  assert.match(a.testo, /piano B/);
+});
+
+test('a due o tre dalla fine avvisa senza allarmare, e dice chi viene dopo', () => {
+  const { players, settings, topA } = contestoTop();
+  const unavailable = new Set(topA.slice(2).map((p) => p.id));
+  const a = ultimaOccasione({ players, settings, unavailable, playerId: topA[0].id });
+  assert.equal(a.gravita, 'quasi');
+  assert.match(a.titolo, /Restano 2 big in attacco/);
+  assert.ok(a.testo.includes(topA[1].name), 'deve dire chi resta dopo di lui');
+});
+
+test('chi ha gia\' il suo big non viene avvisato: la soglia e\' coperta', () => {
+  const { players, settings, topA } = contestoTop();
+  const owned = new Map([[topA[1].id, 40]]);
+  const unavailable = new Set(topA.slice(2).map((p) => p.id));
+  assert.equal(ultimaOccasione({ players, settings, owned, unavailable, playerId: topA[0].id }), null);
+});
+
+test('l\'avviso riguarda solo il reparto del giocatore che stai guardando', () => {
+  const ctx = makeContext({ projected: true, minTop: { A: 1, D: 1 } });
+  const topA = ctx.players.filter((p) => p.role === 'A' && p.isTop).sort((a, b) => b.score - a.score);
+  const topD = ctx.players.filter((p) => p.role === 'D' && p.isTop).sort((a, b) => b.score - a.score);
+  // Gli attaccanti top sono finiti tutti tranne uno, i difensori no.
+  const unavailable = new Set(topA.slice(1).map((p) => p.id));
+  assert.equal(ultimaOccasione({ players: ctx.players, settings: ctx.settings, unavailable, playerId: topD[0].id }), null);
+});
+
+test('su un giocatore non di prima fascia non si parla di big', () => {
+  const { players, settings, topA } = contestoTop();
+  const normale = players.find((p) => p.role === 'A' && !p.isTop);
+  const unavailable = new Set(topA.slice(1).map((p) => p.id));
+  assert.equal(ultimaOccasione({ players, settings, unavailable, playerId: normale.id }), null);
+});
+
+test('un giocatore gia\' assegnato non e\' piu\' un\'occasione', () => {
+  const { players, settings, topA } = contestoTop();
+  const unavailable = new Set([...topA.slice(1).map((p) => p.id), topA[0].id]);
+  assert.equal(ultimaOccasione({ players, settings, unavailable, playerId: topA[0].id }), null);
 });

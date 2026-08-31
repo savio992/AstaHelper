@@ -6,7 +6,7 @@
 //
 // VERSIONE la riscrive scripts/build.js con l'impronta di dist/index.html: cambia solo quando
 // cambia davvero l'app, e cambiando fa scadere la cache vecchia.
-const VERSIONE = '721f087a0c5c';
+const VERSIONE = '2f920c7732f3';
 const CACHE = `astahelper-${VERSIONE}`;
 
 const GUSCIO = ['./', './index.html', './manifest.webmanifest', './icona-180.png', './icona-192.png', './icona-512.png', './icona.svg'];

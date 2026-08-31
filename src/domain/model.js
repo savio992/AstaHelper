@@ -4,6 +4,9 @@ export const ROLES = ['P', 'D', 'C', 'A'];
 
 export const ROLE_LABEL = { P: 'Portieri', D: 'Difensori', C: 'Centrocampisti', A: 'Attaccanti' };
 export const ROLE_LABEL_SHORT = { P: 'Por', D: 'Dif', C: 'Cen', A: 'Att' };
+// Il reparto, non il ruolo al plurale: "gli ultimi due big in attacco" si legge, "in
+// attaccanti" no. Serve ovunque si parli del reparto invece che dei giocatori.
+export const ROLE_REPARTO = { P: 'porta', D: 'difesa', C: 'centrocampo', A: 'attacco' };
 
 // Scala unica di qualita' delle fasce: piu' basso = fascia migliore.
 // Serve solo a proporre un ordinamento automatico all'import; resta tutto modificabile a mano.

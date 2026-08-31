@@ -4,7 +4,7 @@ import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playe
 import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots, elenco } from '../domain/model.js';
 import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista } from '../domain/advisor.js';
 import { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } from '../domain/mercato.js';
-import { spiegaMossa } from '../domain/strategia.js';
+import { spiegaMossa, ultimaOccasione } from '../domain/strategia.js';
 import { optimizeRoster, CONFIG_SOLUTORE } from '../domain/optimizer.js';
 import { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } from './common.js';
 
@@ -423,6 +423,7 @@ elenco((state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder
           ) || 'il resto'}.</div>`
         : verdictFor(current, bid)
     }</div>
+    ${scarsitaBox(p)}
 
     ${
       state.ui.chiediSquadra === p.id
@@ -458,6 +459,30 @@ elenco((state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder
  * secondo miglior offerente. Se quel numero e' sotto la mia offerta massima, l'asta e' gia'
  * decisa e ogni credito speso oltre quella soglia e' buttato.
  */
+/**
+ * "Dopo di lui non ce ne sono altri".
+ *
+ * Il tetto d'offerta e' calcolato sul piano B: quanto puoi pagare prima che convenga
+ * l'alternativa. Ma quando l'alternativa non esiste piu' quel numero, pur restando esatto,
+ * risponde a una domanda che non e' piu' quella giusta — e sulla schermata dell'asta era
+ * l'unica cosa scritta. Questo riquadro dice quando siamo in quel caso.
+ */
+function scarsitaBox(p) {
+  const avviso = ultimaOccasione({
+    players: state.players,
+    settings: state.settings,
+    owned: ownedMap(),
+    unavailable: unavailableSet(),
+    playerId: p.id,
+  });
+  if (!avviso) return '';
+  return `
+  <div class="verdict ${avviso.gravita === 'ultima' ? 'stop' : 'edge'}" style="margin-top:10px;text-align:left">
+    <div class="small" style="font-weight:700">${esc(avviso.titolo)}</div>
+    <div class="small" style="font-weight:500;margin-top:4px">${esc(avviso.testo)}</div>
+  </div>`;
+}
+
 function concorrenzaBox(p, bid) {
   if (!bid || bid.maxBid <= 0) return '';
   const conc = concorrenza({
