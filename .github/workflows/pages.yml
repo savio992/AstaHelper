@@ -52,8 +52,19 @@ jobs:
         with:
           path: dist
 
+  # Il deploy vero solo dal ramo predefinito.
+  #
+  # L'ambiente `github-pages` accetta deploy soltanto dal ramo predefinito, e non e' una cosa
+  # che si aggira dal workflow: il lavoro veniva rifiutato in un secondo. Il risultato era che
+  # ogni push su un ramo di lavoro lasciava un controllo rosso permanente, rosso per un motivo
+  # che non c'entra niente con il codice — lo stesso commit b7b1bdf era verde su main e rosso
+  # sul ramo. Un rosso che non significa niente e' peggio che nessun controllo, perche' insegna
+  # a non guardarli.
+  #
+  # Il ramo continua a girare il job `build`, che e' quello che conta: test e compilazione.
   deploy:
     needs: build
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     environment:
       name: github-pages
