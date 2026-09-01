@@ -180,7 +180,13 @@ export function generaScenari({
     scelti.push(s);
     return true;
   };
+  // La prima strada garantita e' quella senza il giocatore piu' caro. Coprire un reparto per
+  // volta sceglie la migliore strada che rinuncia a *un* attaccante, e sui listoni veri puo'
+  // essere quella che rinuncia al terzo: ma "se non prendo il piu' caro cosa faccio" e' la
+  // domanda per cui esiste questo tasto, e non puo' dipendere da un ordinamento.
   const ruoliCoperti = new Set();
+  const senzaIlPiuCaro = perni.length ? trovati.find((s) => s.perno?.id === perni[0].id) : null;
+  if (senzaIlPiuCaro && aggiungi(senzaIlPiuCaro)) ruoliCoperti.add(senzaIlPiuCaro.perno.role);
   for (const s of trovati) {
     const ruolo = s.perno?.role;
     if (ruoliCoperti.has(ruolo)) continue;

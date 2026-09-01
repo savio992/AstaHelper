@@ -88,13 +88,24 @@ export function expectedPrices(players, settings) {
   const listoneRaw = marketSignal(players);
   const hasListone = listoneRaw.size > players.length / 3;
 
+  // I listini dei creator sono piu' piatti del mercato vero. Su un'asta reale a otto squadre
+  // i primi otto giocatori hanno assorbito il 32% dei crediti; i tre creator a disposizione
+  // ne prevedevano fra il 22% e il 29%, e i sette giocatori sopra i cento crediti sono andati
+  // in media 24 crediti sopra la loro stima. Alzare tutte le quote a una potenza sopra uno
+  // sposta crediti dalla coda alla testa lasciando invariato l'ordine: con 1,25 l'errore
+  // medio scende da 6,8 a 5,3 crediti e la concentrazione torna quella osservata. E' tarato
+  // su un'asta sola, e per questo e' un'impostazione e non una costante.
+  const ripidita = Math.max(1, Math.min(2, Number(settings.ripidita) || 1.25));
+  const listoneRipido = new Map();
+  for (const [id, v] of listoneRaw) listoneRipido.set(id, Math.pow(Math.max(0, v), ripidita));
+
   // Forma "modello": i crediti si distribuiscono in proporzione al punteggio, con un
   // esponente che rappresenta quanto il mercato impenna sui migliori.
   const gamma = Math.max(0.5, Math.min(3, settings.aggressiveness ?? 1.55));
   const modelRaw = new Map();
   for (const p of players) modelRaw.set(p.id, Math.pow(Math.max(p.score || 0, 0.01), gamma));
 
-  const listoneShare = normalizeShares(listoneRaw, bought);
+  const listoneShare = normalizeShares(listoneRipido, bought);
   const modelShare = normalizeShares(modelRaw, bought);
 
   const source = settings.priceSource || 'blend';

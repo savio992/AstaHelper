@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { parseCsv, sniffDelimiter, autoMap, buildPlayers, normalizeRole, parseNumber, refineMapping, mergeSources, gridToTable, sheetsToTable } from '../src/domain/csv.js';
 import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domain/model.js';
-import { valuePlayers, rosterScore, depthWeights } from '../src/domain/valuation.js';
+import { valuePlayers, rosterScore, depthWeights, synergyBonus } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
 import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, pianoSenza, CONFIG_ASTA } from '../src/domain/advisor.js';
@@ -1088,4 +1088,128 @@ test('un piano B rotto non viene riusato: si ricalcola invece di mentire', () =>
     alternatives({ ...args, limit: 5, planB: rotto }).alternatives.map((a) => a.player.id),
     alternatives({ ...args, limit: 5 }).alternatives.map((a) => a.player.id)
   );
+});
+
+// --- il blocco conta chi schiero, non chi e' in rosa ----------------------------------------
+// Sul listone vero il piano comprava tre difensori della Roma con punteggio intorno a uno —
+// Rensch, Lulli, Ghilardi — perche' ogni testa in piu' nel blocco valeva dodici punti di bonus,
+// piu' di qualunque titolare vero da due crediti. E il terzo portiere della Roma, titolarita'
+// uno, incassava l'intero bonus da riserva.
+
+function difensore(id, team, score, extra = {}) {
+  return { id, name: id, team, role: 'D', score, titolarita: 5, integrita: 5, solidity: 0.5, ...extra };
+}
+function portiere(id, team, score, titolarita) {
+  return { id, name: id, team, role: 'P', score, titolarita, integrita: 5 };
+}
+const SOLO_DIFESA = { ...defaultSettings(), defenseModifier: true, cleanSheetModifier: false };
+const SOLO_PORTA = { ...defaultSettings(), defenseModifier: false, cleanSheetModifier: true };
+
+test('un riempitivo dello stesso club non gonfia il blocco difensivo', () => {
+  // Una difesa vera da otto: due della Roma e cinque di altri club. L'ottavo posto e' quello
+  // in cui finisce il riempitivo, ed e' li' che deve contare quasi niente.
+  const coppia = [
+    difensore('mancini', 'ROM', 160), difensore('ndicka', 'ROM', 130), difensore('solet', 'UDI', 140),
+    difensore('bastoni', 'INT', 150), difensore('gabriel', 'LEC', 120), difensore('marcandalli', 'GEN', 105),
+    difensore('gallo', 'LEC', 90),
+  ];
+  const conRiempitivo = [...coppia, difensore('lulli', 'ROM', 3, { titolarita: 3 })];
+  const conTitolare = [...coppia, difensore('celik', 'ROM', 110)];
+  const base = synergyBonus(coppia, SOLO_DIFESA);
+  const gonfiato = synergyBonus(conRiempitivo, SOLO_DIFESA);
+  const vero = synergyBonus(conTitolare, SOLO_DIFESA);
+  assert.ok(gonfiato - base < 1, `un difensore da tre punti aggiunge ${(gonfiato - base).toFixed(1)} punti di blocco`);
+  assert.ok(vero - base > 5, `un terzo titolare vero aggiunge solo ${(vero - base).toFixed(1)} punti`);
+});
+
+test('il blocco si schiera insieme: il terzo titolare conta pieno anche se e\' il mio quarto difensore', () => {
+  // Tre della Roma piu' un difensore di un altro club piu' forte del terzo romanista: da solo
+  // quel terzo sarebbe il quarto in rosa, ma con il blocco lo schiero, e il bonus deve dirlo.
+  const rosa = [difensore('mancini', 'ROM', 160), difensore('ndicka', 'ROM', 130), difensore('celik', 'ROM', 100), difensore('solet', 'UDI', 140)];
+  const senzaTerzo = rosa.slice(0, 2).concat(rosa[3]);
+  const pieno = synergyBonus(rosa, SOLO_DIFESA);
+  const due = synergyBonus(senzaTerzo, SOLO_DIFESA);
+  // Il fattore passa da 0,04 (due) a 0,11 (tre): sulla media del blocco fa piu' di otto punti.
+  assert.ok(pieno - due > 8, `da due a tre titolari il blocco cresce di ${(pieno - due).toFixed(1)}`);
+});
+
+test('il terzo portiere non e\' un\'assicurazione, il secondo si\'', () => {
+  const svilar = portiere('svilar', 'ROM', 240, 5);
+  const terzo = [svilar, portiere('demarzi', 'ROM', 1, 1)];
+  const secondo = [svilar, portiere('gollini', 'ROM', 20, 2)];
+  const altroClub = [svilar, portiere('falcone', 'LEC', 180, 5)];
+  assert.equal(synergyBonus(terzo, SOLO_PORTA), synergyBonus(altroClub, SOLO_PORTA), 'un terzo portiere vale quanto uno di un altro club');
+  assert.ok(synergyBonus(secondo, SOLO_PORTA) > synergyBonus(altroClub, SOLO_PORTA) + 10, 'il secondo vero vale il bonus');
+});
+
+// --- il mercato rincara i top rispetto ai listini -------------------------------------------
+// Su un'asta reale a otto squadre i primi otto giocatori hanno preso il 32% dei crediti; i tre
+// creator ne prevedevano fra il 22% e il 29%. Un esponente sopra uno sulle quote dei creator
+// sposta crediti dalla coda alla testa senza cambiare l'ordine.
+
+function quotaPrimi(players, n) {
+  const prezzi = players.map((p) => p.expectedPrice).sort((a, b) => b - a);
+  const tot = prezzi.reduce((a, b) => a + b, 0);
+  return prezzi.slice(0, n).reduce((a, b) => a + b, 0) / tot;
+}
+
+test('la ripidita\' sposta crediti sui primi nomi e non cambia l\'ordine', () => {
+  const piatto = makeContext({ projected: true, priceSource: 'listone', ripidita: 1 });
+  const ripido = makeContext({ projected: true, priceSource: 'listone', ripidita: 1.25 });
+  assert.ok(quotaPrimi(ripido.players, 8) > quotaPrimi(piatto.players, 8) * 1.1, 'con 1,25 i primi otto pesano almeno il 10% in piu\'');
+  // Chi costava strettamente di piu' costa ancora di piu': la potenza e' monotona, e cambiare
+  // l'ordine vorrebbe dire aver cambiato il giudizio dei creator, non solo la scala.
+  const prezzoRipido = new Map(ripido.players.map((p) => [p.id, p.expectedPrice]));
+  const top = piatto.players.slice().sort((a, b) => b.expectedPrice - a.expectedPrice).slice(0, 60);
+  for (let i = 0; i < top.length; i++) {
+    for (let j = i + 1; j < top.length; j++) {
+      if (top[i].expectedPrice > top[j].expectedPrice) {
+        assert.ok(
+          prezzoRipido.get(top[i].id) >= prezzoRipido.get(top[j].id),
+          `${top[i].id} (${top[i].expectedPrice}) costava piu' di ${top[j].id} (${top[j].expectedPrice}) e ora no`
+        );
+      }
+    }
+  }
+  // I crediti che il mercato spende davvero — quelli sui giocatori che verranno comprati —
+  // restano gli stessi: la potenza li sposta, non li crea. Sulla coda non comprata il totale
+  // puo' cambiare per l'arrotondamento a un credito, e non e' un invariante.
+  const comprati = (ctx) => ctx.players.slice().sort((a, b) => b.expectedPrice - a.expectedPrice).slice(0, ctx.settings.participants * totalSlots(ctx.settings));
+  const tot = (ctx) => comprati(ctx).reduce((s, p) => s + p.expectedPrice, 0);
+  assert.ok(Math.abs(tot(ripido) - tot(piatto)) / tot(piatto) < 0.05, `i crediti in gioco cambiano: ${tot(piatto)} → ${tot(ripido)}`);
+});
+
+test('la ripidita\' di default e\' quella misurata sull\'asta reale', () => {
+  assert.equal(defaultSettings().ripidita, 1.25);
+});
+
+// --- i trasferimenti fra un file e l'altro ---------------------------------------------------
+// Due file di date diverse davano Kean a FIO e a COM: nome + club + ruolo e' l'identita', quindi
+// erano due persone, entrambe in listone. L'ultimo file caricato ha ragione sul club.
+
+test('un giocatore che cambia club fra due file resta uno solo, con il club nuovo', () => {
+  const vecchio = buildPlayers([{ Nome: 'Kean', Squadra: 'FIO', Ruolo: 'A', Prezzo: '90' }], { name: 'Nome', team: 'Squadra', role: 'Ruolo', price: 'Prezzo' }, { source: 'agosto' }).players;
+  const nuovo = buildPlayers([{ Nome: 'Kean', Squadra: 'COM', Ruolo: 'A', Prezzo: '80' }], { name: 'Nome', team: 'Squadra', role: 'Ruolo', price: 'Prezzo' }, { source: 'settembre' }).players;
+  const fusi = mergeSources([vecchio, nuovo]);
+  assert.equal(fusi.length, 1, 'una persona sola');
+  assert.equal(fusi[0].team, 'COM', 'il club e\' quello del file piu\' recente');
+  assert.equal(fusi[0].trasferitoDa, 'FIO');
+  assert.deepEqual(Object.keys(fusi[0].bySource).sort(), ['agosto', 'settembre'], 'i dati di entrambi i file restano');
+  assert.equal(fusi[0].price, 85, 'i prezzi si mediano come per ogni altro giocatore');
+});
+
+test('due omonimi nello stesso file restano due persone', () => {
+  const m = { name: 'Nome', team: 'Squadra', role: 'Ruolo', price: 'Prezzo' };
+  const unFile = buildPlayers([{ Nome: 'Rossi', Squadra: 'TOR', Ruolo: 'D', Prezzo: '5' }, { Nome: 'Rossi', Squadra: 'GEN', Ruolo: 'D', Prezzo: '3' }], m, { source: 'a' }).players;
+  const altroFile = buildPlayers([{ Nome: 'Rossi', Squadra: 'GEN', Ruolo: 'D', Prezzo: '4' }], m, { source: 'b' }).players;
+  const fusi = mergeSources([unFile, altroFile]);
+  assert.equal(fusi.length, 2, 'l\'omonimia vera non si fonde');
+  assert.ok(fusi.every((p) => !p.trasferitoDa));
+});
+
+test('lo stesso nome in ruoli diversi non e\' un trasferimento', () => {
+  const m = { name: 'Nome', team: 'Squadra', role: 'Ruolo', price: 'Prezzo' };
+  const a = buildPlayers([{ Nome: 'Thuram', Squadra: 'INT', Ruolo: 'A', Prezzo: '100' }], m, { source: 'a' }).players;
+  const b = buildPlayers([{ Nome: 'Thuram', Squadra: 'JUV', Ruolo: 'C', Prezzo: '20' }], m, { source: 'b' }).players;
+  assert.equal(mergeSources([a, b]).length, 2);
 });

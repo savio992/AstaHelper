@@ -138,6 +138,10 @@ export function render() {
       <label class="field" style="margin-top:14px"><span>Aggressivita' del mercato sui top: ${Number(s.aggressiveness).toFixed(2)}</span>
         <input id="cfg-aggressivita" type="range" min="1" max="2.4" step="0.05" value="${s.aggressiveness}" data-action="aggr" style="width:100%">
       </label>
+      <label class="field" style="margin-top:14px"><span>Quanto il mercato rincara i top rispetto ai listini: ${Number(s.ripidita ?? 1.25).toFixed(2)}</span>
+        <input id="cfg-ripidita" type="range" min="1" max="1.6" step="0.05" value="${s.ripidita ?? 1.25}" data-action="ripidita" style="width:100%">
+        <span class="tiny muted">1 = i prezzi dei creator cosi' come sono. 1,25 = quanto misurato in un'asta vera a otto squadre: i primi otto nomi prendono un terzo dei crediti.</span>
+      </label>
       <div class="tiny muted">Piu' e' alta, piu' l'app si aspetta aste furiose sui big.</div>
     </div>
 
@@ -428,6 +432,10 @@ export function onInput(action, target, rerender, kind = 'input') {
       return true;
     case 'aggr':
       updateSettings({ aggressiveness: Number(target.value) });
+      rerender({ keepFocus: target.id });
+      return true;
+    case 'ripidita':
+      updateSettings({ ripidita: Number(target.value) });
       rerender({ keepFocus: target.id });
       return true;
     default:

@@ -394,17 +394,55 @@ export function buildPlayers(rows, mapping, opts = {}) {
  * Stesso giocatore = stesso nome e squadra. I valori numerici diventano la media
  * delle fonti, le etichette si sommano: il consenso vale piu' di una firma sola.
  */
+/** Nome e ruolo senza il club: e' cio' che resta uguale quando un giocatore cambia squadra. */
+function chiaveSenzaClub(p) {
+  return makePlayerId(p.name, '', p.role);
+}
+
 export function mergeSources(lists) {
   const valid = lists.filter((l) => l && l.length);
   if (valid.length <= 1) return valid[0] || [];
 
+  // I trasferimenti. Due file di date diverse danno lo stesso giocatore a due club, e
+  // l'identita' e' nome + club + ruolo: Kean FIO e Kean COM diventavano due persone, entrambe
+  // in listone, entrambe comprabili. L'ultimo file caricato ha ragione sul club, e la voce
+  // vecchia si fonde nella nuova invece di restarle accanto.
+  //
+  // Con una cautela: se un solo file elenca due club per lo stesso nome e ruolo, sono due
+  // persone davvero, e non si toccano.
+  const omonimi = new Set();
+  for (const list of valid) {
+    const club = new Map();
+    for (const p of list) {
+      const k = chiaveSenzaClub(p);
+      if (!club.has(k)) club.set(k, new Set());
+      club.get(k).add(p.team || '');
+    }
+    for (const [k, teams] of club) if (teams.size > 1) omonimi.add(k);
+  }
+
   const merged = new Map();
+  const perNome = new Map(); // chiave senza club -> id con cui e' stato fuso
   for (const list of valid) {
     for (const p of list) {
-      const key = p.id;
+      let key = p.id;
+      const senzaClub = chiaveSenzaClub(p);
+      const giaVisto = perNome.get(senzaClub);
+      if (giaVisto && giaVisto !== key && !omonimi.has(senzaClub) && merged.has(giaVisto)) {
+        // Stesso giocatore, club nuovo: la voce vecchia si sposta sotto l'id nuovo.
+        const voce = merged.get(giaVisto);
+        merged.delete(giaVisto);
+        voce.trasferitoDa = voce.team;
+        voce.id = p.id;
+        voce.team = p.team;
+        merged.set(key, voce);
+      } else if (giaVisto && merged.has(giaVisto) && !omonimi.has(senzaClub)) {
+        key = giaVisto;
+      }
       if (!merged.has(key)) {
         merged.set(key, { ...p, tiersBySource: {}, bySource: {}, _acc: {}, _n: {} });
       }
+      if (!omonimi.has(senzaClub)) perNome.set(senzaClub, key);
       const target = merged.get(key);
       for (const src of p.sources) if (!target.sources.includes(src)) target.sources.push(src);
       const src = p.sources[0] || `fonte ${valid.indexOf(list) + 1}`;
