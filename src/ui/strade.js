@@ -108,6 +108,30 @@ function testa(piano, quanti = 4) {
     .join(' · ');
 }
 
+// Sotto quanti crediti un movimento e' un dettaglio contabile e non una scelta.
+const MOVIMENTO_MINIMO = 3;
+
+/**
+ * Cosa distingue una strada dal piano attuale.
+ *
+ * Prima qui c'erano i quattro giocatori piu' cari, e le strade sembravano tutte uguali: i piu'
+ * cari sono proprio il nucleo che hanno in comune. Quello che le distingue e' l'altra meta' —
+ * chi entra e chi esce — ed e' anche la cosa che si vuole sapere, perche' e' lo scambio che
+ * stai valutando.
+ */
+function cambio(s, quanti = 3) {
+  if (!s.cambio) return testa(s.piano);
+  const riga = (voci, segno, classe) => {
+    const grossi = voci.filter((v) => v.prezzo >= MOVIMENTO_MINIMO).slice(0, quanti);
+    if (!grossi.length) return '';
+    const resto = voci.filter((v) => v.prezzo >= MOVIMENTO_MINIMO).length - grossi.length;
+    return `<div class="tiny ${classe}">${segno} ${grossi
+      .map((v) => `${esc(v.nome)} <b class="mono">${v.prezzo}</b>`)
+      .join(', ')}${resto > 0 ? ` <span class="muted">e altri ${resto}</span>` : ''}</div>`;
+  };
+  return `${riga(s.cambio.entrati, '+', 'pos')}${riga(s.cambio.usciti, '−', 'neg')}`;
+}
+
 function generateCard() {
   if (generando) {
     return `<div class="card"><h2>Genera le strade</h2>
@@ -155,7 +179,7 @@ function generateCard() {
             <div><b>${esc(s.nome)}</b> ${s.attuale ? '<span class="chip plan">piano attuale</span>' : ''}</div>
             <div>${stelline(s.stelle)}</div>
           </div>
-          <div class="tiny" style="margin:4px 0 6px;line-height:1.7">${testa(s.piano)}</div>
+          <div class="cambio" style="margin:4px 0 6px">${cambio(s)}</div>
           <div class="row" style="gap:8px;align-items:center">
             <span class="tiny muted grow">${s.costo} crediti · ${s.piano.picks.length} da prendere</span>
             ${
