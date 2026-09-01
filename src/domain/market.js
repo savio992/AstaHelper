@@ -89,12 +89,16 @@ export function expectedPrices(players, settings) {
   const hasListone = listoneRaw.size > players.length / 3;
 
   // I listini dei creator sono piu' piatti del mercato vero. Su un'asta reale a otto squadre
-  // i primi otto giocatori hanno assorbito il 32% dei crediti; i tre creator a disposizione
-  // ne prevedevano fra il 22% e il 29%, e i sette giocatori sopra i cento crediti sono andati
-  // in media 24 crediti sopra la loro stima. Alzare tutte le quote a una potenza sopra uno
-  // sposta crediti dalla coda alla testa lasciando invariato l'ordine: con 1,25 l'errore
-  // medio scende da 6,8 a 5,3 crediti e la concentrazione torna quella osservata. E' tarato
-  // su un'asta sola, e per questo e' un'impostazione e non una costante.
+  // i primi otto giocatori hanno assorbito il 31% dei crediti; i tre creator a disposizione
+  // ne prevedevano fra il 22% e il 29%, e i giocatori sopra i cento crediti sono andati in
+  // media 25 crediti sopra la stima. Alzare tutte le quote a una potenza sopra uno sposta
+  // crediti dalla coda alla testa lasciando invariato l'ordine.
+  //
+  // Da sola pero' non basta, anzi peggiora la cima: allarga la forbice fra i primi dove il
+  // mercato la chiude, e Malen finiva a 234. Lavora insieme al tetto per singolo giocatore
+  // qui sotto: con 1,25 e un terzo del budget l'errore medio sull'asta reale scende da 8,0 a
+  // 7,1 crediti, quello sui primi otto attaccanti da 28 a 20, e la fascia sopra i cento passa
+  // da −25 a −2. E' tarato su un'asta sola, e per questo e' un'impostazione e non una costante.
   const ripidita = Math.max(1, Math.min(2, Number(settings.ripidita) || 1.25));
   const listoneRipido = new Map();
   for (const [id, v] of listoneRaw) listoneRipido.set(id, Math.pow(Math.max(0, v), ripidita));
@@ -129,14 +133,37 @@ export function expectedPrices(players, settings) {
     combined.set(p.id, parts.reduce((a, b) => a + b, 0) / parts.length);
   }
 
-  let total = 0;
-  for (const [id, v] of combined) if (bought.has(id)) total += v;
-
+  // Il tetto per singolo giocatore.
+  //
+  // Il mercato comprime la cima. Nell'asta reale i primi cinque attaccanti sono andati tutti
+  // fra 151 e 161 crediti — nessuno oltre un terzo del budget — mentre i listini li
+  // distanziavano di molto (Malen 185, Kolo Muani 120) e la curva irripidita ancora di piu'
+  // (234 contro 149). Con quei numeri Malen, che ha il punteggio piu' alto del listone,
+  // sembrava fuori portata e il piano lo evitava; con i prezzi veri lo sceglie. Chi sfora il
+  // tetto si ferma li', e i crediti che non spende vanno agli altri in proporzione.
+  const tetto = Math.max(0.1, Math.min(1, Number(settings.tettoSingolo) || 0.33));
+  const cap = Math.min(maxPrice, Math.max(1, Math.round(budget * tetto)));
+  const fissi = new Set();
   const out = new Map();
-  for (const p of players) {
-    const share = total > 0 ? combined.get(p.id) / total : 0;
-    const price = 1 + discretionary * share;
-    out.set(p.id, Math.min(maxPrice, Math.max(1, Math.round(price))));
+  for (let giro = 0; giro < 30; giro++) {
+    let total = 0;
+    for (const [id, v] of combined) if (bought.has(id) && !fissi.has(id)) total += v;
+    const residuo = discretionary - fissi.size * (cap - 1);
+    let sforato = false;
+    for (const p of players) {
+      if (fissi.has(p.id)) {
+        out.set(p.id, cap);
+        continue;
+      }
+      const share = total > 0 && bought.has(p.id) ? combined.get(p.id) / total : 0;
+      const price = 1 + Math.max(0, residuo) * share;
+      if (price > cap) {
+        fissi.add(p.id);
+        sforato = true;
+      }
+      out.set(p.id, Math.min(cap, Math.max(1, Math.round(price))));
+    }
+    if (!sforato) break;
   }
   return out;
 }

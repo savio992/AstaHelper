@@ -1213,3 +1213,37 @@ test('lo stesso nome in ruoli diversi non e\' un trasferimento', () => {
   const b = buildPlayers([{ Nome: 'Thuram', Squadra: 'JUV', Ruolo: 'C', Prezzo: '20' }], m, { source: 'b' }).players;
   assert.equal(mergeSources([a, b]).length, 2);
 });
+
+// --- il tetto per singolo giocatore ---------------------------------------------------------
+// Il mercato comprime la cima: nell'asta reale i primi cinque attaccanti sono andati tutti
+// fra 151 e 161, nessuno oltre un terzo del budget, mentre i listini li distanziavano di molto.
+// Con Malen stimato 234 il piano lo evitava; con i prezzi veri lo sceglie.
+
+function legaPiccola(tettoSingolo) {
+  // Due squadre, cento crediti, cinque caselle a testa: un fuoriclasse che i listini prezzano
+  // quanto tutti gli altri messi insieme, e nove comprimari.
+  const players = [
+    { id: 'fuoriclasse', name: 'Fuoriclasse', team: 'A', role: 'A', price: 100, score: 100 },
+    ...Array.from({ length: 9 }, (_, i) => ({ id: `c${i}`, name: `C${i}`, team: 'B', role: i < 3 ? 'A' : i < 6 ? 'C' : 'D', price: 10, score: 10 })),
+  ];
+  const settings = { ...defaultSettings(), participants: 2, budget: 100, slots: { P: 0, D: 2, C: 2, A: 1 }, priceSource: 'listone', ripidita: 1, tettoSingolo };
+  return { players, settings, prezzi: expectedPrices(players, settings) };
+}
+
+test('nessuno costa piu\' del tetto, e i crediti in eccesso vanno agli altri', () => {
+  const senza = legaPiccola(1);
+  const con = legaPiccola(0.33);
+  const cap = Math.round(100 * 0.33);
+  assert.ok(senza.prezzi.get('fuoriclasse') > cap, `senza tetto il fuoriclasse vale ${senza.prezzi.get('fuoriclasse')}`);
+  assert.equal(con.prezzi.get('fuoriclasse'), cap, 'con il tetto si ferma li\'');
+  for (const [, v] of con.prezzi) assert.ok(v <= cap);
+  // Un credito di tolleranza a giocatore: e' l'arrotondamento, non una perdita.
+  const somma = (m) => [...m.values()].reduce((a, b) => a + b, 0);
+  assert.ok(Math.abs(somma(con.prezzi) - somma(senza.prezzi)) <= con.players.length, 'i crediti tolti al fuoriclasse restano sul mercato');
+  const altro = (m) => m.get('c0');
+  assert.ok(altro(con.prezzi) > altro(senza.prezzi), `gli altri salgono: ${altro(senza.prezzi)} → ${altro(con.prezzi)}`);
+});
+
+test('il tetto di default e\' un terzo del budget', () => {
+  assert.equal(defaultSettings().tettoSingolo, 0.33);
+});
