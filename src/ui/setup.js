@@ -142,7 +142,7 @@ export function render() {
         <input id="cfg-ripidita" type="range" min="1" max="1.6" step="0.05" value="${s.ripidita ?? 1.25}" data-action="ripidita" style="width:100%">
         <span class="tiny muted">1 = i prezzi dei creator cosi' come sono. 1,25 = quanto misurato in un'asta vera a otto squadre: i primi otto nomi prendono un terzo dei crediti.</span>
       </label>
-      <label class="field" style="margin-top:14px"><span>Tetto per un singolo giocatore: ${Math.round((s.tettoSingolo ?? 0.33) * 100)}% del budget (${Math.round((s.budget || 500) * (s.tettoSingolo ?? 0.33))} crediti)</span>
+      <label class="field" style="margin-top:14px"><span>Tetto per un singolo giocatore: ${Math.round((s.tettoSingolo ?? 0.33) * 100)}% del budget su una rosa da 25 (${Math.round((s.budget || 500) * (s.tettoSingolo ?? 0.33) * (25 / Math.max(1, totalSlots(s))))} crediti con la tua)</span>
         <input id="cfg-tetto" type="range" min="0.2" max="0.5" step="0.01" value="${s.tettoSingolo ?? 0.33}" data-action="tetto-singolo" style="width:100%">
         <span class="tiny muted">Il mercato comprime la cima: nell'asta vera i primi cinque attaccanti sono andati tutti fra 151 e 161, nessuno oltre un terzo del budget, anche quando i listini li distanziavano di molto.</span>
       </label>

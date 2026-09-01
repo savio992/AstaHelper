@@ -141,8 +141,17 @@ export function expectedPrices(players, settings) {
   // (234 contro 149). Con quei numeri Malen, che ha il punteggio piu' alto del listone,
   // sembrava fuori portata e il piano lo evitava; con i prezzi veri lo sceglie. Chi sfora il
   // tetto si ferma li', e i crediti che non spende vanno agli altri in proporzione.
+  //
+  // "Un terzo" e' un fatto osservato su una rosa da venticinque: con meno caselle da riempire
+  // si spende di piu' su uno solo, e in una lega da due caselle a testa un giocatore vale
+  // giustamente meta' del budget. Il tetto scala quindi con le caselle, e a venticinque e'
+  // esattamente la quota impostata.
   const tetto = Math.max(0.1, Math.min(1, Number(settings.tettoSingolo) || 0.33));
-  const cap = Math.min(maxPrice, Math.max(1, Math.round(budget * tetto)));
+  const cap = Math.max(1, Math.round(budget * tetto * (25 / Math.max(1, slotsTotal))));
+
+  // Il tetto tecnico (tutto il budget meno un credito per casella) resta un semplice limite,
+  // come prima: nelle leghe minuscole dove scatta, i crediti sopra non si ridistribuiscono.
+  // Il tetto di mercato invece ridistribuisce, perche' quei crediti in asta si spendono.
   const fissi = new Set();
   const out = new Map();
   for (let giro = 0; giro < 30; giro++) {
@@ -152,16 +161,16 @@ export function expectedPrices(players, settings) {
     let sforato = false;
     for (const p of players) {
       if (fissi.has(p.id)) {
-        out.set(p.id, cap);
+        out.set(p.id, Math.min(maxPrice, cap));
         continue;
       }
       const share = total > 0 && bought.has(p.id) ? combined.get(p.id) / total : 0;
       const price = 1 + Math.max(0, residuo) * share;
-      if (price > cap) {
+      if (cap < maxPrice && price > cap) {
         fissi.add(p.id);
         sforato = true;
       }
-      out.set(p.id, Math.min(cap, Math.max(1, Math.round(price))));
+      out.set(p.id, Math.min(maxPrice, Math.max(1, Math.round(price))));
     }
     if (!sforato) break;
   }

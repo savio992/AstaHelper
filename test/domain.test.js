@@ -1220,13 +1220,14 @@ test('lo stesso nome in ruoli diversi non e\' un trasferimento', () => {
 // Con Malen stimato 234 il piano lo evitava; con i prezzi veri lo sceglie.
 
 function legaPiccola(tettoSingolo) {
-  // Due squadre, cento crediti, cinque caselle a testa: un fuoriclasse che i listini prezzano
-  // quanto tutti gli altri messi insieme, e nove comprimari.
+  // Due squadre, cento crediti, una rosa da venticinque: un fuoriclasse che i listini
+  // prezzano quanto tutti gli altri messi insieme, e nove comprimari. (Le caselle sono
+  // venticinque perche' il tetto e' definito su quella rosa e scala con le caselle.)
   const players = [
     { id: 'fuoriclasse', name: 'Fuoriclasse', team: 'A', role: 'A', price: 100, score: 100 },
     ...Array.from({ length: 9 }, (_, i) => ({ id: `c${i}`, name: `C${i}`, team: 'B', role: i < 3 ? 'A' : i < 6 ? 'C' : 'D', price: 10, score: 10 })),
   ];
-  const settings = { ...defaultSettings(), participants: 2, budget: 100, slots: { P: 0, D: 2, C: 2, A: 1 }, priceSource: 'listone', ripidita: 1, tettoSingolo };
+  const settings = { ...defaultSettings(), participants: 2, budget: 100, slots: { P: 3, D: 8, C: 8, A: 6 }, priceSource: 'listone', ripidita: 1, tettoSingolo };
   return { players, settings, prezzi: expectedPrices(players, settings) };
 }
 
