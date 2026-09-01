@@ -377,6 +377,9 @@ table.tiers td.r { text-align: right; }
 /* Mentre i voti si rifanno restano quelli vecchi, spenti: sbiancare la scheda a ogni
    assegnazione toglierebbe l'unica cosa che si sta guardando. */
 .card.stantio .stelle, .card.stantio .chip { opacity: 0.45; }
+.cambio { line-height: 1.75; }
+.cambio .pos { color: var(--accent); }
+.cambio .neg { color: var(--danger); }
 
 </style>
 <main id="app"></main>
@@ -5958,26 +5961,42 @@ const { optimizeRoster, CONFIG_SOLUTORE } = __m_src_domain_optimizer_js;
 // perche' le scelte piu' care sono anche quelle che cambiano di piu' il resto della rosa.
 const PERNI = 6;
 
-// Quanti giocatori devono cambiare perche' due rose siano "strade diverse" e non la stessa
-// strada con un riempitivo scambiato.
-const DIVERSITA_MINIMA = 2;
+// Quanto devono valere, in quota del budget, i giocatori che distinguono due rose perche'
+// siano "strade diverse" e non la stessa strada con un riempitivo scambiato.
+//
+// Contare le teste era sbagliato, e sbagliato nel modo peggiore: scartava proprio la strada
+// piu' utile. Sul listone vero, rinunciare all'attaccante da 124 e prendere quello da 127 e'
+// uno scambio secco — una testa di differenza — e il filtro lo buttava via come "troppo
+// simile", mentre teneva una rosa che cambiava tre riempitivi da tre crediti. Un giocatore
+// da centoventiquattro e' un quarto del budget: e' la differenza piu' grande che una rosa
+// possa avere, non la piu' piccola.
+//
+// E' la soglia sotto cui due rose sono la stessa cosa, non un criterio di scelta: sui casi
+// veri non taglia niente, serve a non mostrare due volte la stessa strada.
+const DIVERSITA_MINIMA = 0.05;
 
 // Quanto punteggio si perde per scendere di una stella. Sui listoni veri due piani sensati
 // distano il 2-3%: con una scala piu' larga finirebbero tutti a cinque stelle e il voto non
 // direbbe niente.
 const PERDITA_PER_STELLA = 0.02;
 
+function nomePerId(players, id) {
+  return players.find((p) => p.id === id)?.name ?? id;
+}
+
 /** Firma di una rosa: l'insieme dei suoi giocatori, per riconoscere i doppioni. */
 function firma(piano) {
   return [...piano.picks, ...piano.owned].map((p) => p.id).sort().join('|');
 }
 
-/** Quanti giocatori distinguono due rose. */
-function distanza(a, b) {
-  const setB = new Set(b);
-  let n = 0;
-  for (const id of a) if (!setB.has(id)) n++;
-  return n;
+/** Quanto valgono i giocatori che distinguono due rose, in crediti previsti. */
+function distanzaInCrediti(a, b) {
+  const idsB = new Set(b.ids);
+  const idsA = new Set(a.ids);
+  let crediti = 0;
+  for (const id of a.ids) if (!idsB.has(id)) crediti += a.prezzi[id] ?? 0;
+  for (const id of b.ids) if (!idsA.has(id)) crediti += b.prezzi[id] ?? 0;
+  return crediti;
 }
 
 /**
@@ -6008,12 +6027,20 @@ function battezza(piano, base, perno, presi) {
   const nuovi = piano.picks
     .filter((p) => !idsBase.has(p.id))
     .sort((a, b) => b.plannedPrice - a.plannedPrice);
-  for (const p of nuovi) {
+
+  // Il nome giusto e' l'acquisto che la strada rende possibile, se e' libero. Ma quando
+  // quel nome se l'e' gia' preso un'altra strada non si scende lungo la lista fino al
+  // riempitivo da sette crediti: si dice invece a cosa si rinuncia, che e' la scelta vera.
+  // "Senza Svilar" e' un'informazione; "Con Delprato" era il nome di un dettaglio.
+  const primo = nuovi[0] ? `Con ${nuovi[0].name}` : null;
+  if (primo && !presi.has(primo)) return primo;
+  const senza = perno ? `Senza ${perno.name}` : null;
+  if (senza && !presi.has(senza)) return senza;
+  for (const p of nuovi.slice(1)) {
     const nome = `Con ${p.name}`;
     if (!presi.has(nome)) return nome;
   }
-  const senza = perno ? `Senza ${perno.name}` : 'Alternativa';
-  return presi.has(senza) ? `${senza} (2)` : senza;
+  return senza || 'Alternativa';
 }
 
 /**
@@ -6072,14 +6099,33 @@ function generaScenari({
     trovati.push(voce(alt, perno));
   }
 
-  // Fra due rose quasi uguali si tiene la piu' forte: mostrare due strade che differiscono per
-  // un riempitivo occuperebbe un posto senza offrire una scelta.
+  // La scelta delle strade da mostrare.
+  //
+  // Prenderle semplicemente in ordine di punteggio non funziona: rinunciare al giocatore piu'
+  // forte e' sempre la rinuncia che costa di piu', quindi quella strada finirebbe sempre in
+  // fondo e non si vedrebbe mai. E' l'esatto contrario di quello che serve — "se non prendo
+  // l'attaccante da centoventiquattro, cosa faccio?" e' la domanda piu' utile che questo tasto
+  // possa rispondere.
+  //
+  // Quindi prima si copre un reparto per volta: la miglior strada che rinuncia a un attaccante,
+  // quella che rinuncia a un centrocampista, quella che rinuncia al portiere. Sono tre forme
+  // davvero diverse. I posti che restano si riempiono a punteggio.
+  const soglia = (settings.budget || 500) * DIVERSITA_MINIMA;
   trovati.sort((a, b) => b.score - a.score);
   const scelti = [attuale];
+  const aggiungi = (s) => {
+    if (scelti.length >= quante || scelti.includes(s)) return false;
+    if (!scelti.every((g) => distanzaInCrediti(s, g) >= soglia)) return false;
+    scelti.push(s);
+    return true;
+  };
+  const ruoliCoperti = new Set();
   for (const s of trovati) {
-    if (scelti.length >= quante) break;
-    if (scelti.every((g) => distanza(s.ids, g.ids) >= DIVERSITA_MINIMA)) scelti.push(s);
+    const ruolo = s.perno?.role;
+    if (ruoliCoperti.has(ruolo)) continue;
+    if (aggiungi(s)) ruoliCoperti.add(ruolo);
   }
+  for (const s of trovati) aggiungi(s);
 
   // Il piano di partenza non e' per forza il migliore, ed e' giusto che si veda.
   //
@@ -6092,11 +6138,30 @@ function generaScenari({
   for (const s of scelti) s.stelle = stelle(s.score, riferimento);
   scelti.sort((a, b) => b.score - a.score);
 
+  // Cosa cambia rispetto al piano, per poterlo mostrare.
+  //
+  // Elencare i giocatori piu' cari di ogni strada le faceva sembrare tutte uguali, ed era vero
+  // il contrario di quello che si voleva dire: i piu' cari sono il nucleo che le strade hanno
+  // in comune. Quello che distingue una strada e' proprio cio' che il nucleo non contiene.
+  const idsBase = new Set(attuale.ids);
+  const perPrezzo = (a, b) => b.prezzo - a.prezzo;
   const nomi = new Set();
   for (const s of scelti) {
     s.nome = s.attuale ? 'Piano attuale' : battezza(s.piano, migliore, s.perno, nomi);
     nomi.add(s.nome);
     s.meglioDelPiano = s.score > attuale.score;
+    s.cambio = s.attuale
+      ? null
+      : {
+          entrati: s.ids
+            .filter((id) => !idsBase.has(id))
+            .map((id) => ({ id, nome: nomePerId(players, id), prezzo: s.prezzi[id] ?? 0 }))
+            .sort(perPrezzo),
+          usciti: attuale.ids
+            .filter((id) => !s.ids.includes(id))
+            .map((id) => ({ id, nome: nomePerId(players, id), prezzo: attuale.prezzi[id] ?? 0 }))
+            .sort(perPrezzo),
+        };
   }
   return { base: migliore, scenari: scelti, migliorabile: riferimento > attuale.score };
 }
@@ -6327,6 +6392,30 @@ function testa(piano, quanti = 4) {
     .join(' · ');
 }
 
+// Sotto quanti crediti un movimento e' un dettaglio contabile e non una scelta.
+const MOVIMENTO_MINIMO = 3;
+
+/**
+ * Cosa distingue una strada dal piano attuale.
+ *
+ * Prima qui c'erano i quattro giocatori piu' cari, e le strade sembravano tutte uguali: i piu'
+ * cari sono proprio il nucleo che hanno in comune. Quello che le distingue e' l'altra meta' —
+ * chi entra e chi esce — ed e' anche la cosa che si vuole sapere, perche' e' lo scambio che
+ * stai valutando.
+ */
+function cambio(s, quanti = 3) {
+  if (!s.cambio) return testa(s.piano);
+  const riga = (voci, segno, classe) => {
+    const grossi = voci.filter((v) => v.prezzo >= MOVIMENTO_MINIMO).slice(0, quanti);
+    if (!grossi.length) return '';
+    const resto = voci.filter((v) => v.prezzo >= MOVIMENTO_MINIMO).length - grossi.length;
+    return `<div class="tiny ${classe}">${segno} ${grossi
+      .map((v) => `${esc(v.nome)} <b class="mono">${v.prezzo}</b>`)
+      .join(', ')}${resto > 0 ? ` <span class="muted">e altri ${resto}</span>` : ''}</div>`;
+  };
+  return `${riga(s.cambio.entrati, '+', 'pos')}${riga(s.cambio.usciti, '−', 'neg')}`;
+}
+
 function generateCard() {
   if (generando) {
     return `<div class="card"><h2>Genera le strade</h2>
@@ -6374,7 +6463,7 @@ function generateCard() {
             <div><b>${esc(s.nome)}</b> ${s.attuale ? '<span class="chip plan">piano attuale</span>' : ''}</div>
             <div>${stelline(s.stelle)}</div>
           </div>
-          <div class="tiny" style="margin:4px 0 6px;line-height:1.7">${testa(s.piano)}</div>
+          <div class="cambio" style="margin:4px 0 6px">${cambio(s)}</div>
           <div class="row" style="gap:8px;align-items:center">
             <span class="tiny muted grow">${s.costo} crediti · ${s.piano.picks.length} da prendere</span>
             ${

@@ -375,3 +375,6 @@ table.tiers td.r { text-align: right; }
 /* Mentre i voti si rifanno restano quelli vecchi, spenti: sbiancare la scheda a ogni
    assegnazione toglierebbe l'unica cosa che si sta guardando. */
 .card.stantio .stelle, .card.stantio .chip { opacity: 0.45; }
+.cambio { line-height: 1.75; }
+.cambio .pos { color: var(--accent); }
+.cambio .neg { color: var(--danger); }
