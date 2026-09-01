@@ -2,18 +2,44 @@
 
 import { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, contestoConsiglio, attribuisci } from '../store.js';
 import { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots, elenco } from '../domain/model.js';
-import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista } from '../domain/advisor.js';
+import { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista, pianoSenza } from '../domain/advisor.js';
 import { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } from '../domain/mercato.js';
-import { spiegaMossa } from '../domain/strategia.js';
+import { spiegaMossa, ultimaOccasione } from '../domain/strategia.js';
 import { optimizeRoster, CONFIG_SOLUTORE } from '../domain/optimizer.js';
 import { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } from './common.js';
 
-// I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
-let cache = { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+// I calcoli d'asta costano piu' di un secondo a scheda: si tengono finche' il piano non cambia.
+//
+// Ne teniamo alcuni, non uno solo. Durante un rilancio si salta avanti e indietro fra due o tre
+// nomi — quello chiamato, il suo sostituto, quello che si stava seguendo prima — e con una
+// casella sola ogni ritorno ricalcolava tutto da capo. Le voci valgono per una revisione del
+// piano; quando il piano cambia sono tutte scadute insieme, quindi si buttano invece di
+// invecchiare una per una.
+const MAX_SCHEDE = 6;
+const schede = new Map();
+// A quale piano appartengono le schede in cache. Quando il piano cambia scadono tutte
+// insieme, perche' tutte lo usano come termine di paragone.
+let schedeRev = null;
+let cache = vuota();
 let pending = false;
 
+function vuota() {
+  return { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+}
+
+/** Riporta in cima la voce appena usata, cosi' a buttarne una si butta la piu' vecchia. */
+function ricorda(key, voce) {
+  schede.delete(key);
+  schede.set(key, voce);
+  while (schede.size > MAX_SCHEDE) schede.delete(schede.keys().next().value);
+}
+
+// La revisione del piano, non la lunghezza del registro: mettere un lucchetto dalla scheda
+// Piano cambia l'offerta massima senza aggiungere una riga al registro, e per due versioni
+// l'asta ha continuato a mostrare il consiglio di prima. Annullare una mossa aveva lo stesso
+// difetto al contrario, perche' faceva tornare la lunghezza a un valore gia' visto.
 function cacheKey() {
-  return `${state.ui.selectedId}|${state.auction.log.length}|${JSON.stringify(state.settings)}`;
+  return `${state.ui.selectedId}|${state.revisione}`;
 }
 
 onReset(() => {
@@ -25,13 +51,24 @@ export function invalidate() {
   mossaChiusa = null;
   mossaRicostruita = null;
 
-  cache = { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+  schede.clear();
+  schedeRev = null;
+  cache = vuota();
   reparto = null;
 }
 
 function ensureAdvice(rerender) {
   const key = cacheKey();
   if (cache.key === key || !state.ui.selectedId || pending) return;
+  if (schedeRev !== state.revisione) {
+    schede.clear();
+    schedeRev = state.revisione;
+  }
+  const gia = schede.get(key);
+  if (gia) {
+    cache = gia;
+    return;
+  }
   pending = true;
   // Un frame di respiro cosi' lo spinner viene disegnato prima del calcolo.
   setTimeout(() => {
@@ -52,19 +89,23 @@ function ensureAdvice(rerender) {
       const pianoRif = escluso
         ? optimizeRoster({ players: args.players, settings: args.settings, owned: args.owned, unavailable, obbligati: args.obbligati, ...CONFIG_SOLUTORE })
         : state.plan;
-      const alts = alternatives({ ...args, limit: 12 });
+      // Un piano B solo per tutti e tre: e' il termine di paragone dell'offerta massima,
+      // delle alternative e del racconto della perdita, e ognuno se lo ricalcolava uguale.
+      const planB = pianoSenza(args);
+      const alts = alternatives({ ...args, limit: 12, planB });
       cache = {
         key,
         escluso,
         pianoRif,
-        bid: maxBid(args),
+        bid: maxBid({ ...args, planB }),
         alts,
-        // Le stesse alternative, non ricalcolate: erano due secondi buttati a ogni apertura.
-        perdita: spiegaPerdita({ ...args, piano: pianoRif, alternative: alts.alternatives }),
+        // Le stesse alternative, non ricalcolate: il parametro c'era e non veniva letto.
+        perdita: spiegaPerdita({ ...args, piano: pianoRif, alternative: alts.alternatives, planB }),
       };
+      ricorda(key, cache);
     } catch (err) {
       console.error(err);
-      cache = { key, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+      cache = { ...vuota(), key };
     } finally {
       pending = false;
       rerender();
@@ -419,6 +460,7 @@ elenco((state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder
           ) || 'il resto'}.</div>`
         : verdictFor(current, bid)
     }</div>
+    ${scarsitaBox(p)}
 
     ${
       state.ui.chiediSquadra === p.id
@@ -454,6 +496,30 @@ elenco((state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder
  * secondo miglior offerente. Se quel numero e' sotto la mia offerta massima, l'asta e' gia'
  * decisa e ogni credito speso oltre quella soglia e' buttato.
  */
+/**
+ * "Dopo di lui non ce ne sono altri".
+ *
+ * Il tetto d'offerta e' calcolato sul piano B: quanto puoi pagare prima che convenga
+ * l'alternativa. Ma quando l'alternativa non esiste piu' quel numero, pur restando esatto,
+ * risponde a una domanda che non e' piu' quella giusta — e sulla schermata dell'asta era
+ * l'unica cosa scritta. Questo riquadro dice quando siamo in quel caso.
+ */
+function scarsitaBox(p) {
+  const avviso = ultimaOccasione({
+    players: state.players,
+    settings: state.settings,
+    owned: ownedMap(),
+    unavailable: unavailableSet(),
+    playerId: p.id,
+  });
+  if (!avviso) return '';
+  return `
+  <div class="verdict ${avviso.gravita === 'ultima' ? 'stop' : 'edge'}" style="margin-top:10px;text-align:left">
+    <div class="small" style="font-weight:700">${esc(avviso.titolo)}</div>
+    <div class="small" style="font-weight:500;margin-top:4px">${esc(avviso.testo)}</div>
+  </div>`;
+}
+
 function concorrenzaBox(p, bid) {
   if (!bid || bid.maxBid <= 0) return '';
   const conc = concorrenza({

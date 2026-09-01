@@ -371,6 +371,26 @@ table.tiers td.r { text-align: right; }
   padding: 6px 8px;
 }
 
+/* Le strade: rose alternative salvate, con il loro voto in stelle. */
+.chip.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.strade { list-style: none; margin: 0; padding: 0; }
+.strade > li { padding: 10px 0; border-top: 1px solid var(--line); }
+.strade > li:first-child { border-top: 0; padding-top: 2px; }
+.stelle { letter-spacing: 1px; color: var(--warn); font-size: 13px; white-space: nowrap; }
+.nome-strada {
+  font: inherit; font-weight: 700; color: var(--text);
+  background: transparent; border: 1px solid transparent; border-radius: 7px;
+  padding: 2px 6px; min-width: 0; width: 100%;
+}
+.nome-strada:hover { border-color: var(--line); }
+.nome-strada:focus { border-color: var(--accent); outline: none; background: var(--surface); }
+.dettaglio-strada { margin-top: 8px; padding: 8px 10px; background: var(--surface-2); border-radius: 9px; }
+.dettaglio-strada .pos { color: var(--accent); font-weight: 700; }
+.dettaglio-strada .neg { color: var(--danger); font-weight: 700; }
+/* Mentre i voti si rifanno restano quelli vecchi, spenti: sbiancare la scheda a ogni
+   assegnazione toglierebbe l'unica cosa che si sta guardando. */
+.card.stantio .stelle, .card.stantio .chip { opacity: 0.45; }
+
 </style>
 </head>
 <body>
@@ -386,6 +406,9 @@ const ROLES = ['P', 'D', 'C', 'A'];
 
 const ROLE_LABEL = { P: 'Portieri', D: 'Difensori', C: 'Centrocampisti', A: 'Attaccanti' };
 const ROLE_LABEL_SHORT = { P: 'Por', D: 'Dif', C: 'Cen', A: 'Att' };
+// Il reparto, non il ruolo al plurale: "gli ultimi due big in attacco" si legge, "in
+// attaccanti" no. Serve ovunque si parli del reparto invece che dei giocatori.
+const ROLE_REPARTO = { P: 'porta', D: 'difesa', C: 'centrocampo', A: 'attacco' };
 
 // Scala unica di qualita' delle fasce: piu' basso = fascia migliore.
 // Serve solo a proporre un ordinamento automatico all'import; resta tutto modificabile a mano.
@@ -580,7 +603,7 @@ function tierRank(settings, role, tier) {
   return idx >= 0 ? idx : order.length;
 }
 
-return { inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, sortTierLabels, defaultSettings, elenco, totalSlots, tierKey, tierRank, ROLES, ROLE_LABEL, ROLE_LABEL_SHORT };
+return { inferTierOrder, annotateTierPct, annotatePmaShare, annotatePriceShare, sortTierLabels, defaultSettings, elenco, totalSlots, tierKey, tierRank, ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, ROLE_REPARTO };
 })();
 
 // ===== src/domain/csv.js =====
@@ -2866,10 +2889,21 @@ const state = {
   // Il tabellone degli avversari, derivato dal registro delle assegnazioni.
   tabellone: null,
   plan: null,
+  // Quante volte il piano e' stato rifatto. Le viste tengono in cache calcoli che valgono
+  // solo per un certo piano — l'offerta massima, le alternative — e devono sapere quando
+  // quel piano non e' piu' quello. Contare le assegnazioni non bastava: mettere un lucchetto
+  // dalla scheda Piano cambia i consigli senza toccare il registro, e annullare una mossa fa
+  // tornare indietro la sua lunghezza. Ogni cosa che conta passa da `rebuildPlan`, quindi il
+  // conto sta li' ed e' esatto per costruzione.
+  revisione: 0,
   // Il piano precedente, per poter raccontare cosa e' cambiato dopo l'ultima assegnazione.
   prevPlan: null,
   // L'ultima correzione fatta a mano al piano, per poterne raccontare l'effetto.
   ultimaModifica: null,
+  // Le strade salvate: rose complete messe da parte come alternative, che l'asta poi
+  // conferma o chiude. Si tengono per id, non per oggetto giocatore: un listone reimportato
+  // deve ritrovarle.
+  scenari: [],
   ui: {
     tab: 'asta',
     query: '',
@@ -2908,6 +2942,7 @@ function istantanea() {
     sources: state.sources,
     formData: state.formData,
     auction: state.auction,
+    scenari: state.scenari,
     importMeta: state.importMeta ? { headers: state.importMeta.headers, mapping: state.importMeta.mapping, fileName: state.importMeta.fileName, count: state.roster.length } : null,
     ui: { tab: state.ui.tab },
   };
@@ -2932,6 +2967,7 @@ function applica(data) {
   state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {}, ...(data.auction || {}) };
   state.importMeta = data.importMeta || null;
   state.formData = data.formData || null;
+  state.scenari = Array.isArray(data.scenari) ? data.scenari : [];
   recompute();
 }
 
@@ -3026,6 +3062,7 @@ function resetAll() {
   state.players = [];
   state.importMeta = null;
   state.auction = { owned: {}, taken: {}, log: [], bloccati: {}, esclusi: {} };
+  state.scenari = [];
   state.mercato = null;
   state.tabellone = null;
   state.plan = null;
@@ -3173,6 +3210,91 @@ function liberaScelta(id) {
 }
 
 /**
+ * Le strade salvate.
+ *
+ * Una strada e' una rosa intera messa da parte come alternativa. Serve perche' un'asta non si
+ * gioca su una rosa sola: si gioca su un'idea, e quando salta un giocatore la domanda vera non
+ * e' "chi prendo al posto suo" ma "la mia idea regge ancora". Finche' l'idea resta implicita
+ * nel piano, quella domanda non ha nemmeno un posto dove essere fatta.
+ *
+ * Si salvano gli id e i prezzi previsti, non i giocatori: reimportando il listone gli oggetti
+ * cambiano, gli id no, e i prezzi di allora sono il metro per misurare quanto e' costata una
+ * perdita.
+ */
+const MAX_SCENARI = 6;
+
+// L'orologio non basta come identita': salvare due strade di fila richiede meno di un
+// millisecondo, e due strade con lo stesso id vuol dire che cancellandone una spariscono
+// tutte e due.
+let contatoreScenari = 0;
+
+function salvaScenario({ nome, ids, prezzi, score }) {
+  if (!Array.isArray(ids) || !ids.length) return null;
+  const voce = {
+    id: `s${Date.now().toString(36)}-${(contatoreScenari++).toString(36)}`,
+    nome: (nome || 'Strada').slice(0, 40),
+    ids: [...ids],
+    prezzi: { ...(prezzi || {}) },
+    score: Number(score) || 0,
+    creatoIl: Date.now(),
+  };
+  state.scenari = [voce, ...state.scenari].slice(0, MAX_SCENARI);
+  save();
+  notify();
+  return voce;
+}
+
+function rinominaScenario(id, nome) {
+  const voce = state.scenari.find((s) => s.id === id);
+  if (!voce) return false;
+  voce.nome = (nome || voce.nome).slice(0, 40);
+  save();
+  notify();
+  return true;
+}
+
+function eliminaScenario(id) {
+  const prima = state.scenari.length;
+  state.scenari = state.scenari.filter((s) => s.id !== id);
+  if (state.scenari.length === prima) return false;
+  save();
+  notify();
+  return true;
+}
+
+/**
+ * Segui questa strada: i suoi giocatori diventano lucchetti e il piano si ricostruisce intorno.
+ *
+ * Non si bloccano tutti e venticinque. I riempitivi da un credito sono intercambiabili per
+ * definizione — bloccarli non direbbe niente al solutore e gli toglierebbe l'unica liberta'
+ * che gli serve per assorbire i rincari. Si blocca il nucleo: i giocatori che da soli valgono
+ * la gran parte della strada, quelli per cui all'asta alzeresti la mano davvero.
+ *
+ * Passa dalla stessa strada di ogni altra correzione, quindi se la rosa non si chiude piu' la
+ * mossa viene rifiutata invece di lasciare un piano rotto.
+ */
+function adottaScenario(id, nucleo) {
+  const voce = state.scenari.find((s) => s.id === id);
+  if (!voce) return false;
+  const daBloccare = (nucleo && nucleo.length ? nucleo : voce.ids).filter(
+    (pid) => !state.auction.taken[pid] && !state.auction.owned[pid]
+  );
+  if (!daBloccare.length) return false;
+  return correggiPiano(id, 'adotta', () => {
+    state.auction.bloccati = {};
+    for (const pid of daBloccare) state.auction.bloccati[pid] = true;
+  });
+}
+
+/** Lascia di nuovo decidere al solutore: via tutti i lucchetti. */
+function abbandonaStrada() {
+  if (!Object.keys(state.auction.bloccati || {}).length) return false;
+  return correggiPiano(null, 'abbandona', () => {
+    state.auction.bloccati = {};
+  });
+}
+
+/**
  * Il contesto su cui calcolare i consigli per un giocatore.
  *
  * Se l'ho scartato, i numeri vanno calcolati sul mondo in cui non l'ho fatto: altrimenti
@@ -3226,6 +3348,7 @@ function rebuildPlan(opts = {}) {
     ...CONFIG_SOLUTORE,
     ...opts,
   });
+  state.revisione++;
   return state.plan;
 }
 
@@ -3497,7 +3620,7 @@ function creditsLeft() {
   return (state.settings.budget || 500) - spentTotal();
 }
 
-return { onReset, subscribe, notify, save, load, esporta, nomeBackup, importa, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, listaMia, obbligatiSet, blocca, scarta, liberaScelta, contestoConsiglio, statoScelta, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, confrontaRose, applicaRose, attribuisci, undo, rinominaSquadre, updateSettings, spentTotal, creditsLeft, state };
+return { onReset, subscribe, notify, save, load, esporta, nomeBackup, importa, resetAll, recompute, setForm, clearForm, ownedMap, unavailableSet, listaMia, obbligatiSet, blocca, scarta, liberaScelta, salvaScenario, rinominaScenario, eliminaScenario, adottaScenario, abbandonaStrada, contestoConsiglio, statoScelta, takenMap, playerById, rebuildPlan, pianoPrimaDellUltimaMossa, addSource, removeSource, assign, assegnaMolti, release, confrontaRose, applicaRose, attribuisci, undo, rinominaSquadre, updateSettings, spentTotal, creditsLeft, state };
 })();
 
 // ===== src/domain/advisor.js =====
@@ -3604,14 +3727,31 @@ function budgetDiFase({ settings, players, owned, plan, role = null }) {
  * E' il prezzo oltre il quale la rosa che ottengo prendendolo vale meno della rosa
  * che ottengo lasciandolo andare e ridistribuendo i crediti. Il vero limite dell'asta.
  */
-function maxBid({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId }) {
+/**
+ * La rosa migliore assumendo di aver perso questo giocatore: il piano B.
+ *
+ * E' il termine di paragone di quasi tutto quello che l'assistente dice su un giocatore —
+ * l'offerta massima e' il prezzo oltre il quale conviene il piano B, le alternative sono chi
+ * ci entra al posto suo, il racconto della perdita e' la differenza fra i due piani. Per
+ * questo va calcolato una volta sola e passato in giro: le tre funzioni lo costruivano
+ * ciascuna per conto proprio, con gli stessi identici argomenti, e aprire una scheda costava
+ * tre risoluzioni complete invece di una.
+ *
+ * Se era un giocatore che avevo imposto, perderlo scioglie il vincolo: altrimenti il piano
+ * resterebbe legato a qualcuno che non e' piu' comprabile.
+ */
+function pianoSenza({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId }) {
+  const senza = new Set(unavailable);
+  senza.add(playerId);
+  const vincoli = new Set([...obbligati].filter((id) => id !== playerId));
+  return optimizeRoster({ players, settings, owned, unavailable: senza, ...FAST, obbligati: vincoli });
+}
+
+function maxBid({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, planB: pianoB = null }) {
   const hard = maxSpendableNow(settings, owned);
   if (hard < 1) return { maxBid: 0, planB: null, reason: 'Crediti esauriti per i vincoli di rosa.' };
 
-  const withoutSet = new Set(unavailable);
-  withoutSet.add(playerId);
-  const senzaVincolo = new Set([...obbligati].filter((id) => id !== playerId));
-  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST, obbligati: senzaVincolo });
+  const planB = pianoB?.ok ? pianoB : pianoSenza({ players, settings, owned, unavailable, obbligati, playerId });
   if (!planB.ok) {
     // Se senza di lui non esiste una rosa valida, e' incedibile: si arriva al tetto tecnico.
     return { maxBid: hard, planB, hard, breakEven: hard, reason: 'Senza di lui non chiudi la rosa.' };
@@ -3667,15 +3807,18 @@ function alternatives({
   playerId,
   limit = 5,
   shortlist = 10,
+  planB: pianoB = null,
 }) {
   const byId = new Map(players.map((p) => [p.id, p]));
   const target = byId.get(playerId);
   if (!target) return { alternatives: [], planB: null };
 
+  // Il piano B arriva da fuori quando c'e' (aprire una scheda ne calcolava tre identici),
+  // ma l'insieme "senza di lui" serve lo stesso per valutare ogni candidato: costruirlo non
+  // costa niente, e' risolverlo che costava.
   const withoutSet = new Set(unavailable);
   withoutSet.add(playerId);
-  const senzaVincolo = new Set([...obbligati].filter((id) => id !== playerId));
-  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST, obbligati: senzaVincolo });
+  const planB = pianoB?.ok ? pianoB : pianoSenza({ players, settings, owned, unavailable, obbligati, playerId });
   const planWith = (() => {
     const o = new Map(owned);
     o.set(playerId, Math.max(1, Math.round(target.expectedPrice ?? 1)));
@@ -3900,17 +4043,12 @@ function abbinamentoPortiere({ players, settings, plan, owned = new Map(), unava
  * su uno da venti: significa che quei crediti si ridistribuiscono, e il piano puo' rifare
  * l'attacco intero e portarsi dietro difesa e centrocampo.
  */
-function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, piano = null, limite = 4, alternative = null }) {
+function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, piano = null, limite = 4, alternative = null, planB: pianoB = null }) {
   const perso = players.find((p) => p.id === playerId);
   if (!perso) return null;
 
   const prima = piano?.ok ? piano : optimizeRoster({ players, settings, owned, unavailable, ...FAST, obbligati });
-  const senza = new Set(unavailable);
-  senza.add(playerId);
-  // Se era un giocatore che avevo imposto, perderlo scioglie il vincolo: altrimenti il piano
-  // resterebbe legato a qualcuno che non e' piu' comprabile.
-  const vincoli = new Set([...obbligati].filter((id) => id !== playerId));
-  const dopo = optimizeRoster({ players, settings, owned, unavailable: senza, ...FAST, obbligati: vincoli });
+  const dopo = pianoB?.ok ? pianoB : pianoSenza({ players, settings, owned, unavailable, obbligati, playerId });
   if (!dopo.ok) {
     return { perso, dopo, impossibile: true, frasi: ['Senza di lui non si chiude una rosa valida: e\' incedibile.'] };
   }
@@ -3932,7 +4070,12 @@ function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new
 
   const prezzoPiano = prima.picks.find((p) => p.id === playerId)?.plannedPrice ?? perso.expectedPrice ?? 0;
   const costo = Math.max(0, Math.round((prima.score - dopo.score) * 10) / 10);
-  const { alternatives: tutte } = alternatives({ players, settings, owned, unavailable, playerId, limit: 12 });
+  // Le alternative arrivano gia' calcolate da chi ci chiama. Il parametro c'era da tempo e non
+  // veniva letto: si ricalcolavano da capo a ogni apertura di scheda, ed erano il pezzo piu'
+  // caro dei tre.
+  const tutte = alternative?.length
+    ? alternative
+    : alternatives({ players, settings, owned, unavailable, obbligati, playerId, limit: 12, planB: dopo }).alternatives;
 
   const frasi = [];
   if (sostituto) {
@@ -4166,7 +4309,7 @@ function sceltiInPanchina({ plan, settings }) {
   return out.sort((a, b) => b.prezzo - a.prezzo);
 }
 
-return { maxSpendableNow, slotsLeftByRole, faseCorrente, budgetDiFase, maxBid, alternatives, planDiff, tierBudgetReport, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, CONFIG_ASTA };
+return { maxSpendableNow, slotsLeftByRole, faseCorrente, budgetDiFase, pianoSenza, maxBid, alternatives, planDiff, tierBudgetReport, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, CONFIG_ASTA };
 })();
 
 // ===== src/domain/strategia.js =====
@@ -4175,7 +4318,7 @@ const __m_src_domain_strategia_js = (() => {
 // che la strada e' cambiata. Se i big di un reparto finiscono tutti, i crediti che avevi
 // messo da parte per loro vanno spostati, e conviene saperlo prima che sia troppo tardi.
 
-const { ROLES, ROLE_LABEL, elenco } = __m_src_domain_model_js;
+const { ROLES, ROLE_LABEL, ROLE_REPARTO, elenco } = __m_src_domain_model_js;
 const { optimizeRoster } = __m_src_domain_optimizer_js;
 
 /** Quanti giocatori di prima fascia restano liberi, reparto per reparto. */
@@ -4281,20 +4424,68 @@ function consiglioStrategico({ players, settings, owned = new Map(), unavailable
       avvisi.push({
         role,
         gravita: 'finiti',
-        titolo: `I big in ${ROLE_LABEL[role].toLowerCase()} sono finiti.`,
+        titolo: `I big in ${ROLE_REPARTO[role]} sono finiti.`,
         testo: frasi.length ? frasi.join(' ') : 'Il piano si e\' gia\' adattato senza di loro.',
       });
     } else if (liberi <= richiesti - miei) {
       avvisi.push({
         role,
         gravita: 'ultimi',
-        titolo: `Restano ${liberi} big in ${ROLE_LABEL[role].toLowerCase()}: ${nomi.join(', ')}.`,
+        titolo: `Restano ${liberi} big in ${ROLE_REPARTO[role]}: ${nomi.join(', ')}.`,
         testo: `Te ne serve ${richiesti - miei}. Se li perdi tutti devi cambiare strada.`,
       });
     }
   }
 
   return { big, avvisi };
+}
+
+/**
+ * Quanto e' l'ultima occasione, per il giocatore che stai guardando.
+ *
+ * L'avviso sulla scarsita' dei big esiste da tempo ma vive nella scheda Mercato, che durante
+ * l'asta non guarda nessuno: quando il banditore chiama un nome si sta sulla schermata
+ * dell'asta, e li' l'unica cosa che si vedeva era il tetto d'offerta. Ma "puoi arrivare a 38"
+ * significa una cosa diversa se dopo di lui ci sono altri quattro come lui e un'altra se e'
+ * rimasto solo lui: nel secondo caso il tetto e' vero e lo stesso conviene sforarlo, perche'
+ * il piano B non esiste.
+ *
+ * Si guarda solo il reparto del giocatore in questione, e solo se e' di prima fascia: dire a
+ * chi sta puntando il quarto portiere che gli attaccanti top stanno finendo e' rumore.
+ */
+function ultimaOccasione({ players, settings, owned = new Map(), unavailable = new Set(), playerId }) {
+  const p = players.find((x) => x.id === playerId);
+  if (!p || !p.isTop || owned.has(p.id) || unavailable.has(p.id)) return null;
+
+  const richiesti = Math.max(0, Math.round(settings.minTop?.[p.role] ?? 0));
+  if (!richiesti) return null;
+
+  const { liberi, miei, nomi } = bigRimasti(players, { owned, unavailable })[p.role];
+  const mancanti = richiesti - miei;
+  if (mancanti <= 0) return null;
+
+  const reparto = ROLE_REPARTO[p.role];
+  // Lui compreso: se ne restano tanti quanti te ne servono, perderne uno vuol dire restare
+  // sotto, e non c'e' un secondo tentativo.
+  if (liberi <= mancanti) {
+    return {
+      gravita: 'ultima',
+      titolo: liberi === 1 ? `E' l'ultimo big in ${reparto}.` : `Sono gli ultimi ${liberi} big in ${reparto} e te ne servono ${mancanti}.`,
+      testo:
+        liberi === 1
+          ? 'Se lo perdi, di prima fascia in questo reparto non ne prendi piu\'. Il tetto qui sopra e\' calcolato su un piano B che non esiste: sforalo consapevolmente o cambia strada adesso.'
+          : 'Perderne anche uno vuol dire chiudere sotto la soglia che ti sei dato. Il piano B c\'e\' ma e\' gia\' un ripiego.',
+    };
+  }
+  const altri = liberi - mancanti;
+  if (altri <= 2) {
+    return {
+      gravita: 'quasi',
+      titolo: `Restano ${liberi} big in ${reparto}: te ne servono ${mancanti}.`,
+      testo: `Puoi ancora permetterti di perderne ${altri}. Dopo di lui: ${nomi.filter((n) => n !== p.name).slice(0, 2).join(', ') || 'nessuno'}.`,
+    };
+  }
+  return null;
 }
 
 /**
@@ -4456,7 +4647,7 @@ function spiegaModifica({ prima, dopo, players, settings, id, azione }) {
   return { player: p, azione, titolo, frasi, entrati, usciti, mosse, costo, soloLui: entrati.length <= 1 };
 }
 
-return { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, spiegaMossa, spiegaModifica };
+return { bigRimasti, scenarioSenzaBig, confrontaPiani, narrazione, consiglioStrategico, ultimaOccasione, spiegaMossa, spiegaModifica };
 })();
 
 // ===== src/ui/common.js =====
@@ -4564,18 +4755,44 @@ const __m_src_ui_asta_js = (() => {
 
 const { state, assign, release, undo, ownedMap, unavailableSet, takenMap, playerById, creditsLeft, rebuildPlan, pianoPrimaDellUltimaMossa, onReset, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, contestoConsiglio, attribuisci } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, ROLE_LABEL_SHORT, totalSlots, elenco } = __m_src_domain_model_js;
-const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista } = __m_src_domain_advisor_js;
+const { maxBid, alternatives, maxSpendableNow, slotsLeftByRole, budgetDiFase, pianoDiReparto, abbinamentoPortiere, spiegaPerdita, spiegaOfferta, tettoSullaLista, pianoSenza } = __m_src_domain_advisor_js;
 const { concorrenza, concorrenzaPerRuolo, verdettoConcorrenza, nomiSquadre, disponibilita } = __m_src_domain_mercato_js;
-const { spiegaMossa } = __m_src_domain_strategia_js;
+const { spiegaMossa, ultimaOccasione } = __m_src_domain_strategia_js;
 const { optimizeRoster, CONFIG_SOLUTORE } = __m_src_domain_optimizer_js;
 const { esc, roleChip, matches, playerRow, emptyState, toast, edgeBadge, altVerdict } = __m_src_ui_common_js;
 
-// I calcoli d'asta costano decine di millisecondi: li teniamo in cache finche' non cambia nulla.
-let cache = { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+// I calcoli d'asta costano piu' di un secondo a scheda: si tengono finche' il piano non cambia.
+//
+// Ne teniamo alcuni, non uno solo. Durante un rilancio si salta avanti e indietro fra due o tre
+// nomi — quello chiamato, il suo sostituto, quello che si stava seguendo prima — e con una
+// casella sola ogni ritorno ricalcolava tutto da capo. Le voci valgono per una revisione del
+// piano; quando il piano cambia sono tutte scadute insieme, quindi si buttano invece di
+// invecchiare una per una.
+const MAX_SCHEDE = 6;
+const schede = new Map();
+// A quale piano appartengono le schede in cache. Quando il piano cambia scadono tutte
+// insieme, perche' tutte lo usano come termine di paragone.
+let schedeRev = null;
+let cache = vuota();
 let pending = false;
 
+function vuota() {
+  return { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+}
+
+/** Riporta in cima la voce appena usata, cosi' a buttarne una si butta la piu' vecchia. */
+function ricorda(key, voce) {
+  schede.delete(key);
+  schede.set(key, voce);
+  while (schede.size > MAX_SCHEDE) schede.delete(schede.keys().next().value);
+}
+
+// La revisione del piano, non la lunghezza del registro: mettere un lucchetto dalla scheda
+// Piano cambia l'offerta massima senza aggiungere una riga al registro, e per due versioni
+// l'asta ha continuato a mostrare il consiglio di prima. Annullare una mossa aveva lo stesso
+// difetto al contrario, perche' faceva tornare la lunghezza a un valore gia' visto.
 function cacheKey() {
-  return `${state.ui.selectedId}|${state.auction.log.length}|${JSON.stringify(state.settings)}`;
+  return `${state.ui.selectedId}|${state.revisione}`;
 }
 
 onReset(() => {
@@ -4587,13 +4804,24 @@ function invalidate() {
   mossaChiusa = null;
   mossaRicostruita = null;
 
-  cache = { key: null, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+  schede.clear();
+  schedeRev = null;
+  cache = vuota();
   reparto = null;
 }
 
 function ensureAdvice(rerender) {
   const key = cacheKey();
   if (cache.key === key || !state.ui.selectedId || pending) return;
+  if (schedeRev !== state.revisione) {
+    schede.clear();
+    schedeRev = state.revisione;
+  }
+  const gia = schede.get(key);
+  if (gia) {
+    cache = gia;
+    return;
+  }
   pending = true;
   // Un frame di respiro cosi' lo spinner viene disegnato prima del calcolo.
   setTimeout(() => {
@@ -4614,19 +4842,23 @@ function ensureAdvice(rerender) {
       const pianoRif = escluso
         ? optimizeRoster({ players: args.players, settings: args.settings, owned: args.owned, unavailable, obbligati: args.obbligati, ...CONFIG_SOLUTORE })
         : state.plan;
-      const alts = alternatives({ ...args, limit: 12 });
+      // Un piano B solo per tutti e tre: e' il termine di paragone dell'offerta massima,
+      // delle alternative e del racconto della perdita, e ognuno se lo ricalcolava uguale.
+      const planB = pianoSenza(args);
+      const alts = alternatives({ ...args, limit: 12, planB });
       cache = {
         key,
         escluso,
         pianoRif,
-        bid: maxBid(args),
+        bid: maxBid({ ...args, planB }),
         alts,
-        // Le stesse alternative, non ricalcolate: erano due secondi buttati a ogni apertura.
-        perdita: spiegaPerdita({ ...args, piano: pianoRif, alternative: alts.alternatives }),
+        // Le stesse alternative, non ricalcolate: il parametro c'era e non veniva letto.
+        perdita: spiegaPerdita({ ...args, piano: pianoRif, alternative: alts.alternatives, planB }),
       };
+      ricorda(key, cache);
     } catch (err) {
       console.error(err);
-      cache = { key, bid: null, alts: null, perdita: null, escluso: false, pianoRif: null };
+      cache = { ...vuota(), key };
     } finally {
       pending = false;
       rerender();
@@ -4981,6 +5213,7 @@ elenco((state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder
           ) || 'il resto'}.</div>`
         : verdictFor(current, bid)
     }</div>
+    ${scarsitaBox(p)}
 
     ${
       state.ui.chiediSquadra === p.id
@@ -5016,6 +5249,30 @@ elenco((state.settings.auctionOrder || ROLES).slice((state.settings.auctionOrder
  * secondo miglior offerente. Se quel numero e' sotto la mia offerta massima, l'asta e' gia'
  * decisa e ogni credito speso oltre quella soglia e' buttato.
  */
+/**
+ * "Dopo di lui non ce ne sono altri".
+ *
+ * Il tetto d'offerta e' calcolato sul piano B: quanto puoi pagare prima che convenga
+ * l'alternativa. Ma quando l'alternativa non esiste piu' quel numero, pur restando esatto,
+ * risponde a una domanda che non e' piu' quella giusta — e sulla schermata dell'asta era
+ * l'unica cosa scritta. Questo riquadro dice quando siamo in quel caso.
+ */
+function scarsitaBox(p) {
+  const avviso = ultimaOccasione({
+    players: state.players,
+    settings: state.settings,
+    owned: ownedMap(),
+    unavailable: unavailableSet(),
+    playerId: p.id,
+  });
+  if (!avviso) return '';
+  return `
+  <div class="verdict ${avviso.gravita === 'ultima' ? 'stop' : 'edge'}" style="margin-top:10px;text-align:left">
+    <div class="small" style="font-weight:700">${esc(avviso.titolo)}</div>
+    <div class="small" style="font-weight:500;margin-top:4px">${esc(avviso.testo)}</div>
+  </div>`;
+}
+
 function concorrenzaBox(p, bid) {
   if (!bid || bid.maxBid <= 0) return '';
   const conc = concorrenza({
@@ -5690,6 +5947,607 @@ function onInput(action, target, rerender) {
 return { invalidate, render, onAction, onInput };
 })();
 
+// ===== src/domain/scenari.js =====
+const __m_src_domain_scenari_js = (() => {
+// Le strade possibili, non la strada.
+//
+// L'ottimizzatore da' una rosa sola: la migliore. Ma un'asta non si gioca su una rosa sola,
+// si gioca su un'idea — "il portiere forte e il blocco Inter", "niente portiere top e due
+// attaccanti da trenta" — e quell'idea o regge o muore a seconda di chi riesci a prendere.
+// Finche' resta implicita nel piano, quando salta un giocatore non si capisce se e' saltato
+// un nome o se e' saltata la strada.
+//
+// Qui le strade si rendono esplicite: se ne generano alcune davvero diverse, si salvano, e a
+// ogni assegnazione si guarda quali sono ancora percorribili. La domanda smette di essere
+// "chi prendo al posto di Svilar" e diventa "quale delle mie strade e' ancora viva".
+//
+// Il motore c'era gia' e buttava via il lavoro: le ripartenze dell'ottimizzatore rifanno il
+// piano escludendo a turno una scelta cara, ottengono rose alternative valide e ne tengono
+// solo la migliore. Qui si tengono tutte.
+
+const { ROLE_LABEL_SHORT } = __m_src_domain_model_js;
+const { optimizeRoster, CONFIG_SOLUTORE } = __m_src_domain_optimizer_js;
+
+// Quanti perni provare a togliere. Ogni perno costa un'ottimizzazione intera: sei tiene il
+// tasto sotto il secondo sui listoni veri e basta e avanza per trovare quattro strade diverse,
+// perche' le scelte piu' care sono anche quelle che cambiano di piu' il resto della rosa.
+const PERNI = 6;
+
+// Quanti giocatori devono cambiare perche' due rose siano "strade diverse" e non la stessa
+// strada con un riempitivo scambiato.
+const DIVERSITA_MINIMA = 2;
+
+// Quanto punteggio si perde per scendere di una stella. Sui listoni veri due piani sensati
+// distano il 2-3%: con una scala piu' larga finirebbero tutti a cinque stelle e il voto non
+// direbbe niente.
+const PERDITA_PER_STELLA = 0.02;
+
+/** Firma di una rosa: l'insieme dei suoi giocatori, per riconoscere i doppioni. */
+function firma(piano) {
+  return [...piano.picks, ...piano.owned].map((p) => p.id).sort().join('|');
+}
+
+/** Quanti giocatori distinguono due rose. */
+function distanza(a, b) {
+  const setB = new Set(b);
+  let n = 0;
+  for (const id of a) if (!setB.has(id)) n++;
+  return n;
+}
+
+/**
+ * Il voto in stelle, da 1 a 5 a mezze stelle.
+ *
+ * Non e' un voto assoluto — una rosa "forte" in senso assoluto non esiste, dipende da quanto
+ * e' ricco il listone e da quanto e' rimasto sul mercato. E' quanto questa rosa vale rispetto
+ * alla migliore ancora ottenibile adesso: cinque stelle vuol dire "meglio di cosi' non si
+ * puo' fare oggi". E' anche il motivo per cui il voto di una strada salvata scende da solo
+ * mentre l'asta va avanti e i suoi giocatori se ne vanno.
+ */
+function stelle(score, riferimento) {
+  if (!(riferimento > 0) || !Number.isFinite(score)) return null;
+  const perdita = Math.max(0, (riferimento - score) / riferimento);
+  const voto = 5 - perdita / PERDITA_PER_STELLA;
+  return Math.max(1, Math.min(5, Math.round(voto * 2) / 2));
+}
+
+/**
+ * Il nome della strada: cosa ha questa rosa che le altre non hanno.
+ *
+ * Si battezza dopo aver scelto quali strade tenere, perche' il nome deve distinguerla dalle
+ * sue sorelle: tre strade chiamate tutte "Con Lautaro" sarebbero tre nomi e nessuna
+ * informazione.
+ */
+function battezza(piano, base, perno, presi) {
+  const idsBase = new Set([...base.picks, ...base.owned].map((p) => p.id));
+  const nuovi = piano.picks
+    .filter((p) => !idsBase.has(p.id))
+    .sort((a, b) => b.plannedPrice - a.plannedPrice);
+  for (const p of nuovi) {
+    const nome = `Con ${p.name}`;
+    if (!presi.has(nome)) return nome;
+  }
+  const senza = perno ? `Senza ${perno.name}` : 'Alternativa';
+  return presi.has(senza) ? `${senza} (2)` : senza;
+}
+
+/**
+ * Genera fino a `quante` rose diverse fra loro, la migliore per prima.
+ *
+ * Si ottengono togliendo a turno una delle scelte piu' care del piano migliore: e' il modo
+ * economico di forzare una strada davvero diversa, perche' un giocatore da quaranta crediti
+ * in meno libera abbastanza budget da cambiare un reparto intero. Togliere un riempitivo da
+ * un credito darebbe la stessa rosa con un nome diverso.
+ *
+ * I lucchetti dell'utente non si toccano mai: se hai deciso che quel giocatore lo vuoi, non
+ * e' un perno da provare a togliere, e' un vincolo.
+ */
+function generaScenari({
+  players,
+  settings,
+  owned = new Map(),
+  unavailable = new Set(),
+  obbligati = new Set(),
+  quante = 4,
+  base = null,
+} = {}) {
+  const ctx = { players, settings, owned, obbligati, ...CONFIG_SOLUTORE };
+  const migliore = base?.ok ? base : optimizeRoster({ ...ctx, unavailable });
+  if (!migliore.ok) return { base: migliore, scenari: [] };
+
+  const perni = migliore.picks
+    .filter((p) => !obbligati.has(p.id))
+    .sort((a, b) => b.plannedPrice - a.plannedPrice)
+    .slice(0, PERNI);
+
+  const voce = (piano, perno) => ({
+    perno,
+    piano,
+    score: piano.score,
+    costo: piano.cost,
+    ids: [...piano.picks, ...piano.owned].map((p) => p.id),
+    // I prezzi previsti si salvano con la strada: sono il metro con cui, piu' avanti, si
+    // misura quanto e' grave un giocatore perso. Perdere il perno da quarantaquattro crediti
+    // e perdere cinque riempitivi da uno non e' la stessa cosa, e a contare le teste sembra.
+    prezzi: Object.fromEntries([...piano.picks, ...piano.owned].map((p) => [p.id, p.plannedPrice ?? p.paid ?? 1])),
+  });
+
+  const viste = new Set([firma(migliore)]);
+  const attuale = voce(migliore, null);
+  attuale.attuale = true;
+  const trovati = [];
+  for (const perno of perni) {
+    const senza = new Set(unavailable);
+    senza.add(perno.id);
+    const alt = optimizeRoster({ ...ctx, unavailable: senza });
+    if (!alt.ok) continue;
+    const f = firma(alt);
+    if (viste.has(f)) continue;
+    viste.add(f);
+    trovati.push(voce(alt, perno));
+  }
+
+  // Fra due rose quasi uguali si tiene la piu' forte: mostrare due strade che differiscono per
+  // un riempitivo occuperebbe un posto senza offrire una scelta.
+  trovati.sort((a, b) => b.score - a.score);
+  const scelti = [attuale];
+  for (const s of trovati) {
+    if (scelti.length >= quante) break;
+    if (scelti.every((g) => distanza(s.ids, g.ids) >= DIVERSITA_MINIMA)) scelti.push(s);
+  }
+
+  // Il piano di partenza non e' per forza il migliore, ed e' giusto che si veda.
+  //
+  // La programmazione dinamica e' esatta sulla parte separabile del punteggio ma cieca alla
+  // sinergia, e l'ottimizzatore fa una ripartenza sola. Cercare le strade ne fa sei, quindi
+  // ogni tanto ne trova una che vale piu' del piano corrente: sul listone di prova 1536
+  // contro 1522. Metterla comunque sotto il piano attuale, o dargli cinque stelle per
+  // definizione, vorrebbe dire nascondere l'unica cosa utile che questo tasto ha scoperto.
+  const riferimento = Math.max(...scelti.map((s) => s.score));
+  for (const s of scelti) s.stelle = stelle(s.score, riferimento);
+  scelti.sort((a, b) => b.score - a.score);
+
+  const nomi = new Set();
+  for (const s of scelti) {
+    s.nome = s.attuale ? 'Piano attuale' : battezza(s.piano, migliore, s.perno, nomi);
+    nomi.add(s.nome);
+    s.meglioDelPiano = s.score > attuale.score;
+  }
+  return { base: migliore, scenari: scelti, migliorabile: riferimento > attuale.score };
+}
+
+/**
+ * Che fine ha fatto una strada salvata.
+ *
+ * Si rimette in piedi il piano imponendo i giocatori della strada che sono ancora liberi: se
+ * il solutore ci riesce la strada e' percorribile, e il costo che riporta e' quanto costa
+ * oggi percorrerla — non quanto costava quando l'hai salvata. Se non ci riesce, la strada e'
+ * chiusa, e conviene saperlo prima di continuare a tenere crediti da parte per lei.
+ *
+ * I giocatori persi non la uccidono da soli: il piano si rifa' senza di loro e si guarda
+ * quanto scende il voto. Perdere la quarta scelta e' una graffiatura, perdere il perno e'
+ * un'altra cosa, e la differenza si vede nelle stelle invece che a occhio.
+ */
+function valutaScenario({
+  scenario,
+  players,
+  settings,
+  owned = new Map(),
+  unavailable = new Set(),
+  obbligati = new Set(),
+  riferimento = null,
+} = {}) {
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const ids = scenario?.ids || [];
+  const mancanti = ids.filter((id) => !byId.has(id));
+  const presi = ids.filter((id) => owned.has(id));
+  const persi = ids.filter((id) => byId.has(id) && !owned.has(id) && unavailable.has(id));
+  const liberi = ids.filter((id) => byId.has(id) && !owned.has(id) && !unavailable.has(id));
+
+  const base = riferimento?.ok
+    ? riferimento
+    : optimizeRoster({ players, settings, owned, unavailable, obbligati, ...CONFIG_SOLUTORE });
+
+  const piano = optimizeRoster({
+    players,
+    settings,
+    owned,
+    unavailable,
+    obbligati: new Set([...obbligati, ...liberi]),
+    ...CONFIG_SOLUTORE,
+  });
+
+  const idsPiano = piano.ok ? new Set([...piano.picks, ...piano.owned].map((p) => p.id)) : new Set();
+  const entrati = piano.ok
+    ? piano.picks.filter((p) => !ids.includes(p.id) && !liberi.includes(p.id)).sort((a, b) => b.plannedPrice - a.plannedPrice)
+    : [];
+
+  const prezzo = (id) => Math.max(1, Math.round(scenario?.prezzi?.[id] ?? byId.get(id)?.expectedPrice ?? 1));
+  const valoreTotale = ids.reduce((s, id) => s + prezzo(id), 0);
+  const persoInCrediti = persi.reduce((s, id) => s + prezzo(id), 0);
+
+  let stato;
+  if (!piano.ok) stato = 'morta';
+  else if (presi.length === ids.length && ids.length) stato = 'completata';
+  else if (persi.length) stato = 'ferita';
+  else stato = 'viva';
+
+  return {
+    stato,
+    piano,
+    presi: presi.map((id) => byId.get(id)),
+    persi: persi.map((id) => ({ ...byId.get(id), previsto: prezzo(id) })).sort((a, b) => b.previsto - a.previsto),
+    liberi: liberi.map((id) => byId.get(id)),
+    mancanti,
+    entrati,
+    persoInCrediti,
+    valoreTotale,
+    // Quanta parte della strada, misurata in crediti previsti, e' finita agli avversari.
+    quotaPersa: valoreTotale ? persoInCrediti / valoreTotale : 0,
+    costo: piano.ok ? piano.cost : null,
+    // Quanto costano ancora i giocatori della strada che non hai: e' la cifra che devi
+    // tenere da parte se vuoi restare su questa strada.
+    daSpendere: liberi.reduce((s, id) => s + Math.max(1, Math.round(byId.get(id).expectedPrice ?? 1)), 0),
+    stelle: piano.ok && base.ok ? stelle(piano.score, Math.max(piano.score, base.score)) : null,
+    idsPiano,
+  };
+}
+
+/**
+ * Il nucleo di una strada: i giocatori che la fanno essere quella strada.
+ *
+ * Si prendono i piu' cari finche' non coprono la quota indicata del costo totale. Sotto quella
+ * soglia restano i riempitivi, che sono intercambiabili per costruzione: imporli al solutore
+ * non aggiungerebbe niente e gli toglierebbe il margine con cui assorbe i rincari.
+ */
+function nucleoScenario(scenario, quota = 0.8) {
+  const prezzi = scenario?.prezzi || {};
+  const ids = (scenario?.ids || []).filter((id) => id in prezzi);
+  const totale = ids.reduce((s, id) => s + prezzi[id], 0);
+  if (!totale) return [...(scenario?.ids || [])];
+  const ordinati = ids.slice().sort((a, b) => prezzi[b] - prezzi[a]);
+  const out = [];
+  let acc = 0;
+  for (const id of ordinati) {
+    out.push(id);
+    acc += prezzi[id];
+    if (acc >= totale * quota) break;
+  }
+  return out;
+}
+
+/** Riassunto in una riga, per la scheda e per il registro. */
+function descriviScenario(voce) {
+  const nomi = (lista, n = 3) => {
+    const testa = lista.slice(0, n).map((p) => `${p.name} (${p.previsto ?? Math.round(p.plannedPrice ?? 0)})`).join(', ');
+    const resto = lista.length - n;
+    return resto > 0 ? `${testa} e altri ${resto}` : testa;
+  };
+  switch (voce.stato) {
+    case 'completata':
+      return 'Presa tutta.';
+    case 'morta':
+      return `Chiusa: ${voce.piano?.reason || 'i giocatori che restano non ci stanno piu\' nel budget.'}`;
+    case 'ferita': {
+      const quota = Math.round(voce.quotaPersa * 100);
+      const sostituti = voce.entrati.length ? ` Al loro posto ${nomi(voce.entrati, 2)}.` : ' Senza sostituti equivalenti.';
+      return `Persi ${voce.persoInCrediti} crediti su ${voce.valoreTotale} (${quota}%): ${nomi(voce.persi)}.${sostituti}`;
+    }
+    default:
+      return `Intatta: mancano ${voce.liberi.length} giocatori per ${voce.daSpendere} crediti.`;
+  }
+}
+
+return { stelle, generaScenari, valutaScenario, nucleoScenario, descriviScenario };
+})();
+
+// ===== src/ui/strade.js =====
+const __m_src_ui_strade_js = (() => {
+// Le strade: quattro rose diverse fra cui scegliere, e come stanno mentre l'asta va avanti.
+//
+// Il piano dice cosa comprare adesso. Non dice qual e' l'idea, e quindi quando salta un
+// giocatore non si capisce se e' saltato un nome o se e' saltata la strada. Qui l'idea si
+// vede: si generano alcune rose davvero diverse, si mettono da parte quelle che convincono,
+// e a ogni assegnazione si guarda quali reggono ancora.
+
+const { state, ownedMap, unavailableSet, obbligatiSet, onReset, salvaScenario, rinominaScenario, eliminaScenario, adottaScenario, abbandonaStrada } = __m_src_store_js;
+const { generaScenari, valutaScenario, descriviScenario, nucleoScenario } = __m_src_domain_scenari_js;
+const { esc, roleChip, toast } = __m_src_ui_common_js;
+
+let generate = null;
+let generando = false;
+// Le valutazioni costano un'ottimizzazione a testa: si rifanno quando cambia il piano, non
+// a ogni disegno della scheda.
+let valutazioni = { rev: null, voci: [] };
+// La chiave e' la revisione del piano piu' l'elenco delle strade: salvarne una nuova non
+// rifa' il piano, quindi la sola revisione lascerebbe la strada appena salvata senza voto.
+const chiaveValutazioni = () => `${state.revisione}|${state.scenari.map((s) => s.id).join(',')}`;
+let valutando = false;
+let apertaId = null;
+
+onReset(() => invalidate());
+
+function invalidate() {
+  generate = null;
+  generando = false;
+  valutazioni = { rev: null, voci: [] };
+  apertaId = null;
+}
+
+function contesto() {
+  return {
+    players: state.players,
+    settings: state.settings,
+    owned: ownedMap(),
+    unavailable: unavailableSet(),
+    obbligati: obbligatiSet(),
+  };
+}
+
+function costruisci(rerender) {
+  generando = true;
+  setTimeout(() => {
+    try {
+      generate = generaScenari({ ...contesto(), base: state.plan, quante: 4 });
+    } catch (err) {
+      console.error(err);
+      generate = null;
+    } finally {
+      generando = false;
+      rerender();
+    }
+  }, 30);
+}
+
+function valuta(rerender) {
+  const rev = chiaveValutazioni();
+  valutando = true;
+  setTimeout(() => {
+    try {
+      const ctx = contesto();
+      // Il termine di paragone e' lo stesso per tutte: altrimenti le stelle di due strade non
+      // sarebbero confrontabili, che e' l'unica cosa per cui servono.
+      const riferimento = state.plan;
+      valutazioni = {
+        rev,
+        voci: state.scenari.map((s) => ({ scenario: s, esito: valutaScenario({ scenario: s, ...ctx, riferimento }) })),
+      };
+    } catch (err) {
+      console.error(err);
+      valutazioni = { rev, voci: [] };
+    } finally {
+      valutando = false;
+      rerender();
+    }
+  }, 30);
+}
+
+/** Le stelle disegnate, con la mezza. */
+function stelline(v) {
+  if (!(v > 0)) return '<span class="muted">—</span>';
+  const piene = Math.floor(v);
+  const mezza = v - piene >= 0.5;
+  return `<span class="stelle" title="${v} su 5">${'★'.repeat(piene)}${mezza ? '½' : ''}${'☆'.repeat(5 - piene - (mezza ? 1 : 0))}</span>`;
+}
+
+const CLASSE_STATO = { viva: 'plan', completata: 'mine', ferita: 'warn', morta: 'gone' };
+const ETICHETTA_STATO = { viva: 'Intatta', completata: 'Completata', ferita: 'Colpita', morta: 'Chiusa' };
+
+function testa(piano, quanti = 4) {
+  return piano.picks
+    .slice()
+    .sort((a, b) => b.plannedPrice - a.plannedPrice)
+    .slice(0, quanti)
+    .map((p) => `${roleChip(p.role)} ${esc(p.name)} <b class="mono">${p.plannedPrice}</b>`)
+    .join(' · ');
+}
+
+function generateCard() {
+  if (generando) {
+    return `<div class="card"><h2>Genera le strade</h2>
+      <div class="small muted"><span class="spinner"></span> Cerco rose diverse fra loro…</div></div>`;
+  }
+  if (!generate) {
+    return `<div class="card">
+      <h2>Genera le strade</h2>
+      <div class="small muted" style="margin-bottom:10px">
+        Quattro rose complete e davvero diverse, ottenute togliendo a turno uno dei giocatori piu' cari
+        del piano. Servono a scegliere un'idea prima di sedersi all'asta, non a indovinare la rosa.
+      </div>
+      <button class="btn primary block" data-action="genera-strade">Genera 4 squadre</button>
+    </div>`;
+  }
+  if (!generate.scenari.length) {
+    return `<div class="card"><h2>Genera le strade</h2>
+      <div class="small">Non riesco a costruire nemmeno una rosa: ${esc(generate.base?.reason || 'il budget non basta.')}</div></div>`;
+  }
+
+  const salvati = new Set(state.scenari.map((s) => s.ids.join('|')));
+  return `
+  <div class="card">
+    <div class="row between" style="align-items:center;margin-bottom:8px">
+      <h2 style="margin:0">Le strade</h2>
+      <button class="btn ghost" style="padding:2px 10px" data-action="genera-strade">Rigenera</button>
+    </div>
+    ${
+      generate.migliorabile
+        ? `<div class="verdict edge" style="text-align:left;margin-bottom:10px">
+             <div class="small" style="font-weight:600">Cercando le strade ne ho trovata una migliore del piano attuale.</div>
+             <div class="small" style="font-weight:500;margin-top:4px">
+               Il piano si ferma a una ripartenza sola per restare veloce; qui ne provo sei e ogni tanto salta fuori
+               una rosa che vale di piu'. Se ti convince, seguila: il piano si rifa' intorno a lei.
+             </div>
+           </div>`
+        : ''
+    }
+    <ul class="strade">
+      ${generate.scenari
+        .map(
+          (s, i) => `
+        <li>
+          <div class="row between" style="align-items:baseline">
+            <div><b>${esc(s.nome)}</b> ${s.attuale ? '<span class="chip plan">piano attuale</span>' : ''}</div>
+            <div>${stelline(s.stelle)}</div>
+          </div>
+          <div class="tiny" style="margin:4px 0 6px;line-height:1.7">${testa(s.piano)}</div>
+          <div class="row" style="gap:8px;align-items:center">
+            <span class="tiny muted grow">${s.costo} crediti · ${s.piano.picks.length} da prendere</span>
+            ${
+              salvati.has(s.ids.join('|'))
+                ? '<span class="tiny muted">gia\' salvata</span>'
+                : `<button class="btn ghost" style="padding:2px 10px" data-action="salva-strada" data-i="${i}">Salva</button>`
+            }
+          </div>
+        </li>`
+        )
+        .join('')}
+    </ul>
+  </div>`;
+}
+
+function salvateCard() {
+  if (!state.scenari.length) return '';
+  const fresche = valutazioni.rev === chiaveValutazioni();
+  const perId = new Map(valutazioni.voci.map((v) => [v.scenario.id, v.esito]));
+  const seguendo = Object.keys(state.auction.bloccati || {}).length;
+
+  return `
+  <div class="card ${fresche ? '' : 'stantio'}">
+    <div class="row between" style="align-items:center;margin-bottom:4px">
+      <h2 style="margin:0">Le mie strade</h2>
+      ${valutando ? '<span class="tiny muted"><span class="spinner"></span> aggiorno</span>' : ''}
+    </div>
+    <div class="small muted" style="margin-bottom:10px">
+      Le stelle non dicono quanto e' forte la rosa in assoluto: dicono quanto vale rispetto alla migliore
+      ancora ottenibile adesso. Scendono da sole mentre i giocatori se ne vanno.
+    </div>
+    <ul class="strade">
+      ${state.scenari
+        .map((s) => {
+          const e = perId.get(s.id);
+          const aperta = apertaId === s.id;
+          return `
+        <li>
+          <div class="row between" style="align-items:center;gap:8px">
+            <input class="nome-strada grow" data-action="rinomina-strada" data-id="${esc(s.id)}"
+                   value="${esc(s.nome)}" maxlength="40" aria-label="Nome della strada">
+            ${e ? stelline(e.stelle) : '<span class="muted tiny">…</span>'}
+          </div>
+          ${
+            e
+              ? `<div class="row" style="gap:6px;align-items:center;margin:6px 0 4px">
+                   <span class="chip ${CLASSE_STATO[e.stato] || ''}">${ETICHETTA_STATO[e.stato] || e.stato}</span>
+                   <span class="tiny muted">${e.presi.length}/${s.ids.length} presi${
+                     e.costo !== null ? ` · ancora ${e.daSpendere} crediti` : ''
+                   }</span>
+                 </div>
+                 <div class="tiny" style="line-height:1.65">${esc(descriviScenario(e))}</div>
+                 ${e.mancanti.length ? `<div class="tiny muted" style="margin-top:4px">${e.mancanti.length} giocatori non sono piu' nel listone.</div>` : ''}`
+              : '<div class="tiny muted" style="margin:6px 0">Calcolo…</div>'
+          }
+          <div class="row" style="gap:8px;margin-top:8px">
+            <button class="btn ghost grow" style="padding:2px 10px" data-action="apri-strada" data-id="${esc(s.id)}">${aperta ? 'Nascondi' : 'Vedi la rosa'}</button>
+            <button class="btn ghost" style="padding:2px 10px" data-action="segui-strada" data-id="${esc(s.id)}"
+              ${e && e.stato === 'morta' ? 'disabled' : ''}>Segui</button>
+            <button class="btn ghost" style="padding:2px 10px" data-action="elimina-strada" data-id="${esc(s.id)}" aria-label="Elimina">✕</button>
+          </div>
+          ${aperta && e?.piano?.ok ? dettaglio(s, e) : ''}
+        </li>`;
+        })
+        .join('')}
+    </ul>
+    ${
+      seguendo
+        ? `<button class="btn ghost block" style="margin-top:10px" data-action="abbandona-strada">
+             Abbandona la strada (${seguendo} lucchetti)
+           </button>`
+        : ''
+    }
+  </div>`;
+}
+
+function dettaglio(scenario, esito) {
+  const per = (lista, etichetta, classe) =>
+    lista.length
+      ? `<div class="tiny" style="margin-top:6px"><span class="${classe}">${etichetta}</span> ${lista
+          .map((p) => `${esc(p.name)} <span class="muted mono">${p.previsto ?? Math.round(p.plannedPrice ?? p.expectedPrice ?? 0)}</span>`)
+          .join(' · ')}</div>`
+      : '';
+  return `
+  <div class="dettaglio-strada">
+    ${per(esito.presi, 'Presi:', 'pos')}
+    ${per(esito.liberi, 'Ancora liberi:', '')}
+    ${per(esito.persi, 'Persi:', 'neg')}
+    ${per(esito.entrati, 'Al loro posto:', '')}
+  </div>`;
+}
+
+function render() {
+  if (!state.players.length) return '';
+  // Le valutazioni si rifanno da sole quando il piano cambia: e' l'unico modo perche' le
+  // stelle di una strada salvata scendano mentre l'asta va avanti, che e' tutto il punto.
+  return `${generateCard()}${salvateCard()}`;
+}
+
+/** Va chiamata dopo aver disegnato, per far ripartire i calcoli in ritardo. */
+function dopoIlDisegno(rerender) {
+  if (state.scenari.length && valutazioni.rev !== chiaveValutazioni() && !valutando) valuta(rerender);
+}
+
+function onAction(action, target, ev, rerender) {
+  if (action === 'genera-strade') {
+    generate = null;
+    costruisci(rerender);
+    rerender();
+    return true;
+  }
+  if (action === 'salva-strada') {
+    const s = generate?.scenari?.[Number(target.dataset.i)];
+    if (!s) return true;
+    salvaScenario({ nome: s.nome, ids: s.ids, prezzi: s.prezzi, score: s.score });
+    toast(`Strada salvata: ${s.nome}`);
+    rerender();
+    return true;
+  }
+  if (action === 'apri-strada') {
+    apertaId = apertaId === target.dataset.id ? null : target.dataset.id;
+    rerender();
+    return true;
+  }
+  if (action === 'segui-strada') {
+    const s = state.scenari.find((x) => x.id === target.dataset.id);
+    if (!s) return true;
+    const ok = adottaScenario(s.id, nucleoScenario(s));
+    toast(ok ? `Seguo ${s.nome}: il piano si rifa' intorno a lei.` : 'Con questi lucchetti la rosa non si chiude piu\'.');
+    rerender();
+    return true;
+  }
+  if (action === 'elimina-strada') {
+    eliminaScenario(target.dataset.id);
+    if (apertaId === target.dataset.id) apertaId = null;
+    rerender();
+    return true;
+  }
+  if (action === 'abbandona-strada') {
+    abbandonaStrada();
+    toast('Lucchetti tolti: decide di nuovo il solutore.');
+    rerender();
+    return true;
+  }
+  return false;
+}
+
+function onInput(action, target, rerender) {
+  if (action === 'rinomina-strada') {
+    rinominaScenario(target.dataset.id, target.value);
+    return true;
+  }
+  return false;
+}
+
+return { invalidate, render, dopoIlDisegno, onAction, onInput };
+})();
+
 // ===== src/ui/piano.js =====
 const __m_src_ui_piano_js = (() => {
 // Il piano: la miglior rosa possibile con i crediti che restano, e come sono distribuiti.
@@ -5701,6 +6559,7 @@ const { clubExposure, depthWeights, sortByStrength } = __m_src_domain_valuation_
 const { ownedMap, unavailableSet, onReset } = __m_src_store_js;
 const { spiegaModifica } = __m_src_domain_strategia_js;
 const { esc, roleChip, emptyState, playerRow, edgeBadge, toast, matches } = __m_src_ui_common_js;
+const strade = __m_src_ui_strade_js;
 
 /**
  * L'effetto di una correzione fatta a mano.
@@ -6212,7 +7071,7 @@ function confrontoCard() {
   </div>`;
 }
 
-function render() {
+function render(rerender) {
   if (!state.players.length) {
     return `<div class="view">${emptyState('📋', 'Nessun listone caricato', 'Importa prima il CSV delle fasce.')}</div>`;
   }
@@ -6230,6 +7089,9 @@ function render() {
 
   const budget = state.settings.budget || 500;
   const filled = plan.owned.length;
+  // Le valutazioni delle strade salvate partono in ritardo, dopo che questa stringa e'
+  // diventata DOM: qui si dice solo che servono.
+  if (rerender) strade.dopoIlDisegno(rerender);
   return `
   <div class="view">
     ${modalitaCard()}
@@ -6254,6 +7116,7 @@ function render() {
       </div>
     </div>
 
+    ${strade.render()}
     ${panchinaCard()}
     ${schedaCard()}
     ${ROLES.map((r) => roleBlock(r, plan)).join('')}
@@ -6272,6 +7135,7 @@ function render() {
 }
 
 function onAction(action, target, ev, rerender) {
+  if (strade.onAction(action, target, ev, rerender)) return true;
   if (action === 'blocca' || action === 'scarta' || action === 'libera') {
     const id = target.dataset.id;
     confronto = null;
@@ -6315,6 +7179,7 @@ function onAction(action, target, ev, rerender) {
 }
 
 function onInput(action, target, rerender) {
+  if (strade.onInput(action, target, rerender)) return true;
   if (action === 'listaquery') {
     state.ui.listaQuery = target.value;
     rerender({ keepFocus: 'listaQuery' });
@@ -6648,7 +7513,7 @@ const __m_src_ui_mercato_js = (() => {
 const { state, ownedMap, unavailableSet, takenMap, assegnaMolti, onReset, confrontaRose, applicaRose, updateSettings } = __m_src_store_js;
 const { leggiRose } = __m_src_domain_rose_js;
 const { leggiElenco } = __m_src_domain_incolla_js;
-const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
+const { ROLES, ROLE_LABEL, ROLE_REPARTO, totalSlots } = __m_src_domain_model_js;
 const { concorrenzaPerRuolo, disponibilita, nomiSquadre } = __m_src_domain_mercato_js;
 const { consiglioStrategico, scenarioSenzaBig, narrazione } = __m_src_domain_strategia_js;
 const { esc, roleChip, emptyState, toast } = __m_src_ui_common_js;
@@ -7009,7 +7874,7 @@ function strategiaCard() {
       scenario
         ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
              <div class="row between" style="margin-bottom:6px">
-               <b class="small">Se non prendi nessun big in ${esc(ROLE_LABEL[scenario.role].toLowerCase())}</b>
+               <b class="small">Se non prendi nessun big in ${esc(ROLE_REPARTO[scenario.role])}</b>
                <button class="btn ghost tiny" data-action="chiudi-scenario">chiudi</button>
              </div>
              <div class="small">${scenario.frasi.map((f) => esc(f)).join(' ') || 'Il piano non cambierebbe granche&#39;.'}</div>

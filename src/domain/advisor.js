@@ -100,14 +100,31 @@ export function budgetDiFase({ settings, players, owned, plan, role = null }) {
  * E' il prezzo oltre il quale la rosa che ottengo prendendolo vale meno della rosa
  * che ottengo lasciandolo andare e ridistribuendo i crediti. Il vero limite dell'asta.
  */
-export function maxBid({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId }) {
+/**
+ * La rosa migliore assumendo di aver perso questo giocatore: il piano B.
+ *
+ * E' il termine di paragone di quasi tutto quello che l'assistente dice su un giocatore —
+ * l'offerta massima e' il prezzo oltre il quale conviene il piano B, le alternative sono chi
+ * ci entra al posto suo, il racconto della perdita e' la differenza fra i due piani. Per
+ * questo va calcolato una volta sola e passato in giro: le tre funzioni lo costruivano
+ * ciascuna per conto proprio, con gli stessi identici argomenti, e aprire una scheda costava
+ * tre risoluzioni complete invece di una.
+ *
+ * Se era un giocatore che avevo imposto, perderlo scioglie il vincolo: altrimenti il piano
+ * resterebbe legato a qualcuno che non e' piu' comprabile.
+ */
+export function pianoSenza({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId }) {
+  const senza = new Set(unavailable);
+  senza.add(playerId);
+  const vincoli = new Set([...obbligati].filter((id) => id !== playerId));
+  return optimizeRoster({ players, settings, owned, unavailable: senza, ...FAST, obbligati: vincoli });
+}
+
+export function maxBid({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, planB: pianoB = null }) {
   const hard = maxSpendableNow(settings, owned);
   if (hard < 1) return { maxBid: 0, planB: null, reason: 'Crediti esauriti per i vincoli di rosa.' };
 
-  const withoutSet = new Set(unavailable);
-  withoutSet.add(playerId);
-  const senzaVincolo = new Set([...obbligati].filter((id) => id !== playerId));
-  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST, obbligati: senzaVincolo });
+  const planB = pianoB?.ok ? pianoB : pianoSenza({ players, settings, owned, unavailable, obbligati, playerId });
   if (!planB.ok) {
     // Se senza di lui non esiste una rosa valida, e' incedibile: si arriva al tetto tecnico.
     return { maxBid: hard, planB, hard, breakEven: hard, reason: 'Senza di lui non chiudi la rosa.' };
@@ -163,15 +180,18 @@ export function alternatives({
   playerId,
   limit = 5,
   shortlist = 10,
+  planB: pianoB = null,
 }) {
   const byId = new Map(players.map((p) => [p.id, p]));
   const target = byId.get(playerId);
   if (!target) return { alternatives: [], planB: null };
 
+  // Il piano B arriva da fuori quando c'e' (aprire una scheda ne calcolava tre identici),
+  // ma l'insieme "senza di lui" serve lo stesso per valutare ogni candidato: costruirlo non
+  // costa niente, e' risolverlo che costava.
   const withoutSet = new Set(unavailable);
   withoutSet.add(playerId);
-  const senzaVincolo = new Set([...obbligati].filter((id) => id !== playerId));
-  const planB = optimizeRoster({ players, settings, owned, unavailable: withoutSet, ...FAST, obbligati: senzaVincolo });
+  const planB = pianoB?.ok ? pianoB : pianoSenza({ players, settings, owned, unavailable, obbligati, playerId });
   const planWith = (() => {
     const o = new Map(owned);
     o.set(playerId, Math.max(1, Math.round(target.expectedPrice ?? 1)));
@@ -396,17 +416,12 @@ export function abbinamentoPortiere({ players, settings, plan, owned = new Map()
  * su uno da venti: significa che quei crediti si ridistribuiscono, e il piano puo' rifare
  * l'attacco intero e portarsi dietro difesa e centrocampo.
  */
-export function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, piano = null, limite = 4, alternative = null }) {
+export function spiegaPerdita({ players, settings, owned = new Map(), unavailable = new Set(), obbligati = new Set(), playerId, piano = null, limite = 4, alternative = null, planB: pianoB = null }) {
   const perso = players.find((p) => p.id === playerId);
   if (!perso) return null;
 
   const prima = piano?.ok ? piano : optimizeRoster({ players, settings, owned, unavailable, ...FAST, obbligati });
-  const senza = new Set(unavailable);
-  senza.add(playerId);
-  // Se era un giocatore che avevo imposto, perderlo scioglie il vincolo: altrimenti il piano
-  // resterebbe legato a qualcuno che non e' piu' comprabile.
-  const vincoli = new Set([...obbligati].filter((id) => id !== playerId));
-  const dopo = optimizeRoster({ players, settings, owned, unavailable: senza, ...FAST, obbligati: vincoli });
+  const dopo = pianoB?.ok ? pianoB : pianoSenza({ players, settings, owned, unavailable, obbligati, playerId });
   if (!dopo.ok) {
     return { perso, dopo, impossibile: true, frasi: ['Senza di lui non si chiude una rosa valida: e\' incedibile.'] };
   }
@@ -428,7 +443,12 @@ export function spiegaPerdita({ players, settings, owned = new Map(), unavailabl
 
   const prezzoPiano = prima.picks.find((p) => p.id === playerId)?.plannedPrice ?? perso.expectedPrice ?? 0;
   const costo = Math.max(0, Math.round((prima.score - dopo.score) * 10) / 10);
-  const { alternatives: tutte } = alternatives({ players, settings, owned, unavailable, playerId, limit: 12 });
+  // Le alternative arrivano gia' calcolate da chi ci chiama. Il parametro c'era da tempo e non
+  // veniva letto: si ricalcolavano da capo a ogni apertura di scheda, ed erano il pezzo piu'
+  // caro dei tre.
+  const tutte = alternative?.length
+    ? alternative
+    : alternatives({ players, settings, owned, unavailable, obbligati, playerId, limit: 12, planB: dopo }).alternatives;
 
   const frasi = [];
   if (sostituto) {

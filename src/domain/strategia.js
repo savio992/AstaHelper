@@ -2,7 +2,7 @@
 // che la strada e' cambiata. Se i big di un reparto finiscono tutti, i crediti che avevi
 // messo da parte per loro vanno spostati, e conviene saperlo prima che sia troppo tardi.
 
-import { ROLES, ROLE_LABEL, elenco } from './model.js';
+import { ROLES, ROLE_LABEL, ROLE_REPARTO, elenco } from './model.js';
 import { optimizeRoster } from './optimizer.js';
 
 /** Quanti giocatori di prima fascia restano liberi, reparto per reparto. */
@@ -108,20 +108,68 @@ export function consiglioStrategico({ players, settings, owned = new Map(), unav
       avvisi.push({
         role,
         gravita: 'finiti',
-        titolo: `I big in ${ROLE_LABEL[role].toLowerCase()} sono finiti.`,
+        titolo: `I big in ${ROLE_REPARTO[role]} sono finiti.`,
         testo: frasi.length ? frasi.join(' ') : 'Il piano si e\' gia\' adattato senza di loro.',
       });
     } else if (liberi <= richiesti - miei) {
       avvisi.push({
         role,
         gravita: 'ultimi',
-        titolo: `Restano ${liberi} big in ${ROLE_LABEL[role].toLowerCase()}: ${nomi.join(', ')}.`,
+        titolo: `Restano ${liberi} big in ${ROLE_REPARTO[role]}: ${nomi.join(', ')}.`,
         testo: `Te ne serve ${richiesti - miei}. Se li perdi tutti devi cambiare strada.`,
       });
     }
   }
 
   return { big, avvisi };
+}
+
+/**
+ * Quanto e' l'ultima occasione, per il giocatore che stai guardando.
+ *
+ * L'avviso sulla scarsita' dei big esiste da tempo ma vive nella scheda Mercato, che durante
+ * l'asta non guarda nessuno: quando il banditore chiama un nome si sta sulla schermata
+ * dell'asta, e li' l'unica cosa che si vedeva era il tetto d'offerta. Ma "puoi arrivare a 38"
+ * significa una cosa diversa se dopo di lui ci sono altri quattro come lui e un'altra se e'
+ * rimasto solo lui: nel secondo caso il tetto e' vero e lo stesso conviene sforarlo, perche'
+ * il piano B non esiste.
+ *
+ * Si guarda solo il reparto del giocatore in questione, e solo se e' di prima fascia: dire a
+ * chi sta puntando il quarto portiere che gli attaccanti top stanno finendo e' rumore.
+ */
+export function ultimaOccasione({ players, settings, owned = new Map(), unavailable = new Set(), playerId }) {
+  const p = players.find((x) => x.id === playerId);
+  if (!p || !p.isTop || owned.has(p.id) || unavailable.has(p.id)) return null;
+
+  const richiesti = Math.max(0, Math.round(settings.minTop?.[p.role] ?? 0));
+  if (!richiesti) return null;
+
+  const { liberi, miei, nomi } = bigRimasti(players, { owned, unavailable })[p.role];
+  const mancanti = richiesti - miei;
+  if (mancanti <= 0) return null;
+
+  const reparto = ROLE_REPARTO[p.role];
+  // Lui compreso: se ne restano tanti quanti te ne servono, perderne uno vuol dire restare
+  // sotto, e non c'e' un secondo tentativo.
+  if (liberi <= mancanti) {
+    return {
+      gravita: 'ultima',
+      titolo: liberi === 1 ? `E' l'ultimo big in ${reparto}.` : `Sono gli ultimi ${liberi} big in ${reparto} e te ne servono ${mancanti}.`,
+      testo:
+        liberi === 1
+          ? 'Se lo perdi, di prima fascia in questo reparto non ne prendi piu\'. Il tetto qui sopra e\' calcolato su un piano B che non esiste: sforalo consapevolmente o cambia strada adesso.'
+          : 'Perderne anche uno vuol dire chiudere sotto la soglia che ti sei dato. Il piano B c\'e\' ma e\' gia\' un ripiego.',
+    };
+  }
+  const altri = liberi - mancanti;
+  if (altri <= 2) {
+    return {
+      gravita: 'quasi',
+      titolo: `Restano ${liberi} big in ${reparto}: te ne servono ${mancanti}.`,
+      testo: `Puoi ancora permetterti di perderne ${altri}. Dopo di lui: ${nomi.filter((n) => n !== p.name).slice(0, 2).join(', ') || 'nessuno'}.`,
+    };
+  }
+  return null;
 }
 
 /**
