@@ -555,7 +555,14 @@ function defaultSettings() {
     // Modificatore imbattibilita' del portiere: alza molto il peso del portiere titolare.
     cleanSheetModifier: true,
     // Quanto il mercato "impenna" sui top: 1 = lineare, 2 = aste molto aggressive sui big.
+    // Riguarda il modello a punteggio (priceSource 'model' o 'blend').
     aggressiveness: 1.55,
+    // Quanto il mercato rincara i top rispetto ai listini dei creator: 1 = come dicono loro,
+    // 1,25 = quanto osservato in un'asta reale a otto squadre. Riguarda la fonte 'listone'.
+    ripidita: 1.25,
+    // Quanto del budget il mercato paga al massimo per un solo giocatore. Nell'asta reale
+    // nessuno e' andato oltre un terzo: i listini distanziano i primi, il mercato li comprime.
+    tettoSingolo: 0.33,
     // Da dove arrivano i prezzi attesi: modello di mercato, quotazioni del listone, o media.
     // I prezzi consigliati dai creators sono gia' calibrati sul montepremi di una lega da
     // dieci: quando ci sono, sono la stima migliore. 'model' serve ai listoni senza prezzi.
@@ -1007,17 +1014,55 @@ function buildPlayers(rows, mapping, opts = {}) {
  * Stesso giocatore = stesso nome e squadra. I valori numerici diventano la media
  * delle fonti, le etichette si sommano: il consenso vale piu' di una firma sola.
  */
+/** Nome e ruolo senza il club: e' cio' che resta uguale quando un giocatore cambia squadra. */
+function chiaveSenzaClub(p) {
+  return makePlayerId(p.name, '', p.role);
+}
+
 function mergeSources(lists) {
   const valid = lists.filter((l) => l && l.length);
   if (valid.length <= 1) return valid[0] || [];
 
+  // I trasferimenti. Due file di date diverse danno lo stesso giocatore a due club, e
+  // l'identita' e' nome + club + ruolo: Kean FIO e Kean COM diventavano due persone, entrambe
+  // in listone, entrambe comprabili. L'ultimo file caricato ha ragione sul club, e la voce
+  // vecchia si fonde nella nuova invece di restarle accanto.
+  //
+  // Con una cautela: se un solo file elenca due club per lo stesso nome e ruolo, sono due
+  // persone davvero, e non si toccano.
+  const omonimi = new Set();
+  for (const list of valid) {
+    const club = new Map();
+    for (const p of list) {
+      const k = chiaveSenzaClub(p);
+      if (!club.has(k)) club.set(k, new Set());
+      club.get(k).add(p.team || '');
+    }
+    for (const [k, teams] of club) if (teams.size > 1) omonimi.add(k);
+  }
+
   const merged = new Map();
+  const perNome = new Map(); // chiave senza club -> id con cui e' stato fuso
   for (const list of valid) {
     for (const p of list) {
-      const key = p.id;
+      let key = p.id;
+      const senzaClub = chiaveSenzaClub(p);
+      const giaVisto = perNome.get(senzaClub);
+      if (giaVisto && giaVisto !== key && !omonimi.has(senzaClub) && merged.has(giaVisto)) {
+        // Stesso giocatore, club nuovo: la voce vecchia si sposta sotto l'id nuovo.
+        const voce = merged.get(giaVisto);
+        merged.delete(giaVisto);
+        voce.trasferitoDa = voce.team;
+        voce.id = p.id;
+        voce.team = p.team;
+        merged.set(key, voce);
+      } else if (giaVisto && merged.has(giaVisto) && !omonimi.has(senzaClub)) {
+        key = giaVisto;
+      }
       if (!merged.has(key)) {
         merged.set(key, { ...p, tiersBySource: {}, bySource: {}, _acc: {}, _n: {} });
       }
+      if (!omonimi.has(senzaClub)) perNome.set(senzaClub, key);
       const target = merged.get(key);
       for (const src of p.sources) if (!target.sources.includes(src)) target.sources.push(src);
       const src = p.sources[0] || `fonte ${valid.indexOf(list) + 1}`;
@@ -1349,14 +1394,102 @@ function depthWeights(settings, role) {
 }
 
 /**
+ * Il fattore del blocco difensivo in funzione dei difensori effettivi (non delle teste).
+ * Passa per gli stessi punti di prima — 2 → 0,04, 3 → 0,11, 4 → 0,14 — ma in mezzo e'
+ * continuo: cosi' un quarto difensore che gioca a mezzo servizio conta per meta', e un
+ * riempitivo che non schiero mai non fa scattare lo scalino.
+ */
+function fattoreBlocco(n) {
+  if (n <= 1) return 0;
+  if (n < 2) return 0.04 * (n - 1);
+  if (n < 3) return 0.04 + 0.07 * (n - 2);
+  if (n < 4) return 0.11 + 0.03 * (n - 3);
+  return 0.14;
+}
+
+/**
+ * Quanto vale un portiere di riserva come assicurazione: uno se e' il secondo vero del club,
+ * niente se e' il terzo che non gioca mai. Il segnale e' la sua quota di impiego: un secondo
+ * portiere sta intorno a 0,3, un terzo sotto 0,15.
+ */
+function pesoRiserva(p) {
+  return Math.max(0, Math.min(1, (expectedShare(p) - 0.15) / 0.2));
+}
+
+/**
+ * Con che peso schiererei i difensori di un blocco.
+ *
+ * Il blocco cambia chi va in campo: se ho tre difensori dello stesso club li schiero insieme,
+ * anche se uno dei tre, preso da solo, sarebbe il mio quarto. Quindi i membri del blocco
+ * prendono i pesi da titolare nell'ordine — uno, uno, uno, poi mezzo — e non il rango che
+ * avrebbero fra tutti gli otto.
+ *
+ * Ma solo se sono difensori da schierare davvero. Un giocatore che il modello proietta a
+ * tre punti non entra in campo per fare blocco, entra in rosa per gonfiare un bonus: sul
+ * listone vero il piano comprava tre riempitivi della Roma con punteggio intorno a uno
+ * proprio cosi'. La soglia e' meta' del punteggio del mio ultimo titolare: sotto, uno conta
+ * per quanto giocherebbe davvero, cioe' quasi niente.
+ */
+// I pesi di profondita' dipendono solo dalle impostazioni, che durante una risoluzione non
+// cambiano: si calcolano una volta per oggetto impostazioni invece che a ogni chiamata.
+const pesiDifesaPerSettings = new WeakMap();
+function pesiDifesa(settings) {
+  let w = pesiDifesaPerSettings.get(settings);
+  if (!w) {
+    w = depthWeights(settings, 'D');
+    pesiDifesaPerSettings.set(settings, w);
+  }
+  return w;
+}
+
+// Ordine per punteggio e basta. `sortByStrength` spareggia con localeCompare, che e' giusto
+// per una lista a schermo e insostenibile qui: questa funzione gira migliaia di volte per
+// ogni consiglio, e con quello spareggio la scheda d'asta ci metteva il doppio. A parita' di
+// punteggio chi prende quale peso e' indifferente per la somma.
+const perPunteggio = (a, b) => (b.score || 0) - (a.score || 0);
+
+function contestoDifesa(selected, settings) {
+  const w = pesiDifesa(settings);
+  const starters = Math.max(1, settings.starters?.D ?? 3);
+  const tutti = [];
+  for (const p of selected) if (p.role === 'D') tutti.push(p);
+  tutti.sort(perPunteggio);
+  const rango = new Map();
+  for (let i = 0; i < tutti.length; i++) rango.set(tutti[i].id, w[i] ?? w[w.length - 1] ?? 0.05);
+  const ultimoTitolare = tutti[Math.min(starters, tutti.length) - 1];
+  return { w, rango, soglia: 0.5 * (ultimoTitolare?.score || 0) };
+}
+
+// Il contesto (ordine dei difensori, soglia) e' lo stesso per tutti i club della rosa: si
+// calcola una volta per chiamata, non una volta per club.
+function pesiBlocco(group, ctx) {
+  const { w, rango, soglia } = ctx;
+  const out = new Map();
+  const plausibili = [];
+  for (const p of group) if ((p.score || 0) >= soglia && (p.score || 0) > 0) plausibili.push(p);
+  plausibili.sort(perPunteggio);
+  for (let i = 0; i < plausibili.length; i++) out.set(plausibili[i].id, w[i] ?? w[w.length - 1] ?? 0.05);
+  for (const p of group) if (!out.has(p.id)) out.set(p.id, rango.get(p.id) ?? 0.05);
+  return out;
+}
+
+/**
  * Bonus di sinergia per un insieme di giocatori gia' scelti.
  * - blocco difensivo: 3+ difensori dello stesso club valgono piu' della somma delle parti
  *   quando c'e' il modificatore di difesa (stessa partita, stesso clean sheet).
  * - portiere di riserva dello stesso club del titolare: assicurazione sull'imbattibilita'.
+ *
+ * Il blocco conta chi schiero, non chi e' in rosa. Contando le teste il bonus si poteva
+ * gonfiare a costo zero: sul listone vero il piano comprava tre difensori della Roma con
+ * punteggio intorno a uno — Rensch, Lulli, Ghilardi, gente che non avrei mai messo in campo
+ * — perche' ogni testa in piu' valeva dodici punti di bonus, piu' di qualunque titolare vero
+ * da due crediti. Il modificatore di difesa lo prendono i difensori schierati: il mio ottavo
+ * difensore non ne fa parte, e qui conta per quanto gioca.
  */
 function synergyBonus(selected, settings) {
   if (!selected.length) return 0;
   let bonus = 0;
+  const ctx = settings.defenseModifier || settings.cleanSheetModifier ? contestoDifesa(selected, settings) : null;
 
   if (settings.defenseModifier) {
     const byClub = new Map();
@@ -1367,9 +1500,18 @@ function synergyBonus(selected, settings) {
     }
     for (const [, group] of byClub) {
       if (group.length < 2) continue;
-      const avg = group.reduce((a, b) => a + (b.score || 0), 0) / group.length;
+      const pesi = pesiBlocco(group, ctx);
+      let effettivi = 0;
+      let sommaPesata = 0;
+      for (const p of group) {
+        const w = pesi.get(p.id) ?? 0;
+        effettivi += w;
+        sommaPesata += (p.score || 0) * w;
+      }
+      const factor = fattoreBlocco(effettivi);
+      if (factor <= 0 || effettivi <= 0) continue;
+      const avg = sommaPesata / effettivi;
       const sol = group[0].solidity ?? 0.5;
-      const factor = group.length === 2 ? 0.04 : group.length === 3 ? 0.11 : 0.14;
       bonus += avg * factor * (0.6 + 0.8 * sol);
     }
   }
@@ -1382,10 +1524,17 @@ function synergyBonus(selected, settings) {
       // di arrivo, come prima: spareggiare qui sull'id cambierebbe il club del titolare e con
       // lui il bonus della difesa, e allora perdere un difensore potrebbe far salire la rosa.
       const starter = gks.slice().sort((a, b) => (b.scelto ? 1 : 0) - (a.scelto ? 1 : 0) || (b.score || 0) - (a.score || 0))[0];
-      const sameClub = gks.filter((p) => p.id !== starter.id && p.team && p.team === starter.team).length;
-      if (sameClub >= 1) bonus += (starter.score || 0) * 0.08;
-      const defsSameClub = selected.filter((p) => p.role === 'D' && p.team && p.team === starter.team).length;
-      if (defsSameClub >= 2) bonus += (starter.score || 0) * 0.05 * Math.min(defsSameClub, 4);
+      // La riserva vale come assicurazione solo se e' quella che gioca quando il titolare non
+      // c'e'. Il terzo portiere del club e' dello stesso club, ma non e' un'assicurazione.
+      const riserva = gks
+        .filter((p) => p.id !== starter.id && p.team && p.team === starter.team)
+        .sort((a, b) => expectedShare(b) - expectedShare(a))[0];
+      if (riserva) bonus += (starter.score || 0) * 0.08 * pesoRiserva(riserva);
+      const stessoClub = selected.filter((p) => p.role === 'D' && p.team && p.team === starter.team);
+      const pesi = pesiBlocco(stessoClub, ctx);
+      let difensoriEffettivi = 0;
+      for (const p of stessoClub) difensoriEffettivi += pesi.get(p.id) ?? 0;
+      if (difensoriEffettivi >= 1.5) bonus += (starter.score || 0) * 0.05 * Math.min(difensoriEffettivi, 4);
     }
   }
 
@@ -1556,13 +1705,28 @@ function expectedPrices(players, settings) {
   const listoneRaw = marketSignal(players);
   const hasListone = listoneRaw.size > players.length / 3;
 
+  // I listini dei creator sono piu' piatti del mercato vero. Su un'asta reale a otto squadre
+  // i primi otto giocatori hanno assorbito il 31% dei crediti; i tre creator a disposizione
+  // ne prevedevano fra il 22% e il 29%, e i giocatori sopra i cento crediti sono andati in
+  // media 25 crediti sopra la stima. Alzare tutte le quote a una potenza sopra uno sposta
+  // crediti dalla coda alla testa lasciando invariato l'ordine.
+  //
+  // Da sola pero' non basta, anzi peggiora la cima: allarga la forbice fra i primi dove il
+  // mercato la chiude, e Malen finiva a 234. Lavora insieme al tetto per singolo giocatore
+  // qui sotto: con 1,25 e un terzo del budget l'errore medio sull'asta reale scende da 8,0 a
+  // 7,1 crediti, quello sui primi otto attaccanti da 28 a 20, e la fascia sopra i cento passa
+  // da −25 a −2. E' tarato su un'asta sola, e per questo e' un'impostazione e non una costante.
+  const ripidita = Math.max(1, Math.min(2, Number(settings.ripidita) || 1.25));
+  const listoneRipido = new Map();
+  for (const [id, v] of listoneRaw) listoneRipido.set(id, Math.pow(Math.max(0, v), ripidita));
+
   // Forma "modello": i crediti si distribuiscono in proporzione al punteggio, con un
   // esponente che rappresenta quanto il mercato impenna sui migliori.
   const gamma = Math.max(0.5, Math.min(3, settings.aggressiveness ?? 1.55));
   const modelRaw = new Map();
   for (const p of players) modelRaw.set(p.id, Math.pow(Math.max(p.score || 0, 0.01), gamma));
 
-  const listoneShare = normalizeShares(listoneRaw, bought);
+  const listoneShare = normalizeShares(listoneRipido, bought);
   const modelShare = normalizeShares(modelRaw, bought);
 
   const source = settings.priceSource || 'blend';
@@ -1586,14 +1750,46 @@ function expectedPrices(players, settings) {
     combined.set(p.id, parts.reduce((a, b) => a + b, 0) / parts.length);
   }
 
-  let total = 0;
-  for (const [id, v] of combined) if (bought.has(id)) total += v;
+  // Il tetto per singolo giocatore.
+  //
+  // Il mercato comprime la cima. Nell'asta reale i primi cinque attaccanti sono andati tutti
+  // fra 151 e 161 crediti — nessuno oltre un terzo del budget — mentre i listini li
+  // distanziavano di molto (Malen 185, Kolo Muani 120) e la curva irripidita ancora di piu'
+  // (234 contro 149). Con quei numeri Malen, che ha il punteggio piu' alto del listone,
+  // sembrava fuori portata e il piano lo evitava; con i prezzi veri lo sceglie. Chi sfora il
+  // tetto si ferma li', e i crediti che non spende vanno agli altri in proporzione.
+  //
+  // "Un terzo" e' un fatto osservato su una rosa da venticinque: con meno caselle da riempire
+  // si spende di piu' su uno solo, e in una lega da due caselle a testa un giocatore vale
+  // giustamente meta' del budget. Il tetto scala quindi con le caselle, e a venticinque e'
+  // esattamente la quota impostata.
+  const tetto = Math.max(0.1, Math.min(1, Number(settings.tettoSingolo) || 0.33));
+  const cap = Math.max(1, Math.round(budget * tetto * (25 / Math.max(1, slotsTotal))));
 
+  // Il tetto tecnico (tutto il budget meno un credito per casella) resta un semplice limite,
+  // come prima: nelle leghe minuscole dove scatta, i crediti sopra non si ridistribuiscono.
+  // Il tetto di mercato invece ridistribuisce, perche' quei crediti in asta si spendono.
+  const fissi = new Set();
   const out = new Map();
-  for (const p of players) {
-    const share = total > 0 ? combined.get(p.id) / total : 0;
-    const price = 1 + discretionary * share;
-    out.set(p.id, Math.min(maxPrice, Math.max(1, Math.round(price))));
+  for (let giro = 0; giro < 30; giro++) {
+    let total = 0;
+    for (const [id, v] of combined) if (bought.has(id) && !fissi.has(id)) total += v;
+    const residuo = discretionary - fissi.size * (cap - 1);
+    let sforato = false;
+    for (const p of players) {
+      if (fissi.has(p.id)) {
+        out.set(p.id, Math.min(maxPrice, cap));
+        continue;
+      }
+      const share = total > 0 && bought.has(p.id) ? combined.get(p.id) / total : 0;
+      const price = 1 + Math.max(0, residuo) * share;
+      if (cap < maxPrice && price > cap) {
+        fissi.add(p.id);
+        sforato = true;
+      }
+      out.set(p.id, Math.min(maxPrice, Math.max(1, Math.round(price))));
+    }
+    if (!sforato) break;
   }
   return out;
 }
@@ -6134,7 +6330,13 @@ function generaScenari({
     scelti.push(s);
     return true;
   };
+  // La prima strada garantita e' quella senza il giocatore piu' caro. Coprire un reparto per
+  // volta sceglie la migliore strada che rinuncia a *un* attaccante, e sui listoni veri puo'
+  // essere quella che rinuncia al terzo: ma "se non prendo il piu' caro cosa faccio" e' la
+  // domanda per cui esiste questo tasto, e non puo' dipendere da un ordinamento.
   const ruoliCoperti = new Set();
+  const senzaIlPiuCaro = perni.length ? trovati.find((s) => s.perno?.id === perni[0].id) : null;
+  if (senzaIlPiuCaro && aggiungi(senzaIlPiuCaro)) ruoliCoperti.add(senzaIlPiuCaro.perno.role);
   for (const s of trovati) {
     const ruolo = s.perno?.role;
     if (ruoliCoperti.has(ruolo)) continue;
@@ -8850,6 +9052,14 @@ function render() {
       <label class="field" style="margin-top:14px"><span>Aggressivita' del mercato sui top: ${Number(s.aggressiveness).toFixed(2)}</span>
         <input id="cfg-aggressivita" type="range" min="1" max="2.4" step="0.05" value="${s.aggressiveness}" data-action="aggr" style="width:100%">
       </label>
+      <label class="field" style="margin-top:14px"><span>Quanto il mercato rincara i top rispetto ai listini: ${Number(s.ripidita ?? 1.25).toFixed(2)}</span>
+        <input id="cfg-ripidita" type="range" min="1" max="1.6" step="0.05" value="${s.ripidita ?? 1.25}" data-action="ripidita" style="width:100%">
+        <span class="tiny muted">1 = i prezzi dei creator cosi' come sono. 1,25 = quanto misurato in un'asta vera a otto squadre: i primi otto nomi prendono un terzo dei crediti.</span>
+      </label>
+      <label class="field" style="margin-top:14px"><span>Tetto per un singolo giocatore: ${Math.round((s.tettoSingolo ?? 0.33) * 100)}% del budget su una rosa da 25 (${Math.round((s.budget || 500) * (s.tettoSingolo ?? 0.33) * (25 / Math.max(1, totalSlots(s))))} crediti con la tua)</span>
+        <input id="cfg-tetto" type="range" min="0.2" max="0.5" step="0.01" value="${s.tettoSingolo ?? 0.33}" data-action="tetto-singolo" style="width:100%">
+        <span class="tiny muted">Il mercato comprime la cima: nell'asta vera i primi cinque attaccanti sono andati tutti fra 151 e 161, nessuno oltre un terzo del budget, anche quando i listini li distanziavano di molto.</span>
+      </label>
       <div class="tiny muted">Piu' e' alta, piu' l'app si aspetta aste furiose sui big.</div>
     </div>
 
@@ -9140,6 +9350,14 @@ function onInput(action, target, rerender, kind = 'input') {
       return true;
     case 'aggr':
       updateSettings({ aggressiveness: Number(target.value) });
+      rerender({ keepFocus: target.id });
+      return true;
+    case 'ripidita':
+      updateSettings({ ripidita: Number(target.value) });
+      rerender({ keepFocus: target.id });
+      return true;
+    case 'tetto-singolo':
+      updateSettings({ tettoSingolo: Number(target.value) });
       rerender({ keepFocus: target.id });
       return true;
     default:

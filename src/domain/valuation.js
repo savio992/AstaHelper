@@ -261,14 +261,102 @@ export function depthWeights(settings, role) {
 }
 
 /**
+ * Il fattore del blocco difensivo in funzione dei difensori effettivi (non delle teste).
+ * Passa per gli stessi punti di prima — 2 → 0,04, 3 → 0,11, 4 → 0,14 — ma in mezzo e'
+ * continuo: cosi' un quarto difensore che gioca a mezzo servizio conta per meta', e un
+ * riempitivo che non schiero mai non fa scattare lo scalino.
+ */
+function fattoreBlocco(n) {
+  if (n <= 1) return 0;
+  if (n < 2) return 0.04 * (n - 1);
+  if (n < 3) return 0.04 + 0.07 * (n - 2);
+  if (n < 4) return 0.11 + 0.03 * (n - 3);
+  return 0.14;
+}
+
+/**
+ * Quanto vale un portiere di riserva come assicurazione: uno se e' il secondo vero del club,
+ * niente se e' il terzo che non gioca mai. Il segnale e' la sua quota di impiego: un secondo
+ * portiere sta intorno a 0,3, un terzo sotto 0,15.
+ */
+function pesoRiserva(p) {
+  return Math.max(0, Math.min(1, (expectedShare(p) - 0.15) / 0.2));
+}
+
+/**
+ * Con che peso schiererei i difensori di un blocco.
+ *
+ * Il blocco cambia chi va in campo: se ho tre difensori dello stesso club li schiero insieme,
+ * anche se uno dei tre, preso da solo, sarebbe il mio quarto. Quindi i membri del blocco
+ * prendono i pesi da titolare nell'ordine — uno, uno, uno, poi mezzo — e non il rango che
+ * avrebbero fra tutti gli otto.
+ *
+ * Ma solo se sono difensori da schierare davvero. Un giocatore che il modello proietta a
+ * tre punti non entra in campo per fare blocco, entra in rosa per gonfiare un bonus: sul
+ * listone vero il piano comprava tre riempitivi della Roma con punteggio intorno a uno
+ * proprio cosi'. La soglia e' meta' del punteggio del mio ultimo titolare: sotto, uno conta
+ * per quanto giocherebbe davvero, cioe' quasi niente.
+ */
+// I pesi di profondita' dipendono solo dalle impostazioni, che durante una risoluzione non
+// cambiano: si calcolano una volta per oggetto impostazioni invece che a ogni chiamata.
+const pesiDifesaPerSettings = new WeakMap();
+function pesiDifesa(settings) {
+  let w = pesiDifesaPerSettings.get(settings);
+  if (!w) {
+    w = depthWeights(settings, 'D');
+    pesiDifesaPerSettings.set(settings, w);
+  }
+  return w;
+}
+
+// Ordine per punteggio e basta. `sortByStrength` spareggia con localeCompare, che e' giusto
+// per una lista a schermo e insostenibile qui: questa funzione gira migliaia di volte per
+// ogni consiglio, e con quello spareggio la scheda d'asta ci metteva il doppio. A parita' di
+// punteggio chi prende quale peso e' indifferente per la somma.
+const perPunteggio = (a, b) => (b.score || 0) - (a.score || 0);
+
+function contestoDifesa(selected, settings) {
+  const w = pesiDifesa(settings);
+  const starters = Math.max(1, settings.starters?.D ?? 3);
+  const tutti = [];
+  for (const p of selected) if (p.role === 'D') tutti.push(p);
+  tutti.sort(perPunteggio);
+  const rango = new Map();
+  for (let i = 0; i < tutti.length; i++) rango.set(tutti[i].id, w[i] ?? w[w.length - 1] ?? 0.05);
+  const ultimoTitolare = tutti[Math.min(starters, tutti.length) - 1];
+  return { w, rango, soglia: 0.5 * (ultimoTitolare?.score || 0) };
+}
+
+// Il contesto (ordine dei difensori, soglia) e' lo stesso per tutti i club della rosa: si
+// calcola una volta per chiamata, non una volta per club.
+function pesiBlocco(group, ctx) {
+  const { w, rango, soglia } = ctx;
+  const out = new Map();
+  const plausibili = [];
+  for (const p of group) if ((p.score || 0) >= soglia && (p.score || 0) > 0) plausibili.push(p);
+  plausibili.sort(perPunteggio);
+  for (let i = 0; i < plausibili.length; i++) out.set(plausibili[i].id, w[i] ?? w[w.length - 1] ?? 0.05);
+  for (const p of group) if (!out.has(p.id)) out.set(p.id, rango.get(p.id) ?? 0.05);
+  return out;
+}
+
+/**
  * Bonus di sinergia per un insieme di giocatori gia' scelti.
  * - blocco difensivo: 3+ difensori dello stesso club valgono piu' della somma delle parti
  *   quando c'e' il modificatore di difesa (stessa partita, stesso clean sheet).
  * - portiere di riserva dello stesso club del titolare: assicurazione sull'imbattibilita'.
+ *
+ * Il blocco conta chi schiero, non chi e' in rosa. Contando le teste il bonus si poteva
+ * gonfiare a costo zero: sul listone vero il piano comprava tre difensori della Roma con
+ * punteggio intorno a uno — Rensch, Lulli, Ghilardi, gente che non avrei mai messo in campo
+ * — perche' ogni testa in piu' valeva dodici punti di bonus, piu' di qualunque titolare vero
+ * da due crediti. Il modificatore di difesa lo prendono i difensori schierati: il mio ottavo
+ * difensore non ne fa parte, e qui conta per quanto gioca.
  */
 export function synergyBonus(selected, settings) {
   if (!selected.length) return 0;
   let bonus = 0;
+  const ctx = settings.defenseModifier || settings.cleanSheetModifier ? contestoDifesa(selected, settings) : null;
 
   if (settings.defenseModifier) {
     const byClub = new Map();
@@ -279,9 +367,18 @@ export function synergyBonus(selected, settings) {
     }
     for (const [, group] of byClub) {
       if (group.length < 2) continue;
-      const avg = group.reduce((a, b) => a + (b.score || 0), 0) / group.length;
+      const pesi = pesiBlocco(group, ctx);
+      let effettivi = 0;
+      let sommaPesata = 0;
+      for (const p of group) {
+        const w = pesi.get(p.id) ?? 0;
+        effettivi += w;
+        sommaPesata += (p.score || 0) * w;
+      }
+      const factor = fattoreBlocco(effettivi);
+      if (factor <= 0 || effettivi <= 0) continue;
+      const avg = sommaPesata / effettivi;
       const sol = group[0].solidity ?? 0.5;
-      const factor = group.length === 2 ? 0.04 : group.length === 3 ? 0.11 : 0.14;
       bonus += avg * factor * (0.6 + 0.8 * sol);
     }
   }
@@ -294,10 +391,17 @@ export function synergyBonus(selected, settings) {
       // di arrivo, come prima: spareggiare qui sull'id cambierebbe il club del titolare e con
       // lui il bonus della difesa, e allora perdere un difensore potrebbe far salire la rosa.
       const starter = gks.slice().sort((a, b) => (b.scelto ? 1 : 0) - (a.scelto ? 1 : 0) || (b.score || 0) - (a.score || 0))[0];
-      const sameClub = gks.filter((p) => p.id !== starter.id && p.team && p.team === starter.team).length;
-      if (sameClub >= 1) bonus += (starter.score || 0) * 0.08;
-      const defsSameClub = selected.filter((p) => p.role === 'D' && p.team && p.team === starter.team).length;
-      if (defsSameClub >= 2) bonus += (starter.score || 0) * 0.05 * Math.min(defsSameClub, 4);
+      // La riserva vale come assicurazione solo se e' quella che gioca quando il titolare non
+      // c'e'. Il terzo portiere del club e' dello stesso club, ma non e' un'assicurazione.
+      const riserva = gks
+        .filter((p) => p.id !== starter.id && p.team && p.team === starter.team)
+        .sort((a, b) => expectedShare(b) - expectedShare(a))[0];
+      if (riserva) bonus += (starter.score || 0) * 0.08 * pesoRiserva(riserva);
+      const stessoClub = selected.filter((p) => p.role === 'D' && p.team && p.team === starter.team);
+      const pesi = pesiBlocco(stessoClub, ctx);
+      let difensoriEffettivi = 0;
+      for (const p of stessoClub) difensoriEffettivi += pesi.get(p.id) ?? 0;
+      if (difensoriEffettivi >= 1.5) bonus += (starter.score || 0) * 0.05 * Math.min(difensoriEffettivi, 4);
     }
   }
 

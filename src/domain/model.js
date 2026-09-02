@@ -150,7 +150,14 @@ export function defaultSettings() {
     // Modificatore imbattibilita' del portiere: alza molto il peso del portiere titolare.
     cleanSheetModifier: true,
     // Quanto il mercato "impenna" sui top: 1 = lineare, 2 = aste molto aggressive sui big.
+    // Riguarda il modello a punteggio (priceSource 'model' o 'blend').
     aggressiveness: 1.55,
+    // Quanto il mercato rincara i top rispetto ai listini dei creator: 1 = come dicono loro,
+    // 1,25 = quanto osservato in un'asta reale a otto squadre. Riguarda la fonte 'listone'.
+    ripidita: 1.25,
+    // Quanto del budget il mercato paga al massimo per un solo giocatore. Nell'asta reale
+    // nessuno e' andato oltre un terzo: i listini distanziano i primi, il mercato li comprime.
+    tettoSingolo: 0.33,
     // Da dove arrivano i prezzi attesi: modello di mercato, quotazioni del listone, o media.
     // I prezzi consigliati dai creators sono gia' calibrati sul montepremi di una lega da
     // dieci: quando ci sono, sono la stima migliore. 'model' serve ai listoni senza prezzi.
