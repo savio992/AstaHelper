@@ -121,6 +121,41 @@ function hasTag(p, tag) {
 }
 
 /**
+ * Le etichette dei creators che il punteggio non usa, e perche' contano lo stesso.
+ *
+ * Su diciannove etichette il modello ne prezza cinque — modificatore, imbattibilita',
+ * pararigori, rigorista, cartellini — e non e' una dimenticanza: quasi tutte le altre sono
+ * gia' dentro un numero che il modello legge davvero. "Titolarissimo" e "subentrante" sono
+ * la titolarita'; "rischio infortuni" e' l'integrita'; "tanti gol", "assistman", "tiratore"
+ * e "bonus" sono la fantamedia attesa, che i bonus li contiene per definizione; "scommessa"
+ * e' la fascia.
+ *
+ * Cercando di misurare se aggiungessero qualcosa oltre a quei numeri, su un'asta vera da 175
+ * aggiudicazioni, l'effetto cambia segno da una fascia di prezzo all'altra (+8%, −5%, +36%):
+ * con quel campione dare loro un coefficiente vorrebbe dire inventarselo.
+ *
+ * Queste sette invece dicono qualcosa che nessuna colonna numerica dice, e sono troppo rare
+ * per tararle: undici dei tredici giocatori con "coppa africa" costano un credito. Quindi non
+ * si trasformano in punti — si mostrano dove stai decidendo, e decidi tu.
+ */
+export const AVVISI_CREATOR = [
+  ['esca', 'il creator dice che all\'asta lo pagheranno piu\' di quanto vale'],
+  ['affare nascosto', 'il creator si aspetta che vada via sotto il suo valore'],
+  ['coppa africa', 'salta giornate per la Coppa d\'Africa'],
+  ['rischio infortuni', 'si fa male spesso'],
+  ['incostante', 'alterna partite da otto e partite da niente'],
+  ['subentrante', 'parte dalla panchina'],
+  ['jolly', 'lo puoi schierare in piu\' ruoli'],
+];
+
+/** Gli avvisi che valgono per questo giocatore: `[{ tag, perche' }]`, vuoto se non ne ha. */
+export function avvisiCreator(p) {
+  const out = [];
+  for (const [tag, perche] of AVVISI_CREATOR) if (hasTag(p, tag)) out.push({ tag, perche });
+  return out;
+}
+
+/**
  * Solidita' difensiva stimata di ogni club, dedotta dal listone stesso.
  * E' il segnale che fa funzionare modificatore di difesa e imbattibilita' del portiere.
  */

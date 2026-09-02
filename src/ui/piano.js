@@ -3,7 +3,7 @@
 import { state, rebuildPlan, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, updateSettings } from '../store.js';
 import { ROLES, ROLE_LABEL, totalSlots } from '../domain/model.js';
 import { tierBudgetReport, maxBid, alternatives, tettoSullaLista, costoDellaLista, sceltiInPanchina } from '../domain/advisor.js';
-import { clubExposure, depthWeights, sortByStrength } from '../domain/valuation.js';
+import { clubExposure, depthWeights, sortByStrength, avvisiCreator } from '../domain/valuation.js';
 import { ownedMap, unavailableSet, onReset } from '../store.js';
 import { spiegaModifica } from '../domain/strategia.js';
 import { esc, roleChip, emptyState, playerRow, edgeBadge, toast, matches } from './common.js';
@@ -95,6 +95,22 @@ function sceltaBottoni(p) {
 // una domenica su due, sarebbe rumore.
 const PESO_PANCHINA = 0.2;
 
+/**
+ * Gli avvisi del creator sotto il nome, nel piano.
+ *
+ * Guardando il piano si vede "N'Dicka 16" e nient'altro: che salti giornate per la Coppa
+ * d'Africa, che il creator lo dia per esca o per affare nascosto, era scritto nel file e
+ * finiva solo nella scheda del giocatore, dove durante l'asta non si passa. Il punteggio non
+ * li usa — non ci sono dati per tararli — ma la scelta e' tua, e per farla devi vederli.
+ */
+function avvisi(p) {
+  const voci = avvisiCreator(p);
+  if (!voci.length) return '';
+  return `<div class="row wrap" style="gap:4px;margin-top:4px">${voci
+    .map((v) => `<span class="chip warn" title="${esc(v.perche)}">${esc(v.tag)}</span>`)
+    .join('')}</div>`;
+}
+
 function roleBlock(role, plan) {
   const owned = plan.owned.filter((p) => p.role === role).map((p) => ({ ...p, plannedPrice: p.paid, mine: true }));
   const picks = plan.picks.filter((p) => p.role === role);
@@ -124,6 +140,7 @@ function roleBlock(role, plan) {
                   (profondita.get(p.id) ?? 1) < PESO_PANCHINA ? ' <span class="chip">panchina</span>' : ''
                 }</div>
                 <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+                ${avvisi(p)}
               </div>
               <div class="pr mono">${p.plannedPrice}<small>${p.mine ? 'pagato' : 'stima'}</small></div>
               ${p.mine ? '' : sceltaBottoni(p)}
@@ -437,6 +454,7 @@ function cercaCard() {
                    <div class="grow">
                      <div class="nm">${esc(p.name)}</div>
                      <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+                ${avvisi(p)}
                    </div>
                    <div class="pr mono">${Math.round(p.expectedPrice ?? 0)}<small>atteso</small></div>
                    <button class="btn ${lista.has(p.id) ? 'primary' : 'ghost'}" style="min-width:44px;padding:9px"

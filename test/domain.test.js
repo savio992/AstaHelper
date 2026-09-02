@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { parseCsv, sniffDelimiter, autoMap, buildPlayers, normalizeRole, parseNumber, refineMapping, mergeSources, gridToTable, sheetsToTable } from '../src/domain/csv.js';
 import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domain/model.js';
-import { valuePlayers, rosterScore, depthWeights, synergyBonus } from '../src/domain/valuation.js';
+import { valuePlayers, rosterScore, depthWeights, synergyBonus, avvisiCreator, AVVISI_CREATOR } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
 import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, pianoSenza, CONFIG_ASTA } from '../src/domain/advisor.js';
@@ -1247,4 +1247,36 @@ test('nessuno costa piu\' del tetto, e i crediti in eccesso vanno agli altri', (
 
 test('il tetto di default e\' un terzo del budget', () => {
   assert.equal(defaultSettings().tettoSingolo, 0.33);
+});
+
+// --- gli avvisi del creator ------------------------------------------------------------------
+// Su diciannove etichette il punteggio ne prezza cinque. Le altre o sono gia' dentro un numero
+// che il modello legge (titolarita', integrita', fantamedia attesa, fascia), o sono troppo rare
+// per tararle. Queste sette non le trasforma in punti: le mostra nel piano, dove si decide.
+
+test('un avviso che il punteggio non usa arriva a chi guarda il piano', () => {
+  const voci = avvisiCreator({ tags: ['bonus', 'coppa africa', 'rigorista', 'esca'] });
+  assert.deepEqual(voci.map((v) => v.tag), ['esca', 'coppa africa']);
+  assert.ok(voci.every((v) => v.perche && v.perche.length > 10), 'ogni avviso spiega perche\' conta');
+});
+
+test('le etichette gia\' dentro il punteggio non diventano avvisi: sarebbero contate due volte', () => {
+  for (const tag of ['modificatore', 'imbattibilita', 'pararigori', 'rigorista', 'cartellini']) {
+    assert.deepEqual(avvisiCreator({ tags: [tag] }), [], `${tag} e' gia' nel punteggio`);
+  }
+});
+
+test('senza etichette non si inventa niente', () => {
+  assert.deepEqual(avvisiCreator({}), []);
+  assert.deepEqual(avvisiCreator({ tags: [] }), []);
+  assert.deepEqual(avvisiCreator({ tags: ['titolarissimo', 'costante', 'tanti gol'] }), [],
+    'quelle gia\' dentro titolarita\' e fantamedia attesa non sono avvisi');
+});
+
+test('gli avvisi non toccano il punteggio: sono per gli occhi, non per il solutore', () => {
+  const settings = { ...defaultSettings(), defenseModifier: false, cleanSheetModifier: false };
+  const base = { id: 'x', name: 'X', team: 'ROM', role: 'C', tier: 'Top', fmvExp: 7, titolarita: 5, integrita: 5, tags: [] };
+  const senza = valuePlayers([base, { ...base, id: 'y', name: 'Y' }], settings)[0];
+  const con = valuePlayers([{ ...base, tags: AVVISI_CREATOR.map(([t]) => t) }, { ...base, id: 'y', name: 'Y' }], settings)[0];
+  assert.equal(con.score, senza.score, 'nessuno dei sette avvisi sposta il punteggio');
 });

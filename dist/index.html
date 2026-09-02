@@ -1254,6 +1254,41 @@ function hasTag(p, tag) {
 }
 
 /**
+ * Le etichette dei creators che il punteggio non usa, e perche' contano lo stesso.
+ *
+ * Su diciannove etichette il modello ne prezza cinque — modificatore, imbattibilita',
+ * pararigori, rigorista, cartellini — e non e' una dimenticanza: quasi tutte le altre sono
+ * gia' dentro un numero che il modello legge davvero. "Titolarissimo" e "subentrante" sono
+ * la titolarita'; "rischio infortuni" e' l'integrita'; "tanti gol", "assistman", "tiratore"
+ * e "bonus" sono la fantamedia attesa, che i bonus li contiene per definizione; "scommessa"
+ * e' la fascia.
+ *
+ * Cercando di misurare se aggiungessero qualcosa oltre a quei numeri, su un'asta vera da 175
+ * aggiudicazioni, l'effetto cambia segno da una fascia di prezzo all'altra (+8%, −5%, +36%):
+ * con quel campione dare loro un coefficiente vorrebbe dire inventarselo.
+ *
+ * Queste sette invece dicono qualcosa che nessuna colonna numerica dice, e sono troppo rare
+ * per tararle: undici dei tredici giocatori con "coppa africa" costano un credito. Quindi non
+ * si trasformano in punti — si mostrano dove stai decidendo, e decidi tu.
+ */
+const AVVISI_CREATOR = [
+  ['esca', 'il creator dice che all\'asta lo pagheranno piu\' di quanto vale'],
+  ['affare nascosto', 'il creator si aspetta che vada via sotto il suo valore'],
+  ['coppa africa', 'salta giornate per la Coppa d\'Africa'],
+  ['rischio infortuni', 'si fa male spesso'],
+  ['incostante', 'alterna partite da otto e partite da niente'],
+  ['subentrante', 'parte dalla panchina'],
+  ['jolly', 'lo puoi schierare in piu\' ruoli'],
+];
+
+/** Gli avvisi che valgono per questo giocatore: `[{ tag, perche' }]`, vuoto se non ne ha. */
+function avvisiCreator(p) {
+  const out = [];
+  for (const [tag, perche] of AVVISI_CREATOR) if (hasTag(p, tag)) out.push({ tag, perche });
+  return out;
+}
+
+/**
  * Solidita' difensiva stimata di ogni club, dedotta dal listone stesso.
  * E' il segnale che fa funzionare modificatore di difesa e imbattibilita' del portiere.
  */
@@ -1610,7 +1645,7 @@ function tierScore(settings, role, tier) {
   return 100 * Math.pow(TIER_DECAY[role] ?? 0.78, rank);
 }
 
-return { sortByStrength, expectedShare, clubSolidity, valuePlayers, markTopPlayers, depthWeights, synergyBonus, clubExposure, concentrationPenalty, rosterScore, tierScore };
+return { sortByStrength, expectedShare, avvisiCreator, clubSolidity, valuePlayers, markTopPlayers, depthWeights, synergyBonus, clubExposure, concentrationPenalty, rosterScore, tierScore, AVVISI_CREATOR };
 })();
 
 // ===== src/domain/market.js =====
@@ -6846,7 +6881,7 @@ const __m_src_ui_piano_js = (() => {
 const { state, rebuildPlan, blocca, scarta, liberaScelta, statoScelta, obbligatiSet, updateSettings } = __m_src_store_js;
 const { ROLES, ROLE_LABEL, totalSlots } = __m_src_domain_model_js;
 const { tierBudgetReport, maxBid, alternatives, tettoSullaLista, costoDellaLista, sceltiInPanchina } = __m_src_domain_advisor_js;
-const { clubExposure, depthWeights, sortByStrength } = __m_src_domain_valuation_js;
+const { clubExposure, depthWeights, sortByStrength, avvisiCreator } = __m_src_domain_valuation_js;
 const { ownedMap, unavailableSet, onReset } = __m_src_store_js;
 const { spiegaModifica } = __m_src_domain_strategia_js;
 const { esc, roleChip, emptyState, playerRow, edgeBadge, toast, matches } = __m_src_ui_common_js;
@@ -6938,6 +6973,22 @@ function sceltaBottoni(p) {
 // una domenica su due, sarebbe rumore.
 const PESO_PANCHINA = 0.2;
 
+/**
+ * Gli avvisi del creator sotto il nome, nel piano.
+ *
+ * Guardando il piano si vede "N'Dicka 16" e nient'altro: che salti giornate per la Coppa
+ * d'Africa, che il creator lo dia per esca o per affare nascosto, era scritto nel file e
+ * finiva solo nella scheda del giocatore, dove durante l'asta non si passa. Il punteggio non
+ * li usa — non ci sono dati per tararli — ma la scelta e' tua, e per farla devi vederli.
+ */
+function avvisi(p) {
+  const voci = avvisiCreator(p);
+  if (!voci.length) return '';
+  return `<div class="row wrap" style="gap:4px;margin-top:4px">${voci
+    .map((v) => `<span class="chip warn" title="${esc(v.perche)}">${esc(v.tag)}</span>`)
+    .join('')}</div>`;
+}
+
 function roleBlock(role, plan) {
   const owned = plan.owned.filter((p) => p.role === role).map((p) => ({ ...p, plannedPrice: p.paid, mine: true }));
   const picks = plan.picks.filter((p) => p.role === role);
@@ -6967,6 +7018,7 @@ function roleBlock(role, plan) {
                   (profondita.get(p.id) ?? 1) < PESO_PANCHINA ? ' <span class="chip">panchina</span>' : ''
                 }</div>
                 <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+                ${avvisi(p)}
               </div>
               <div class="pr mono">${p.plannedPrice}<small>${p.mine ? 'pagato' : 'stima'}</small></div>
               ${p.mine ? '' : sceltaBottoni(p)}
@@ -7280,6 +7332,7 @@ function cercaCard() {
                    <div class="grow">
                      <div class="nm">${esc(p.name)}</div>
                      <div class="sub">${esc(p.team || '—')}${p.tier ? ' · ' + esc(p.tier) : ''}</div>
+                ${avvisi(p)}
                    </div>
                    <div class="pr mono">${Math.round(p.expectedPrice ?? 0)}<small>atteso</small></div>
                    <button class="btn ${lista.has(p.id) ? 'primary' : 'ghost'}" style="min-width:44px;padding:9px"
