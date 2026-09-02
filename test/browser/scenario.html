@@ -51,11 +51,17 @@ try {
   const bid = maxBid({ players, settings, playerId: target.id });
   const bidMs = performance.now() - t1;
   check('offerta massima calcolata', bid.maxBid > 0 && bid.maxBid <= 476, `${bid.maxBid} crediti in ${bidMs.toFixed(0)}ms`);
-  // Guardie contro regressioni di ordine di grandezza, non misure: questo gira in un container
-  // condiviso e lo stesso calcolo oscilla fra 800 e 1600 millisecondi a seconda del carico.
-  // Il solutore completo costa piu' del vecchio, che pero' sbagliava l'offerta fino al 50%;
-  // il pannello mostra la rotella mentre calcola.
-  check('offerta massima reattiva', bidMs < 3000, `${bidMs.toFixed(0)}ms`);
+  // Guardia contro regressioni di ordine di grandezza, non una misura: questo gira in un
+  // container condiviso e lo stesso calcolo, sulla stessa macchina, e' passato da 1200 a 3500
+  // millisecondi nell'arco di una giornata senza che il codice cambiasse. Una soglia in
+  // millisecondi misura il vicino di stanza.
+  //
+  // Si misura invece in risoluzioni: l'offerta massima cerca il punto di pareggio con una
+  // ricerca binaria, e ogni passo e' una risoluzione completa come quella del piano appena
+  // cronometrata. Otto o nove sono il costo giusto; venti vorrebbero dire che la ricerca ha
+  // smesso di dimezzare, ed e' quello che questa guardia deve prendere.
+  const risoluzioni = bidMs / Math.max(1, planMs);
+  check('offerta massima reattiva', risoluzioni < 20, `${bidMs.toFixed(0)}ms = ${risoluzioni.toFixed(1)} risoluzioni da ${planMs.toFixed(0)}ms`);
 
   const t2 = performance.now();
   const alts = alternatives({ players, settings, playerId: target.id });

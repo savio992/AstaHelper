@@ -69,6 +69,51 @@ export function expectedShare(p) {
   return 0.6 * int;
 }
 
+// Minuti sotto i quali la media voto dell'anno scorso non e' un dato ma un segnaposto: dieci
+// partite piene. Sotto quella soglia i listoni riportano cifre come 1,33 o 1,83, che non sono
+// voti bassi — sono caselle non compilate per chi in Serie A non ha giocato.
+const MINUTI_PER_FIDARSI = 900;
+
+/**
+ * Il voto puro dell'anno scorso, quando e' un dato vero.
+ *
+ * E' la grandezza su cui si calcola il modificatore di difesa, e non e' la fantamedia. Il
+ * regolamento e' esplicito: media dei voti del portiere e dei tre migliori difensori
+ * schierati, esclusi bonus e malus — il +3 del gol, il −0,5 dell'ammonizione e il −1 del gol
+ * subito non entrano. Un difensore che segna entra nel calcolo con il suo voto, non con il
+ * fantavoto.
+ *
+ * Si usa la media voto misurata, non una stima ricavata dalla fantamedia attesa. Ricavarla
+ * sembrava piu' furbo — togliere alla fantamedia attesa la distanza fra FMV e MV dell'anno
+ * scorso — ed era sbagliato in due modi. Per un portiere quella distanza non e' un bonus: e'
+ * il malus dei gol subiti, quindi toglierla lo premiava per aver preso gol, e De Gea usciva
+ * col voto piu' alto della Serie A. E per chi non ha giocato in A la distanza vale zero,
+ * perche' entrambe le colonne sono segnaposto, quindi i tre "migliori difensori" della
+ * Fiorentina risultavano tre giocatori con media voto 1,33, 1,67 e 1,83.
+ *
+ * Il voto e' un dato dell'anno scorso, quindi guarda indietro. Per la solidita' di un club,
+ * che cambia lentamente, e' un'approssimazione onesta; per il singolo giocatore che ha
+ * cambiato squadra lo e' meno, ed e' un limite da tenere presente.
+ */
+// Distanza tipica fra fantamedia e voto, per ruolo, misurata sui titolari del listone: per un
+// difensore il bonus vale un decimo di voto, per un portiere il malus dei gol subiti ne toglie
+// otto. Serve a stimare il voto di chi non ha una media voto affidabile senza usare la sua,
+// che per quei giocatori e' un segnaposto.
+const SCARTO_TIPICO = { P: -0.84, D: 0.10, C: 0.32, A: 0.67 };
+
+export function votoAtteso(p) {
+  const misurato =
+    Number.isFinite(p.mediavoto) &&
+    p.mediavoto > 0 &&
+    (Number.isFinite(p.minutes) ? p.minutes >= MINUTI_PER_FIDARSI : Number.isFinite(p.matches) && p.matches >= 10);
+  if (misurato) return p.mediavoto;
+  // Senza un voto misurato si stima dalla fantamedia attesa togliendo il bonus tipico del
+  // ruolo. E' una stima grossolana, ma tenere fuori meta' dei difensori lascerebbe interi
+  // club giudicati su un voto solo.
+  if (Number.isFinite(p.fmvExp)) return p.fmvExp - (SCARTO_TIPICO[p.role] ?? 0);
+  return null;
+}
+
 /** La fantamedia attesa dichiarata, con ripiego su quella dell'anno scorso. */
 function projectedAverage(p) {
   for (const v of [p.fmvExp, p.fantamedia]) {
@@ -169,12 +214,18 @@ export function avvisiCreator(p) {
 /**
  * Solidita' difensiva stimata di ogni club, dedotta dal listone stesso.
  * E' il segnale che fa funzionare modificatore di difesa e imbattibilita' del portiere.
+ *
+ * Si calcola come lo calcola il modificatore: la media dei voti puri del portiere e dei tre
+ * migliori difensori schierati. Prima usava i punteggi, che vengono dalla fantamedia e quindi
+ * contengono i gol dei difensori — proprio la parte che il modificatore esclude. Non era un
+ * dettaglio: sul listone vero la Fiorentina passa dal decimo al primo posto e l'Atalanta dal
+ * settimo al diciassettesimo, fino a dieci posizioni su venti. E la solidita' moltiplica il
+ * punteggio di ogni difensore e di ogni portiere.
  */
-export function clubSolidity(players, baseScore) {
+function solidityDaiPunteggi(players, baseScore) {
   const byClub = new Map();
   for (const p of players) {
-    if (p.role !== 'D' && p.role !== 'P') continue;
-    if (!p.team) continue;
+    if ((p.role !== 'D' && p.role !== 'P') || !p.team) continue;
     if (!byClub.has(p.team)) byClub.set(p.team, { D: [], P: [] });
     byClub.get(p.team)[p.role].push(baseScore.get(p.id) || 0);
   }
@@ -183,9 +234,63 @@ export function clubSolidity(players, baseScore) {
     const topD = groups.D.sort((a, b) => b - a).slice(0, 3);
     const topP = groups.P.sort((a, b) => b - a).slice(0, 1);
     const avgD = topD.length ? topD.reduce((a, b) => a + b, 0) / topD.length : 0;
-    const avgP = topP.length ? topP[0] : 0;
-    raw.set(club, 0.62 * avgD + 0.38 * avgP);
+    raw.set(club, 0.62 * avgD + 0.38 * (topP.length ? topP[0] : 0));
   }
+  const pct = percentileMap([...raw.values()]);
+  const out = new Map();
+  for (const [club, v] of raw) out.set(club, pct(v));
+  return out;
+}
+
+export function clubSolidity(players, baseScore = null) {
+  const byClub = new Map();
+  for (const p of players) {
+    if (p.role !== 'D' && p.role !== 'P') continue;
+    if (!p.team) continue;
+    const voto = votoAtteso(p);
+    if (!Number.isFinite(voto)) continue;
+    if (!byClub.has(p.team)) byClub.set(p.team, { D: [], P: [] });
+    byClub.get(p.team)[p.role].push({ voto, gioca: expectedShare(p) });
+  }
+
+  // Solo chi verrebbe schierato: il modificatore lo fanno i titolari, e una riserva con un
+  // voto alto e nessuna presenza non difende niente.
+  const migliori = (lista, quanti) => {
+    const titolari = lista.filter((x) => x.gioca >= 0.35);
+    return (titolari.length >= quanti ? titolari : lista).sort((a, b) => b.voto - a.voto).slice(0, quanti);
+  };
+
+  // Un listone di sole fasce e prezzi non sa niente dei voti, e il modificatore non si puo'
+  // stimare. Li' si ripiega sul metodo di prima — i punteggi — che e' la grandezza sbagliata
+  // ma e' l'unica che quel listone contiene: meglio un segnale storto che nessun segnale.
+  if (!byClub.size && baseScore) return solidityDaiPunteggi(players, baseScore);
+
+  const grezzi = new Map();
+  let somma = 0;
+  let quanti = 0;
+  for (const [club, groups] of byClub) {
+    const topD = migliori(groups.D, 3);
+    const topP = migliori(groups.P, 1);
+    if (!topD.length) continue;
+    const avgD = topD.reduce((a, b) => a + b.voto, 0) / topD.length;
+    // Portiere e tre difensori pesano un quarto ciascuno, come nella media del modificatore.
+    // Senza un portiere affidabile si usa la sola difesa, che e' tre quarti del conto.
+    const media = topP.length ? (3 * avgD + topP[0].voto) / 4 : avgD;
+    const n = topD.length + topP.length;
+    grezzi.set(club, { media, n });
+    somma += media * n;
+    quanti += n;
+  }
+  const mediaLega = quanti ? somma / quanti : 6;
+
+  // Contrazione verso la media di lega. Meta' dei difensori non ha una media voto affidabile —
+  // trasferiti, giovani, chi in Serie A non ha giocato — e un club giudicato su un solo voto
+  // non merita di stare in cima o in fondo alla classifica per caso. Con quattro giocatori
+  // noti il club vale per quello che dicono i suoi voti; con uno solo pesa per un terzo.
+  const PRIOR = 2;
+  const raw = new Map();
+  for (const [club, { media, n }] of grezzi) raw.set(club, (n * media + PRIOR * mediaLega) / (n + PRIOR));
+
   const pct = percentileMap([...raw.values()]);
   const out = new Map();
   for (const [club, v] of raw) out.set(club, pct(v));

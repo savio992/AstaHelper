@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { parseCsv, sniffDelimiter, autoMap, buildPlayers, normalizeRole, parseNumber, refineMapping, mergeSources, gridToTable, sheetsToTable } from '../src/domain/csv.js';
 import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domain/model.js';
-import { valuePlayers, rosterScore, depthWeights, synergyBonus, avvisiCreator, AVVISI_CREATOR, expectedShare } from '../src/domain/valuation.js';
+import { valuePlayers, rosterScore, depthWeights, synergyBonus, avvisiCreator, AVVISI_CREATOR, expectedShare, votoAtteso, clubSolidity } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
 import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, pianoSenza, CONFIG_ASTA } from '../src/domain/advisor.js';
@@ -1311,4 +1311,93 @@ test('fuori scala non si rompe', () => {
   assert.equal(soloTit(9), soloTit(5));
   assert.equal(soloTit(-3), soloTit(0));
   assert.ok(expectedShare({}) > 0, 'senza giudizi resta un valore sensato');
+});
+
+// --- il voto puro: la grandezza su cui si calcola il modificatore ----------------------------
+// Il regolamento e' esplicito: media dei voti del portiere e dei tre migliori difensori
+// schierati, esclusi bonus e malus. Un difensore che segna entra con il suo voto, non col
+// fantavoto. La solidita' dei club si calcolava invece sui punteggi, che vengono dalla
+// fantamedia e quindi contengono proprio i gol dei difensori.
+
+const difensore2 = (id, team, mediavoto, extra = {}) => ({
+  id, name: id, team, role: 'D', mediavoto, minutes: 2500, matches: 30,
+  fmvExp: mediavoto, fantamedia: mediavoto, titolarita: 5, integrita: 5, ...extra,
+});
+
+test('quando la media voto e\' misurata su abbastanza partite, si usa quella', () => {
+  assert.equal(votoAtteso({ role: 'D', mediavoto: 6.3, minutes: 2500, fmvExp: 7.1 }), 6.3);
+});
+
+test('una media voto da poche partite e\' un segnaposto, non un voto basso', () => {
+  // Nel listone vero chi non ha giocato in Serie A ha valori come 1,33 o 1,83: prenderli per
+  // buoni faceva risultare tre giocatori simili i "migliori difensori" del loro club.
+  const finto = { role: 'D', mediavoto: 1.33, minutes: 120, matches: 2, fmvExp: 6.0 };
+  const v = votoAtteso(finto);
+  assert.ok(v > 5.5, `un segnaposto da 1,33 non deve diventare un voto: ${v}`);
+  assert.ok(Math.abs(v - (6.0 - 0.10)) < 1e-9, 'si stima dalla fantamedia attesa meno il bonus tipico del ruolo');
+});
+
+test('per un portiere la distanza dalla fantamedia e\' un malus, e non lo premia', () => {
+  // Il difetto che questo test sorveglia: ricavare il voto togliendo alla fantamedia attesa la
+  // distanza FMV-MV significava, per un portiere, restituirgli il malus dei gol subiti. Chi ne
+  // aveva presi di piu' usciva col voto piu' alto della Serie A.
+  const subisceTanto = { role: 'P', mediavoto: 5.91, fantamedia: 3.90, fmvExp: 5.06, minutes: 2500 };
+  const subiscePoco = { role: 'P', mediavoto: 6.20, fantamedia: 5.71, fmvExp: 5.30, minutes: 2500 };
+  assert.ok(
+    votoAtteso(subisceTanto) < votoAtteso(subiscePoco),
+    `chi subisce di piu' non puo' avere il voto piu' alto: ${votoAtteso(subisceTanto)} contro ${votoAtteso(subiscePoco)}`
+  );
+});
+
+test('la solidita\' guarda i voti, non i gol dei difensori', () => {
+  // Due club identici nei voti, ma i difensori di uno segnano molto: per il modificatore
+  // valgono uguale, perche' il gol del difensore non entra nel calcolo.
+  const senzaGol = ['a1', 'a2', 'a3'].map((id) => difensore2(id, 'AAA', 6.4));
+  const conGol = ['b1', 'b2', 'b3'].map((id) => difensore2(id, 'BBB', 6.4, { fmvExp: 7.6, fantamedia: 7.6 }));
+  const portieri = [
+    { id: 'pa', name: 'pa', team: 'AAA', role: 'P', mediavoto: 6.2, fantamedia: 5.4, fmvExp: 5.4, minutes: 3000, titolarita: 5, integrita: 5 },
+    { id: 'pb', name: 'pb', team: 'BBB', role: 'P', mediavoto: 6.2, fantamedia: 5.4, fmvExp: 5.4, minutes: 3000, titolarita: 5, integrita: 5 },
+  ];
+  const sol = clubSolidity([...senzaGol, ...conGol, ...portieri]);
+  assert.equal(sol.get('AAA'), sol.get('BBB'), 'i gol dei difensori non devono spostare la solidita\'');
+});
+
+test('un club con voti alti sta sopra uno con voti bassi', () => {
+  const forte = ['f1', 'f2', 'f3'].map((id) => difensore2(id, 'FOR', 6.6));
+  const debole = ['d1', 'd2', 'd3'].map((id) => difensore2(id, 'DEB', 5.6));
+  const p = (id, team, mv) => ({ id, name: id, team, role: 'P', mediavoto: mv, fantamedia: mv - 0.8, fmvExp: mv - 0.8, minutes: 3000, titolarita: 5, integrita: 5 });
+  const sol = clubSolidity([...forte, ...debole, p('pf', 'FOR', 6.5), p('pd', 'DEB', 5.7)]);
+  assert.ok(sol.get('FOR') > sol.get('DEB'));
+});
+
+test('un club giudicato su pochi voti viene tirato verso la media di lega', () => {
+  // Meta' dei difensori non ha una media voto misurata. Senza contrazione un club con un solo
+  // dato estremo starebbe in cima o in fondo per caso; con la contrazione il suo scarto dalla
+  // media si accorcia in proporzione a quanto poco si sa di lui.
+  const p = (id, team, mv) => ({ id, name: id, team, role: 'P', mediavoto: mv, fantamedia: mv - 0.8, fmvExp: mv - 0.8, minutes: 3000, titolarita: 5, integrita: 5 });
+  const solidi = ['s1', 's2', 's3'].map((id) => difensore2(id, 'SOL', 6.5));
+  const medi = ['m1', 'm2', 'm3'].map((id) => difensore2(id, 'MED', 6.2));
+  const unoSolo = [difensore2('u1', 'UNO', 7.2)];
+  const sol = clubSolidity([...solidi, ...medi, ...unoSolo, p('ps', 'SOL', 6.4), p('pm', 'MED', 6.2), p('pu', 'UNO', 7.0)]);
+  // Resta il piu' forte — i suoi due voti sono davvero altissimi — ma non stacca come farebbe
+  // se lo si giudicasse solo su quei due.
+  assert.ok(sol.get('UNO') >= sol.get('SOL'));
+  assert.ok(sol.get('SOL') > sol.get('MED'), 'i club con dati pieni restano ordinati fra loro');
+});
+
+test('senza voti ne\' fantamedia attesa la solidita\' ripiega sui punteggi', () => {
+  // Un listone di sole fasce e prezzi non sa niente dei voti. Restare senza solidita' sarebbe
+  // peggio: il modificatore smetterebbe di spostare crediti in difesa.
+  const soloFasce = [
+    { id: 'd1', name: 'd1', team: 'AAA', role: 'D' }, { id: 'd2', name: 'd2', team: 'AAA', role: 'D' },
+    { id: 'd3', name: 'd3', team: 'AAA', role: 'D' }, { id: 'p1', name: 'p1', team: 'AAA', role: 'P' },
+    { id: 'd4', name: 'd4', team: 'BBB', role: 'D' }, { id: 'd5', name: 'd5', team: 'BBB', role: 'D' },
+    { id: 'd6', name: 'd6', team: 'BBB', role: 'D' }, { id: 'p2', name: 'p2', team: 'BBB', role: 'P' },
+  ];
+  const punteggi = new Map(soloFasce.map((x) => [x.id, x.team === 'AAA' ? 100 : 40]));
+  const sol = clubSolidity(soloFasce, punteggi);
+  assert.equal(sol.size, 2, 'il ripiego deve dare una solidita\' a entrambi i club');
+  assert.ok(sol.get('AAA') > sol.get('BBB'), 'e ordinarli come dicono i punteggi');
+  // Senza nemmeno i punteggi non si inventa niente.
+  assert.equal(clubSolidity(soloFasce).size, 0);
 });
