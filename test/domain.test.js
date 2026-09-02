@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { parseCsv, sniffDelimiter, autoMap, buildPlayers, normalizeRole, parseNumber, refineMapping, mergeSources, gridToTable, sheetsToTable } from '../src/domain/csv.js';
 import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domain/model.js';
-import { valuePlayers, rosterScore, depthWeights, synergyBonus, avvisiCreator, AVVISI_CREATOR } from '../src/domain/valuation.js';
+import { valuePlayers, rosterScore, depthWeights, synergyBonus, avvisiCreator, AVVISI_CREATOR, expectedShare } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
 import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, pianoSenza, CONFIG_ASTA } from '../src/domain/advisor.js';
@@ -1279,4 +1279,36 @@ test('gli avvisi non toccano il punteggio: sono per gli occhi, non per il soluto
   const senza = valuePlayers([base, { ...base, id: 'y', name: 'Y' }], settings)[0];
   const con = valuePlayers([{ ...base, tags: AVVISI_CREATOR.map(([t]) => t) }, { ...base, id: 'y', name: 'Y' }], settings)[0];
   assert.equal(con.score, senza.score, 'nessuno dei sette avvisi sposta il punteggio');
+});
+
+// --- la titolarita' quando i creators non sono d'accordo -------------------------------------
+// Ogni creator da' un giudizio intero, ma con piu' file diventa una media: 4,33 vuol dire che
+// due lo danno titolare e uno no. Arrotondare buttava via proprio quel disaccordo, e i gradini
+// sono larghi — fra 0,56 e 0,76 c'e' il 36% di una stagione.
+
+const soloTit = (titolarita) => expectedShare({ titolarita, integrita: 5 });
+
+test('un giudizio intero vale esattamente quanto valeva prima', () => {
+  const attesi = [0.05, 0.15, 0.34, 0.56, 0.76, 0.92];
+  for (let v = 0; v <= 5; v++) assert.ok(Math.abs(soloTit(v) - attesi[v]) < 1e-9, `titolarita' ${v}`);
+});
+
+test('una media fra due giudizi sta in mezzo, non salta al gradino piu\' vicino', () => {
+  const quattro = soloTit(4);
+  const cinque = soloTit(5);
+  const media = soloTit(4.5);
+  assert.ok(media > quattro && media < cinque, `4,5 deve stare fra ${quattro} e ${cinque}, vale ${media}`);
+  assert.ok(Math.abs(media - (quattro + cinque) / 2) < 1e-9, 'e a meta\' esatta, essendo a meta\' fra i due');
+  // Il difetto vero: 4,4 e 4,6 differiscono di due decimi di giudizio e finivano a 0,56 e 0,92.
+  assert.ok(soloTit(4.6) - soloTit(4.4) < 0.1, `fra 4,4 e 4,6 lo scarto era del 36%, ora e' ${(soloTit(4.6) - soloTit(4.4)).toFixed(3)}`);
+});
+
+test('la frazione di stagione cresce sempre con la titolarita\'', () => {
+  for (let v = 0; v < 5; v += 0.25) assert.ok(soloTit(v + 0.25) > soloTit(v), `scende fra ${v} e ${v + 0.25}`);
+});
+
+test('fuori scala non si rompe', () => {
+  assert.equal(soloTit(9), soloTit(5));
+  assert.equal(soloTit(-3), soloTit(0));
+  assert.ok(expectedShare({}) > 0, 'senza giudizi resta un valore sensato');
 });
