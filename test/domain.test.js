@@ -1337,6 +1337,21 @@ test('una media voto da poche partite e\' un segnaposto, non un voto basso', () 
   assert.ok(Math.abs(v - (6.0 - 0.10)) < 1e-9, 'si stima dalla fantamedia attesa meno il bonus tipico del ruolo');
 });
 
+test('un segnaposto con i minuti pieni resta un segnaposto', () => {
+  // Il caso che il controllo sui minuti da solo non prendeva: la colonna dei minuti piena e
+  // quella della media voto ancora a segnaposto. Vicario arrivava cosi' nel calcolo del
+  // modificatore con un voto di 2,08 e da solo faceva scendere la Juve dal terzo posto al
+  // diciassettesimo. Sotto il cinque non e' un voto basso, e' un campo non compilato.
+  const v = votoAtteso({ role: 'P', mediavoto: 2.08, minutes: 1920, matches: 24, fmvExp: 5.27 });
+  assert.ok(v > 5.5, `un segnaposto da 2,08 con 1920 minuti non deve diventare un voto: ${v}`);
+  assert.ok(Math.abs(v - (5.27 + 0.84)) < 1e-9, 'si ripiega sulla stima dalla fantamedia attesa');
+});
+
+test('un voto misurato appena sopra la soglia si usa com\'e\'', () => {
+  // La soglia non deve mangiarsi i voti veri bassi: 5,2 con i minuti pieni e' un giudizio.
+  assert.equal(votoAtteso({ role: 'D', mediavoto: 5.2, minutes: 2500, fmvExp: 6.4 }), 5.2);
+});
+
 test('per un portiere la distanza dalla fantamedia e\' un malus, e non lo premia', () => {
   // Il difetto che questo test sorveglia: ricavare il voto togliendo alla fantamedia attesa la
   // distanza FMV-MV significava, per un portiere, restituirgli il malus dei gol subiti. Chi ne

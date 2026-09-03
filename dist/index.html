@@ -1232,12 +1232,20 @@ const MINUTI_PER_FIDARSI = 900;
 // difensore il bonus vale un decimo di voto, per un portiere il malus dei gol subiti ne toglie
 // otto. Serve a stimare il voto di chi non ha una media voto affidabile senza usare la sua,
 // che per quei giocatori e' un segnaposto.
+// Un voto sotto il cinque non e' un voto: i minuti giocati non bastano a fidarsi, perche' un
+// listone puo' avere la colonna dei minuti piena e quella della media voto ancora a segnaposto.
+// Sul listone dei creators la distribuzione lo dice da sola: fra 4,5 e 5,0 non c'e' nessuno, e
+// sopra 5,0 i voti si stringono fra 5,5 e 6,5. Sotto restano due grumi — uno attorno a 2 e uno
+// attorno a 4 — che sono riempitivi, non giudizi. Senza questa soglia Vicario entrava nel
+// calcolo del modificatore con 2,08 e da solo mandava la Juve dal terzo al diciassettesimo posto.
+const VOTO_MINIMO_PLAUSIBILE = 5;
+
 const SCARTO_TIPICO = { P: -0.84, D: 0.10, C: 0.32, A: 0.67 };
 
 function votoAtteso(p) {
   const misurato =
     Number.isFinite(p.mediavoto) &&
-    p.mediavoto > 0 &&
+    p.mediavoto >= VOTO_MINIMO_PLAUSIBILE &&
     (Number.isFinite(p.minutes) ? p.minutes >= MINUTI_PER_FIDARSI : Number.isFinite(p.matches) && p.matches >= 10);
   if (misurato) return p.mediavoto;
   // Senza un voto misurato si stima dalla fantamedia attesa togliendo il bonus tipico del
