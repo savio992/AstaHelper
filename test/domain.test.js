@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { parseCsv, sniffDelimiter, autoMap, buildPlayers, normalizeRole, parseNumber, refineMapping, mergeSources, gridToTable, sheetsToTable } from '../src/domain/csv.js';
 import { sortTierLabels, defaultSettings, ROLES, totalSlots } from '../src/domain/model.js';
-import { valuePlayers, rosterScore, depthWeights, synergyBonus } from '../src/domain/valuation.js';
+import { valuePlayers, rosterScore, depthWeights, synergyBonus, avvisiCreator, AVVISI_CREATOR, expectedShare, votoAtteso, clubSolidity } from '../src/domain/valuation.js';
 import { expectedPrices, withExpectedPrices } from '../src/domain/market.js';
 import { optimizeRoster } from '../src/domain/optimizer.js';
 import { maxBid, alternatives, maxSpendableNow, tierBudgetReport, faseCorrente, budgetDiFase, spiegaPerdita, spiegaOfferta, tettoSullaLista, costoDellaLista, sceltiInPanchina, pianoSenza, CONFIG_ASTA } from '../src/domain/advisor.js';
@@ -1247,4 +1247,172 @@ test('nessuno costa piu\' del tetto, e i crediti in eccesso vanno agli altri', (
 
 test('il tetto di default e\' un terzo del budget', () => {
   assert.equal(defaultSettings().tettoSingolo, 0.33);
+});
+
+// --- gli avvisi del creator ------------------------------------------------------------------
+// Su diciannove etichette il punteggio ne prezza cinque. Le altre o sono gia' dentro un numero
+// che il modello legge (titolarita', integrita', fantamedia attesa, fascia), o sono troppo rare
+// per tararle. Queste sette non le trasforma in punti: le mostra nel piano, dove si decide.
+
+test('un avviso che il punteggio non usa arriva a chi guarda il piano', () => {
+  const voci = avvisiCreator({ tags: ['bonus', 'coppa africa', 'rigorista', 'esca'] });
+  assert.deepEqual(voci.map((v) => v.tag), ['esca', 'coppa africa']);
+  assert.ok(voci.every((v) => v.perche && v.perche.length > 10), 'ogni avviso spiega perche\' conta');
+});
+
+test('le etichette gia\' dentro il punteggio non diventano avvisi: sarebbero contate due volte', () => {
+  for (const tag of ['modificatore', 'imbattibilita', 'pararigori', 'rigorista', 'cartellini']) {
+    assert.deepEqual(avvisiCreator({ tags: [tag] }), [], `${tag} e' gia' nel punteggio`);
+  }
+});
+
+test('senza etichette non si inventa niente', () => {
+  assert.deepEqual(avvisiCreator({}), []);
+  assert.deepEqual(avvisiCreator({ tags: [] }), []);
+  assert.deepEqual(avvisiCreator({ tags: ['titolarissimo', 'costante', 'tanti gol'] }), [],
+    'quelle gia\' dentro titolarita\' e fantamedia attesa non sono avvisi');
+});
+
+test('gli avvisi non toccano il punteggio: sono per gli occhi, non per il solutore', () => {
+  const settings = { ...defaultSettings(), defenseModifier: false, cleanSheetModifier: false };
+  const base = { id: 'x', name: 'X', team: 'ROM', role: 'C', tier: 'Top', fmvExp: 7, titolarita: 5, integrita: 5, tags: [] };
+  const senza = valuePlayers([base, { ...base, id: 'y', name: 'Y' }], settings)[0];
+  const con = valuePlayers([{ ...base, tags: AVVISI_CREATOR.map(([t]) => t) }, { ...base, id: 'y', name: 'Y' }], settings)[0];
+  assert.equal(con.score, senza.score, 'nessuno dei sette avvisi sposta il punteggio');
+});
+
+// --- la titolarita' quando i creators non sono d'accordo -------------------------------------
+// Ogni creator da' un giudizio intero, ma con piu' file diventa una media: 4,33 vuol dire che
+// due lo danno titolare e uno no. Arrotondare buttava via proprio quel disaccordo, e i gradini
+// sono larghi — fra 0,56 e 0,76 c'e' il 36% di una stagione.
+
+const soloTit = (titolarita) => expectedShare({ titolarita, integrita: 5 });
+
+test('un giudizio intero vale esattamente quanto valeva prima', () => {
+  const attesi = [0.05, 0.15, 0.34, 0.56, 0.76, 0.92];
+  for (let v = 0; v <= 5; v++) assert.ok(Math.abs(soloTit(v) - attesi[v]) < 1e-9, `titolarita' ${v}`);
+});
+
+test('una media fra due giudizi sta in mezzo, non salta al gradino piu\' vicino', () => {
+  const quattro = soloTit(4);
+  const cinque = soloTit(5);
+  const media = soloTit(4.5);
+  assert.ok(media > quattro && media < cinque, `4,5 deve stare fra ${quattro} e ${cinque}, vale ${media}`);
+  assert.ok(Math.abs(media - (quattro + cinque) / 2) < 1e-9, 'e a meta\' esatta, essendo a meta\' fra i due');
+  // Il difetto vero: 4,4 e 4,6 differiscono di due decimi di giudizio e finivano a 0,56 e 0,92.
+  assert.ok(soloTit(4.6) - soloTit(4.4) < 0.1, `fra 4,4 e 4,6 lo scarto era del 36%, ora e' ${(soloTit(4.6) - soloTit(4.4)).toFixed(3)}`);
+});
+
+test('la frazione di stagione cresce sempre con la titolarita\'', () => {
+  for (let v = 0; v < 5; v += 0.25) assert.ok(soloTit(v + 0.25) > soloTit(v), `scende fra ${v} e ${v + 0.25}`);
+});
+
+test('fuori scala non si rompe', () => {
+  assert.equal(soloTit(9), soloTit(5));
+  assert.equal(soloTit(-3), soloTit(0));
+  assert.ok(expectedShare({}) > 0, 'senza giudizi resta un valore sensato');
+});
+
+// --- il voto puro: la grandezza su cui si calcola il modificatore ----------------------------
+// Il regolamento e' esplicito: media dei voti del portiere e dei tre migliori difensori
+// schierati, esclusi bonus e malus. Un difensore che segna entra con il suo voto, non col
+// fantavoto. La solidita' dei club si calcolava invece sui punteggi, che vengono dalla
+// fantamedia e quindi contengono proprio i gol dei difensori.
+
+const difensore2 = (id, team, mediavoto, extra = {}) => ({
+  id, name: id, team, role: 'D', mediavoto, minutes: 2500, matches: 30,
+  fmvExp: mediavoto, fantamedia: mediavoto, titolarita: 5, integrita: 5, ...extra,
+});
+
+test('quando la media voto e\' misurata su abbastanza partite, si usa quella', () => {
+  assert.equal(votoAtteso({ role: 'D', mediavoto: 6.3, minutes: 2500, fmvExp: 7.1 }), 6.3);
+});
+
+test('una media voto da poche partite e\' un segnaposto, non un voto basso', () => {
+  // Nel listone vero chi non ha giocato in Serie A ha valori come 1,33 o 1,83: prenderli per
+  // buoni faceva risultare tre giocatori simili i "migliori difensori" del loro club.
+  const finto = { role: 'D', mediavoto: 1.33, minutes: 120, matches: 2, fmvExp: 6.0 };
+  const v = votoAtteso(finto);
+  assert.ok(v > 5.5, `un segnaposto da 1,33 non deve diventare un voto: ${v}`);
+  assert.ok(Math.abs(v - (6.0 - 0.10)) < 1e-9, 'si stima dalla fantamedia attesa meno il bonus tipico del ruolo');
+});
+
+test('un segnaposto con i minuti pieni resta un segnaposto', () => {
+  // Il caso che il controllo sui minuti da solo non prendeva: la colonna dei minuti piena e
+  // quella della media voto ancora a segnaposto. Vicario arrivava cosi' nel calcolo del
+  // modificatore con un voto di 2,08 e da solo faceva scendere la Juve dal terzo posto al
+  // diciassettesimo. Sotto il cinque non e' un voto basso, e' un campo non compilato.
+  const v = votoAtteso({ role: 'P', mediavoto: 2.08, minutes: 1920, matches: 24, fmvExp: 5.27 });
+  assert.ok(v > 5.5, `un segnaposto da 2,08 con 1920 minuti non deve diventare un voto: ${v}`);
+  assert.ok(Math.abs(v - (5.27 + 0.84)) < 1e-9, 'si ripiega sulla stima dalla fantamedia attesa');
+});
+
+test('un voto misurato appena sopra la soglia si usa com\'e\'', () => {
+  // La soglia non deve mangiarsi i voti veri bassi: 5,2 con i minuti pieni e' un giudizio.
+  assert.equal(votoAtteso({ role: 'D', mediavoto: 5.2, minutes: 2500, fmvExp: 6.4 }), 5.2);
+});
+
+test('per un portiere la distanza dalla fantamedia e\' un malus, e non lo premia', () => {
+  // Il difetto che questo test sorveglia: ricavare il voto togliendo alla fantamedia attesa la
+  // distanza FMV-MV significava, per un portiere, restituirgli il malus dei gol subiti. Chi ne
+  // aveva presi di piu' usciva col voto piu' alto della Serie A.
+  const subisceTanto = { role: 'P', mediavoto: 5.91, fantamedia: 3.90, fmvExp: 5.06, minutes: 2500 };
+  const subiscePoco = { role: 'P', mediavoto: 6.20, fantamedia: 5.71, fmvExp: 5.30, minutes: 2500 };
+  assert.ok(
+    votoAtteso(subisceTanto) < votoAtteso(subiscePoco),
+    `chi subisce di piu' non puo' avere il voto piu' alto: ${votoAtteso(subisceTanto)} contro ${votoAtteso(subiscePoco)}`
+  );
+});
+
+test('la solidita\' guarda i voti, non i gol dei difensori', () => {
+  // Due club identici nei voti, ma i difensori di uno segnano molto: per il modificatore
+  // valgono uguale, perche' il gol del difensore non entra nel calcolo.
+  const senzaGol = ['a1', 'a2', 'a3'].map((id) => difensore2(id, 'AAA', 6.4));
+  const conGol = ['b1', 'b2', 'b3'].map((id) => difensore2(id, 'BBB', 6.4, { fmvExp: 7.6, fantamedia: 7.6 }));
+  const portieri = [
+    { id: 'pa', name: 'pa', team: 'AAA', role: 'P', mediavoto: 6.2, fantamedia: 5.4, fmvExp: 5.4, minutes: 3000, titolarita: 5, integrita: 5 },
+    { id: 'pb', name: 'pb', team: 'BBB', role: 'P', mediavoto: 6.2, fantamedia: 5.4, fmvExp: 5.4, minutes: 3000, titolarita: 5, integrita: 5 },
+  ];
+  const sol = clubSolidity([...senzaGol, ...conGol, ...portieri]);
+  assert.equal(sol.get('AAA'), sol.get('BBB'), 'i gol dei difensori non devono spostare la solidita\'');
+});
+
+test('un club con voti alti sta sopra uno con voti bassi', () => {
+  const forte = ['f1', 'f2', 'f3'].map((id) => difensore2(id, 'FOR', 6.6));
+  const debole = ['d1', 'd2', 'd3'].map((id) => difensore2(id, 'DEB', 5.6));
+  const p = (id, team, mv) => ({ id, name: id, team, role: 'P', mediavoto: mv, fantamedia: mv - 0.8, fmvExp: mv - 0.8, minutes: 3000, titolarita: 5, integrita: 5 });
+  const sol = clubSolidity([...forte, ...debole, p('pf', 'FOR', 6.5), p('pd', 'DEB', 5.7)]);
+  assert.ok(sol.get('FOR') > sol.get('DEB'));
+});
+
+test('un club giudicato su pochi voti viene tirato verso la media di lega', () => {
+  // Meta' dei difensori non ha una media voto misurata. Senza contrazione un club con un solo
+  // dato estremo starebbe in cima o in fondo per caso; con la contrazione il suo scarto dalla
+  // media si accorcia in proporzione a quanto poco si sa di lui.
+  const p = (id, team, mv) => ({ id, name: id, team, role: 'P', mediavoto: mv, fantamedia: mv - 0.8, fmvExp: mv - 0.8, minutes: 3000, titolarita: 5, integrita: 5 });
+  const solidi = ['s1', 's2', 's3'].map((id) => difensore2(id, 'SOL', 6.5));
+  const medi = ['m1', 'm2', 'm3'].map((id) => difensore2(id, 'MED', 6.2));
+  const unoSolo = [difensore2('u1', 'UNO', 7.2)];
+  const sol = clubSolidity([...solidi, ...medi, ...unoSolo, p('ps', 'SOL', 6.4), p('pm', 'MED', 6.2), p('pu', 'UNO', 7.0)]);
+  // Resta il piu' forte — i suoi due voti sono davvero altissimi — ma non stacca come farebbe
+  // se lo si giudicasse solo su quei due.
+  assert.ok(sol.get('UNO') >= sol.get('SOL'));
+  assert.ok(sol.get('SOL') > sol.get('MED'), 'i club con dati pieni restano ordinati fra loro');
+});
+
+test('senza voti ne\' fantamedia attesa la solidita\' ripiega sui punteggi', () => {
+  // Un listone di sole fasce e prezzi non sa niente dei voti. Restare senza solidita' sarebbe
+  // peggio: il modificatore smetterebbe di spostare crediti in difesa.
+  const soloFasce = [
+    { id: 'd1', name: 'd1', team: 'AAA', role: 'D' }, { id: 'd2', name: 'd2', team: 'AAA', role: 'D' },
+    { id: 'd3', name: 'd3', team: 'AAA', role: 'D' }, { id: 'p1', name: 'p1', team: 'AAA', role: 'P' },
+    { id: 'd4', name: 'd4', team: 'BBB', role: 'D' }, { id: 'd5', name: 'd5', team: 'BBB', role: 'D' },
+    { id: 'd6', name: 'd6', team: 'BBB', role: 'D' }, { id: 'p2', name: 'p2', team: 'BBB', role: 'P' },
+  ];
+  const punteggi = new Map(soloFasce.map((x) => [x.id, x.team === 'AAA' ? 100 : 40]));
+  const sol = clubSolidity(soloFasce, punteggi);
+  assert.equal(sol.size, 2, 'il ripiego deve dare una solidita\' a entrambi i club');
+  assert.ok(sol.get('AAA') > sol.get('BBB'), 'e ordinarli come dicono i punteggi');
+  // Senza nemmeno i punteggi non si inventa niente.
+  assert.equal(clubSolidity(soloFasce).size, 0);
 });
